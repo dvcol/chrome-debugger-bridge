@@ -12,11 +12,11 @@ export default defineConfig({
     'src/broker.ts',
     'src/client.ts',
     'src/protocol.ts',
+    'src/protocol-json-schema.ts',
     'src/testing.ts',
   ],
   format: 'esm',
   platform: 'neutral',
-  publint: true,
   sourcemap: true,
   target: 'es2024',
 });

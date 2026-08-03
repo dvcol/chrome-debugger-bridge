@@ -2,5 +2,8 @@
   "name": "@chrome-debugger-bridge-fixture/package-consumer",
   "type": "module",
   "version": "0.0.0",
-  "private": true
+  "private": true,
+  "dependencies": {
+    "@dvcol/chrome-debugger-bridge": "workspace:*"
+  }
 }

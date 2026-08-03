@@ -27,6 +27,7 @@
       "types": "./dist/protocol.d.ts",
       "import": "./dist/protocol.js"
     },
+    "./protocol.schema.json": "./dist/protocol.schema.json",
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
@@ -34,12 +35,20 @@
   },
   "files": ["dist"],
   "scripts": {
-    "build": "tsdown",
-    "lint": "eslint src test tsdown.config.ts vitest.config.ts --cache",
+    "build": "tsdown && node scripts/generate-protocol-json-schema.ts && publint",
+    "lint": "eslint scripts src test tsdown.config.ts vitest.config.ts --cache",
     "pack": "pnpm pack --pack-destination artifacts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit --project tsconfig.json",
     "verify:pack": "publint"
+  },
+  "dependencies": {
+    "@standard-schema/spec": "catalog:protocol",
+    "zod": "catalog:protocol"
+  },
+  "devDependencies": {
+    "ajv": "catalog:testing",
+    "ajv-formats": "catalog:testing"
   },
   "publishConfig": {
     "access": "public"
