@@ -1,0 +1,43 @@
+{
+  "name": "chrome-debugger-bridge-workspace",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.20.0",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": "11.20.0"
+  },
+  "scripts": {
+    "build": "turbo run build --cache-dir=.turbo/cache",
+    "check:runtime": "node scripts/check-runtime-boundaries.ts",
+    "check:workspace": "node scripts/check-workspace-dependencies.ts",
+    "lint": "eslint . --cache",
+    "pack": "node scripts/prepare-pack-directories.ts && turbo run pack --cache-dir=.turbo/cache",
+    "test": "turbo run test --cache-dir=.turbo/cache",
+    "test:browser": "vitest run --project browser-chromium --passWithNoTests",
+    "test:e2e": "vitest run --project extension-e2e --passWithNoTests",
+    "typecheck": "turbo run typecheck --cache-dir=.turbo/cache && tsc --noEmit --project tsconfig.scripts.json",
+    "verify": "pnpm run check:workspace && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build && pnpm run check:runtime && pnpm run verify:pack",
+    "verify:pack": "node scripts/prepare-pack-directories.ts && turbo run verify:pack --cache-dir=.turbo/cache && node scripts/verify-packed-packages.ts"
+  },
+  "devDependencies": {
+    "@dvcol/eslint-config": "catalog:build",
+    "@prettier/plugin-xml": "catalog:build",
+    "@types/node": "catalog:types",
+    "@vitest/browser-playwright": "catalog:testing",
+    "@vitest/coverage-v8": "catalog:testing",
+    "eslint": "catalog:build",
+    "eslint-plugin-format": "catalog:build",
+    "jiti": "catalog:build",
+    "jsdom": "catalog:testing",
+    "playwright": "catalog:testing",
+    "prettier": "catalog:build",
+    "publint": "catalog:build",
+    "tsdown": "catalog:build",
+    "turbo": "catalog:build",
+    "typescript": "catalog:types",
+    "vite": "catalog:devtools",
+    "vitest": "catalog:testing"
+  }
+}

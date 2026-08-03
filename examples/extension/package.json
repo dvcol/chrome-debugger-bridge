@@ -1,0 +1,10 @@
+{
+  "name": "@chrome-debugger-bridge-example/extension",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@dvcol/chrome-debugger-bridge-extension": "workspace:*",
+    "@dvcol/chrome-debugger-bridge-websocket": "workspace:*"
+  }
+}

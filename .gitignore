@@ -1,0 +1,11 @@
+node_modules/
+.pnpm-store/
+.turbo/
+.eslintcache
+*.tsbuildinfo
+dist/
+artifacts/
+coverage/
+test-results/
+__traces__/
+playwright-report/

@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2024",
+    "lib": ["ES2024"],
+    "moduleDetection": "force",
+    "useDefineForClassFields": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowJs": false,
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "declaration": true,
+    "declarationMap": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true
+  }
+}

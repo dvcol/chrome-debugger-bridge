@@ -1,0 +1,39 @@
+{
+  "name": "@dvcol/chrome-debugger-bridge-devframe",
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Devframe and Vite adapters for Chrome Debugger Bridge.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dvcol/chrome-debugger-bridge.git",
+    "directory": "packages/devframe"
+  },
+  "sideEffects": false,
+  "exports": {
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.mts",
+      "import": "./dist/node.mjs"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsdown",
+    "lint": "eslint src test tsdown.config.ts vitest.config.ts --cache",
+    "pack": "pnpm pack --pack-destination artifacts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "verify:pack": "publint"
+  },
+  "dependencies": {
+    "@dvcol/chrome-debugger-bridge": "workspace:^",
+    "@dvcol/chrome-debugger-bridge-websocket": "workspace:^"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "name": "@dvcol/chrome-debugger-bridge-extension",
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Manifest V3 Chrome debugger agent primitives for Chrome Debugger Bridge.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dvcol/chrome-debugger-bridge.git",
+    "directory": "packages/extension"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./bootstrap": {
+      "types": "./dist/bootstrap.d.ts",
+      "import": "./dist/bootstrap.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsdown",
+    "lint": "eslint src test tsdown.config.ts vitest.config.ts --cache",
+    "pack": "pnpm pack --pack-destination artifacts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "verify:pack": "publint"
+  },
+  "dependencies": {
+    "@dvcol/chrome-debugger-bridge": "workspace:^"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

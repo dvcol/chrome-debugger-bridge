@@ -1,0 +1,42 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "globalDependencies": ["eslint.config.ts", "pnpm-lock.yaml", "tsconfig.base.json"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "lint": {
+      "outputs": [".eslintcache"]
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "outputs": []
+    },
+    "test:browser": {
+      "dependsOn": ["build"],
+      "outputs": ["__traces__/**", "coverage/browser/**"]
+    },
+    "test:e2e": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "outputs": ["test-results/**"]
+    },
+    "pack": {
+      "dependsOn": ["build"],
+      "outputs": ["artifacts/*.tgz"]
+    },
+    "verify:pack": {
+      "dependsOn": ["pack"],
+      "outputs": []
+    }
+  }
+}

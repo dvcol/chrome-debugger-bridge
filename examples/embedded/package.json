@@ -1,0 +1,9 @@
+{
+  "name": "@chrome-debugger-bridge-example/embedded",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@dvcol/chrome-debugger-bridge": "workspace:*"
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "name": "@dvcol/chrome-debugger-bridge",
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Runtime-neutral broker, protocol, and client primitives for Chrome Debugger Bridge.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dvcol/chrome-debugger-bridge.git",
+    "directory": "packages/core"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./broker": {
+      "types": "./dist/broker.d.ts",
+      "import": "./dist/broker.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsdown",
+    "lint": "eslint src test tsdown.config.ts vitest.config.ts --cache",
+    "pack": "pnpm pack --pack-destination artifacts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "verify:pack": "publint"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

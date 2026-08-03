@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": [
+    "eslint.config.ts",
+    "packages/*/test/**/*.ts",
+    "packages/*/tsdown.config.ts",
+    "packages/*/vitest.config.ts",
+    "scripts/**/*.ts",
+    "vitest.config.ts"
+  ]
+}
