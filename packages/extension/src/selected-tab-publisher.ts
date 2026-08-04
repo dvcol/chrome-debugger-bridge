@@ -18,6 +18,7 @@ export interface SelectedTabPublisherOptions {
   readonly chromeDebugger: ChromeDebuggerPort;
   readonly metadataPolicy?: (tab: Omit<SelectedTab, 'tabId'>) => Pick<PublishedTarget, 'title' | 'url'>;
   readonly publishTarget: (target: PublishedTarget) => Promise<void> | void;
+  readonly publishEvent?: (target: Pick<PublishedTarget, 'generation' | 'id'>, method: string, parameters: JsonObject) => void;
   readonly registerTargetExecutor?: (target: PublishedTarget, executor: { execute: (command: CdpCommand, abortSignal: AbortSignal) => Promise<JsonObject> }) => void;
   readonly revokeTarget: (target: Pick<PublishedTarget, 'generation' | 'id'>) => Promise<void> | void;
   readonly scopeId: string;
@@ -25,6 +26,7 @@ export interface SelectedTabPublisherOptions {
 
 export interface SelectedTabPublisher {
   executeCommand: (command: CdpCommand, abortSignal: AbortSignal) => Promise<JsonObject>;
+  publishEvent: (method: string, parameters: JsonObject) => void;
   publish: (tab: SelectedTab) => Promise<PublishedTarget>;
   revoke: () => Promise<void>;
 }
@@ -83,6 +85,11 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     }
   }
 
+  function publishEvent(method: string, parameters: JsonObject): void {
+    if (publishedTarget === undefined) return;
+    options.publishEvent?.(publishedTarget, method, parameters);
+  }
+
   return {
     async publish(tab) {
       if (!Number.isSafeInteger(tab.tabId) || tab.tabId < 0) {
@@ -126,6 +133,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       return target;
     },
     executeCommand,
+    publishEvent,
     revoke,
   };
 }

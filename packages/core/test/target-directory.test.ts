@@ -111,3 +111,43 @@ it('cancels a pending command and disposes its eventual response', async () => {
   expect(resolveCommand).toBeDefined();
   expect(broker.listTargets()).toEqual([target]);
 });
+
+it('delivers bounded matching events with opaque sequence numbers and closes on revocation', async () => {
+  expect.assertions(5);
+  const broker = createTargetBroker();
+  broker.publishTarget(target);
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: [], targetGeneration: target.generation, targetId: target.id });
+  const subscription = broker.subscribe({
+    buffer: { capacity: 1, overflowStrategy: 'drop-oldest' },
+    leaseId: lease.id,
+    match: { methodPrefix: 'Runtime.' },
+    targetGeneration: target.generation,
+    targetId: target.id,
+  });
+  broker.publishEvent(target, 'Runtime.consoleAPICalled', { type: 'log' });
+  broker.publishEvent(target, 'Network.requestWillBeSent', {});
+  const iterator = subscription[Symbol.asyncIterator]();
+  const event = await iterator.next();
+  broker.revokeTarget(target.id, target.generation);
+
+  expect(event).toMatchObject({ done: false, value: { method: 'Runtime.consoleAPICalled', sequence: 1, subscriptionId: subscription.id } });
+  expect(event.done ? [] : Object.keys(event.value)).not.toContain('sessionId');
+  expect(await iterator.next()).toEqual({ done: true, value: undefined });
+  expect(broker.listTargets()).toEqual([]);
+  expect(subscription.id).toMatch(/^[0-9a-f-]{36}$/u);
+});
+
+it('reports overflow and retains the newest event for a drop-oldest subscription', async () => {
+  expect.assertions(3);
+  const broker = createTargetBroker();
+  broker.publishTarget(target);
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: [], targetGeneration: target.generation, targetId: target.id });
+  const subscription = broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { methodPrefix: 'Runtime.' }, targetGeneration: target.generation, targetId: target.id });
+  broker.publishEvent(target, 'Runtime.first', {});
+  broker.publishEvent(target, 'Runtime.second', {});
+  const event = await subscription[Symbol.asyncIterator]().next();
+
+  expect(subscription.overflowed).toBe(true);
+  expect(event).toMatchObject({ done: false, value: { method: 'Runtime.second', sequence: 2 } });
+  expect(Object.keys(event.done ? {} : event.value)).not.toContain('sessionId');
+});

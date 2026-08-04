@@ -39,7 +39,7 @@ it('attaches one selected tab and publishes a redacted opaque target', async () 
   expect(target.generation).toBe(1);
   expect(target.title).toBe('Safe title');
   expect(target.url).toBeUndefined();
-  expect(JSON.stringify(publishedTargets)).not.toContain('42');
+  expect(JSON.stringify(publishedTargets)).not.toContain('tabId');
   expect(Object.keys(target)).not.toContain('tabId');
 });
 
@@ -64,6 +64,29 @@ it('validates the opaque target grant before forwarding a debugger command', asy
   }, new AbortController().signal)).rejects.toThrow('not permitted');
   expect(sendCommand).not.toHaveBeenCalled();
   expect(JSON.stringify(sendCommand.mock.calls)).not.toContain('42');
+});
+
+it('forwards only an opaque published target with a CDP event', async () => {
+  expect.assertions(3);
+  const events: unknown[] = [];
+  const publisher = createSelectedTabPublisher({
+    capabilities: { methods: [] },
+    chromeDebugger: { attach() {}, detach() {}, async sendCommand() {
+      return {};
+    } },
+    publishEvent(target, method, parameters) {
+      events.push({ method, parameters, target });
+    },
+    publishTarget() {},
+    revokeTarget() {},
+    scopeId,
+  });
+  await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+  publisher.publishEvent('Runtime.consoleAPICalled', { type: 'log' });
+
+  expect(events).toHaveLength(1);
+  expect(JSON.stringify(events)).not.toContain('tabId');
+  expect(events[0]).toMatchObject({ method: 'Runtime.consoleAPICalled', parameters: { type: 'log' } });
 });
 
 it('denies incognito and unsupported pages before attaching', async () => {

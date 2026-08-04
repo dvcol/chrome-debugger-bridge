@@ -1,16 +1,18 @@
-import type { AcquireLeaseRequest } from './broker.js';
-import type { CdpCommand, JsonObject, Lease, PublishedTarget } from './protocol.js';
+import type { AcquireLeaseRequest, CdpSubscription } from './broker.js';
+import type { CdpCommand, CdpSubscriptionRequest, JsonObject, Lease, PublishedTarget } from './protocol.js';
 
 export interface TargetDirectory {
   acquireLease?: (request: AcquireLeaseRequest) => Lease | Promise<Lease>;
   executeCommand?: (command: CdpCommand) => Promise<{ readonly operationId: string; readonly value: JsonObject }>;
   listTargets: () => readonly PublishedTarget[] | Promise<readonly PublishedTarget[]>;
+  subscribe?: (request: CdpSubscriptionRequest) => CdpSubscription;
 }
 
 export interface ChromeDebuggerBridgeClient {
   acquireLease: (request: AcquireLeaseRequest) => Promise<Lease>;
   executeCommand: (command: CdpCommand) => Promise<{ readonly operationId: string; readonly value: JsonObject }>;
   listTargets: () => Promise<readonly PublishedTarget[]>;
+  subscribe: (request: CdpSubscriptionRequest) => Promise<CdpSubscription>;
 }
 
 /** Creates a transport-neutral client facade; Node and browser adapters supply the directory. */
@@ -30,6 +32,10 @@ export function createChromeDebuggerBridgeClient(directory: TargetDirectory): Ch
     },
     async listTargets() {
       return directory.listTargets();
+    },
+    async subscribe(request) {
+      if (directory.subscribe === undefined) throw new Error('The target directory does not support subscriptions.');
+      return directory.subscribe(request);
     },
   };
 }
