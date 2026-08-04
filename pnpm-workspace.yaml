@@ -26,6 +26,7 @@ catalogs:
     vite: 8.2.0
   protocol:
     '@standard-schema/spec': 1.1.0
+    devtools-protocol: 0.0.1672245
     zod: 4.4.3
   testing:
     '@vitest/browser-playwright': 4.1.10

@@ -41,6 +41,9 @@ catalogs:
     '@standard-schema/spec':
       specifier: 1.1.0
       version: 1.1.0
+    devtools-protocol:
+      specifier: 0.0.1672245
+      version: 0.0.1672245
     zod:
       specifier: 4.4.3
       version: 4.4.3
@@ -100,6 +103,9 @@ importers:
       '@vitest/coverage-v8':
         specifier: catalog:testing
         version: 4.1.10(@vitest/browser@4.1.10)(vitest@4.1.10)
+      devtools-protocol:
+        specifier: catalog:protocol
+        version: 0.0.1672245
       eslint:
         specifier: catalog:build
         version: 10.8.0(jiti@2.7.0)(supports-color@7.2.0)
@@ -1367,6 +1373,9 @@ packages:
 
   devlop@1.1.0:
     resolution: {integrity: sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA==}
+
+  devtools-protocol@0.0.1672245:
+    resolution: {integrity: sha512-MYZkl0uU0s1ot3sSrKKTiLa3xWGDeJ+bpou238HTNHZIqAX43UYj+0kuTCcE88Fa5uHWDQOCBPIZ+X/cvPm+Yg==}
 
   diff-sequences@29.6.3:
     resolution: {integrity: sha512-EjePK1srD3P08o2j4f0ExnylqRs5B9tJjcp9t1krH2qRi8CCdsYfwe9JgSLurFBWwq4uOlipzfk5fHNvwFKr8Q==}
@@ -3717,6 +3726,8 @@ snapshots:
   devlop@1.1.0:
     dependencies:
       dequal: 2.0.3
+
+  devtools-protocol@0.0.1672245: {}
 
   diff-sequences@29.6.3: {}
 

@@ -19,6 +19,10 @@
       "types": "./dist/broker.d.ts",
       "import": "./dist/broker.js"
     },
+    "./cdp-catalogue": {
+      "types": "./dist/cdp-catalogue.d.ts",
+      "import": "./dist/cdp-catalogue.js"
+    },
     "./client": {
       "types": "./dist/client.d.ts",
       "import": "./dist/client.js"

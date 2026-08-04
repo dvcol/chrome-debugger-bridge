@@ -10,6 +10,7 @@ export default defineConfig({
   entry: [
     'src/index.ts',
     'src/broker.ts',
+    'src/cdp-catalogue.ts',
     'src/client.ts',
     'src/protocol.ts',
     'src/protocol-json-schema.ts',
