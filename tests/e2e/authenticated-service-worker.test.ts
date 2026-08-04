@@ -344,3 +344,64 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   expect(renewedRevocation).toMatchObject({ done: false, value: { kind: 'revoked', reason: 'detached', targetGeneration: renewedTarget.generation, targetId: renewedTarget.id } });
   expect(targetBroker.listTargets()).toEqual([]);
 }, 20_000);
+
+it('reissues fresh target authority after a broker restart on the same endpoint', async () => {
+  expect.assertions(6);
+  const brokerId = crypto.randomUUID();
+  const pairingCode = '852741';
+  const agentAuthentication = createMemoryAgentAuthenticationAdapter({ brokerId, pairingCode, pairingCodeExpiresAt: Date.now() + 300_000, principal: { id: crypto.randomUUID(), role: 'agent' as const } });
+  const clientAuthentication = createStaticClientAuthenticationAdapter('Bearer broker-restart-client', { id: crypto.randomUUID(), role: 'client' as const });
+  const server = createServer((_request, response) => response.end('<title>Broker restart target</title>'));
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('The test server did not expose a TCP address.');
+  cleanupTasks.push(async () => new Promise((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error))));
+  const createBroker = async (targetBroker: ReturnType<typeof createTargetBroker>, port?: number) => createStandaloneAuthenticatedWebSocketBridge({
+    agentAuthentication,
+    brokerId,
+    clientAuthentication,
+    ...(port === undefined ? {} : { port }),
+    onAgentConnection({ connection }) {
+      const disconnect = connectAgentTargetBroker(connection, targetBroker);
+      void connection.closed.then(disconnect);
+    },
+    onClientConnection({ connection }) {
+      const disconnect = connectClientTargetBroker(connection, targetBroker);
+      void connection.closed.then(disconnect);
+    },
+    originPolicy({ origin }) {
+      return origin === undefined || origin.startsWith('chrome-extension://');
+    },
+  });
+  const firstBroker = createTargetBroker();
+  const firstBridge = await createBroker(firstBroker);
+  const extensionDirectory = await mkdtemp(join(tmpdir(), 'chrome-debugger-bridge-extension-'));
+  const userDataDirectory = await mkdtemp(join(tmpdir(), 'chrome-debugger-bridge-profile-'));
+  cleanupTasks.push(async () => rm(extensionDirectory, { force: true, recursive: true }));
+  cleanupTasks.push(async () => rm(userDataDirectory, { force: true, recursive: true }));
+  await build({ build: { emptyOutDir: true, lib: { entry: resolve('tests/e2e/fixtures/authenticated-service-worker.ts'), fileName: () => 'service-worker.js', formats: ['es'] }, outDir: extensionDirectory }, configFile: false, logLevel: 'silent' });
+  await writeFile(join(extensionDirectory, 'manifest.json'), `${JSON.stringify({ background: { service_worker: 'service-worker.js', type: 'module' }, manifest_version: 3, name: 'Chrome Debugger Bridge Broker Restart Test', permissions: ['debugger', 'storage', 'tabs'], version: '0.0.0' }, null, 2)}\n`, 'utf8');
+  const context = await chromium.launchPersistentContext(userDataDirectory, { args: [`--disable-extensions-except=${extensionDirectory}`, `--load-extension=${extensionDirectory}`], channel: 'chromium', headless: true });
+  cleanupTasks.push(async () => context.close());
+  const page = await context.newPage();
+  await page.goto(`http://127.0.0.1:${address.port}/target`);
+  const serviceWorker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
+  const endpoint = `ws://${firstBridge.host}:${firstBridge.port}/__chrome_debugger_bridge/agent`;
+  const initialTarget = await serviceWorker.evaluate(async ({ endpoint: agentEndpoint, pairingCode: code }) => (globalThis as unknown as { runPublishedTargetAgentTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<{ readonly generation: number; readonly id: string }> }).runPublishedTargetAgentTest({ endpoint: agentEndpoint, pairingCode: code }), { endpoint, pairingCode });
+  await firstBridge.close();
+  const secondBroker = createTargetBroker();
+  const secondBridge = await createBroker(secondBroker, firstBridge.port);
+  cleanupTasks.push(async () => secondBridge.close());
+  const secondTargetWatcher = secondBroker.watchTargets()[Symbol.asyncIterator]();
+  await secondTargetWatcher.next();
+  const renewedTarget = await serviceWorker.evaluate(async ({ endpoint: agentEndpoint, pairingCode: code }) => (globalThis as unknown as { recoverPublishedTargetAgentTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<{ readonly generation: number; readonly id: string }> }).recoverPublishedTargetAgentTest({ endpoint: agentEndpoint, pairingCode: code }), { endpoint: `ws://${secondBridge.host}:${secondBridge.port}/__chrome_debugger_bridge/agent`, pairingCode });
+  const recoveredPublication = await secondTargetWatcher.next();
+  await serviceWorker.evaluate(async () => (globalThis as unknown as { interruptPublishedTargetAgentTest: () => Promise<void> }).interruptPublishedTargetAgentTest());
+
+  expect(firstBroker.listTargets()).toEqual([]);
+  expect(renewedTarget.id).not.toBe(initialTarget.id);
+  expect(recoveredPublication).toMatchObject({ done: false, value: { kind: 'published', target: { generation: renewedTarget.generation, id: renewedTarget.id } } });
+  expect(secondBroker.listTargets()).toEqual([]);
+  expect(initialTarget.generation).toBe(1);
+  expect(renewedTarget.generation).toBe(1);
+}, 20_000);
