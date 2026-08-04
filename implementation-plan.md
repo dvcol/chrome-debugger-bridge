@@ -400,6 +400,17 @@ published -> detached | revoked | policy-invalid | closed
 detached -> explicitly reauthorized -> attaching
 ```
 
+### 6.7 Published target transition matrix
+
+| Chrome or policy event | Published-target outcome | Authority effect |
+| --- | --- | --- |
+| Explicitly selected eligible tab | `published` | Creates an opaque target and current generation. |
+| Title, URL, or other redacted metadata changes while policy still allows exposure | `updated` | Retains the current generation only. |
+| Navigation or metadata refresh makes the selector, grant, or exposure policy invalid | `revoked` with `policy-invalid` | Revokes the current generation before further operations. |
+| Tab closes | `revoked` with `closed` | Revokes the current generation and its dependent broker state. |
+| Chrome detaches the debugger | `revoked` with `detached` | Revokes the current generation and tolerates the already-detached cleanup race. |
+| Agent reconnects | `snapshot` then ordered changes | Reconciles the agent publication set; a lower generation cannot revive a revoked target. |
+
 Persist policy, pairings, and safe configuration. Never persist an assumption that a debugger attachment, child session, lease, subscription, or public target generation survived a service-worker restart.
 
 ## 7. Adapter contracts

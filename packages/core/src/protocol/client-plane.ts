@@ -167,6 +167,16 @@ const targetPublishedNotificationSchemaDefinition = z.strictObject({
   protocolVersion: protocolVersionSchemaDefinition,
 });
 
+const targetSnapshotNotificationSchemaDefinition = z.strictObject({
+  kind: z.literal('notification'),
+  method: z.literal('targets.snapshot'),
+  parameters: z.strictObject({
+    sequence: z.int().check(z.gte(0)),
+    targets: z.array(publishedTargetSchemaDefinition),
+  }),
+  protocolVersion: protocolVersionSchemaDefinition,
+});
+
 const targetUpdatedNotificationSchemaDefinition = z.strictObject({
   kind: z.literal('notification'),
   method: z.literal('targets.updated'),
@@ -207,6 +217,7 @@ export const brokerToClientMessageSchemaDefinition = z.union([
   z.discriminatedUnion('method', [
     cdpEventNotificationSchemaDefinition,
     targetPublishedNotificationSchemaDefinition,
+    targetSnapshotNotificationSchemaDefinition,
     targetUpdatedNotificationSchemaDefinition,
     targetRevokedNotificationSchemaDefinition,
   ]),

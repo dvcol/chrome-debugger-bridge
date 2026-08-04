@@ -1,10 +1,10 @@
-import type { AgentToBrokerMessage, CdpCommand, PublishedTarget } from '../src/protocol.js';
+import type { AgentToBrokerMessage, BrokerToClientMessage, CdpCommand, PublishedTarget } from '../src/protocol.js';
 
 import { expect, it, vi } from 'vitest';
 
 import { createTargetBroker } from '../src/broker.js';
 import { createChromeDebuggerBridgeClient } from '../src/client.js';
-import { connectAgentTargetBroker } from '../src/index.js';
+import { connectAgentTargetBroker, connectClientTargetBroker } from '../src/index.js';
 
 const target = {
   availability: 'available',
@@ -71,6 +71,29 @@ it('applies authenticated agent lifecycle notifications to the broker', () => {
   listener?.({ kind: 'notification', method: 'targets.reconcile', parameters: { targets: [] }, protocolVersion: 1 });
   expect(broker.listTargets()).toEqual([]);
   disconnect();
+});
+
+it('streams a fresh target snapshot followed by ordered lifecycle notifications to a client', async () => {
+  expect.assertions(4);
+  const broker = createTargetBroker();
+  const messages: BrokerToClientMessage[] = [];
+  let resolveFourthMessage: (() => void) | undefined;
+  const fourthMessage = new Promise<void>(resolve => resolveFourthMessage = resolve);
+  const disconnect = connectClientTargetBroker({ async send(message) {
+    messages.push(message);
+    if (messages.length === 4) resolveFourthMessage?.();
+  } }, broker);
+
+  broker.publishTarget(target);
+  broker.updateTarget({ ...target, title: 'Updated title' });
+  broker.revokeTarget(target.id, target.generation, 'closed');
+  await fourthMessage;
+  disconnect();
+
+  expect(messages[0]).toEqual({ kind: 'notification', method: 'targets.snapshot', parameters: { sequence: 0, targets: [] }, protocolVersion: 1 });
+  expect(messages[1]).toMatchObject({ method: 'targets.published', parameters: { target } });
+  expect(messages[2]).toMatchObject({ method: 'targets.updated', parameters: { target: { title: 'Updated title' } } });
+  expect(messages[3]).toEqual({ kind: 'notification', method: 'targets.revoked', parameters: { reason: 'closed', targetGeneration: 1, targetId: target.id }, protocolVersion: 1 });
 });
 
 it('executes only a non-expired lease grant through the registered opaque target executor', async () => {
