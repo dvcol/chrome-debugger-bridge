@@ -9,7 +9,21 @@ type TargetChangeInput
 
 export interface AcquireLeaseRequest {
   readonly durationMilliseconds: number;
+  readonly mode?: Lease['mode'];
   readonly requestedMethods: readonly string[];
+  readonly targetGeneration: number;
+  readonly targetId: string;
+}
+
+export interface RenewLeaseRequest {
+  readonly durationMilliseconds: number;
+  readonly leaseId: string;
+  readonly targetGeneration: number;
+  readonly targetId: string;
+}
+
+export interface ReleaseLeaseRequest {
+  readonly leaseId: string;
   readonly targetGeneration: number;
   readonly targetId: string;
 }
@@ -26,7 +40,7 @@ export interface CdpSubscription extends AsyncIterable<CdpEvent> {
 }
 
 export class TargetBrokerError extends Error {
-  constructor(readonly code: 'CAPABILITY_DENIED' | 'CDP_COMMAND_FAILED' | 'LEASE_EXPIRED' | 'LEASE_REQUIRED' | 'REQUEST_CANCELLED' | 'TARGET_GENERATION_STALE' | 'TARGET_NOT_FOUND') {
+  constructor(readonly code: 'CAPABILITY_DENIED' | 'CDP_COMMAND_FAILED' | 'LEASE_CONFLICT' | 'LEASE_EXPIRED' | 'LEASE_REQUIRED' | 'REQUEST_CANCELLED' | 'TARGET_GENERATION_STALE' | 'TARGET_NOT_FOUND') {
     super(code === 'CDP_COMMAND_FAILED' ? 'The debugger command failed.' : 'The requested target operation is not available.');
   }
 }
@@ -49,6 +63,8 @@ export interface TargetBroker {
   updateTarget: (target: PublishedTarget) => void;
   watchTargets: () => AsyncIterable<TargetChange>;
   publishEvent: (target: Pick<PublishedTarget, 'generation' | 'id'>, method: string, parameters: JsonObject) => void;
+  releaseLease: (request: ReleaseLeaseRequest) => void;
+  renewLease: (request: RenewLeaseRequest) => Lease;
   subscribe: (request: CdpSubscriptionRequest) => Promise<CdpSubscription>;
 }
 
@@ -87,10 +103,25 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     return target;
   }
 
+  function removeExpiredLeases(): void {
+    for (const [leaseId, lease] of leasesById) if (Date.parse(lease.expiresAt) <= now()) leasesById.delete(leaseId);
+  }
+
+  function getActiveLease(request: Pick<RenewLeaseRequest, 'leaseId' | 'targetGeneration' | 'targetId'>): Lease {
+    const lease = leasesById.get(request.leaseId);
+    if (lease === undefined || lease.targetId !== request.targetId || lease.targetGeneration !== request.targetGeneration) throw new TargetBrokerError('LEASE_REQUIRED');
+    if (Date.parse(lease.expiresAt) <= now()) {
+      leasesById.delete(lease.id);
+      throw new TargetBrokerError('LEASE_EXPIRED');
+    }
+    return lease;
+  }
+
   let targetBroker: TargetBroker;
   return targetBroker = {
     acquireLease(request) {
       const target = getCurrentTarget(request.targetId, request.targetGeneration);
+      const mode = request.mode ?? 'shared-read';
       if (
         !Number.isSafeInteger(request.durationMilliseconds)
         || request.durationMilliseconds < 1
@@ -99,13 +130,17 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       ) {
         throw new TargetBrokerError('CAPABILITY_DENIED');
       }
+      removeExpiredLeases();
+      if (mode === 'exclusive-control' && [...leasesById.values()].some(lease => lease.targetId === target.id && lease.targetGeneration === target.generation && lease.mode === 'exclusive-control')) {
+        throw new TargetBrokerError('LEASE_CONFLICT');
+      }
       const issuedAt = new Date(now()).toISOString();
       const lease: Lease = {
         expiresAt: new Date(now() + request.durationMilliseconds).toISOString(),
         id: globalThis.crypto.randomUUID(),
         issuedAt,
         methods: [...request.requestedMethods],
-        mode: 'shared-read',
+        mode,
         targetGeneration: target.generation,
         targetId: target.id,
       };
@@ -209,6 +244,9 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       const currentTarget = getCurrentTarget(target.id, target.generation);
       targetsById.set(target.id, target);
       highestGenerationByTargetId.set(target.id, currentTarget.generation);
+      for (const [leaseId, lease] of leasesById) {
+        if (lease.targetId === target.id && lease.targetGeneration === target.generation && lease.methods.some(method => !target.capabilities.methods.includes(method))) leasesById.delete(leaseId);
+      }
       publishTargetChange({ kind: 'updated', target });
     },
     watchTargets() {
@@ -248,6 +286,19 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     },
     publishEvent(target, method, parameters) {
       for (const subscription of subscriptions.values()) if (subscription.request.targetId === target.id && subscription.request.targetGeneration === target.generation) subscription.offer(method, parameters);
+    },
+    releaseLease(request) {
+      getCurrentTarget(request.targetId, request.targetGeneration);
+      const lease = getActiveLease(request);
+      leasesById.delete(lease.id);
+    },
+    renewLease(request) {
+      getCurrentTarget(request.targetId, request.targetGeneration);
+      if (!Number.isSafeInteger(request.durationMilliseconds) || request.durationMilliseconds < 1 || request.durationMilliseconds > maximumLeaseMilliseconds) throw new TargetBrokerError('CAPABILITY_DENIED');
+      const lease = getActiveLease(request);
+      const renewedLease: Lease = { ...lease, expiresAt: new Date(now() + request.durationMilliseconds).toISOString() };
+      leasesById.set(lease.id, renewedLease);
+      return renewedLease;
     },
     async subscribe(request) {
       const target = getCurrentTarget(request.targetId, request.targetGeneration);

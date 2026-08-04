@@ -46,6 +46,8 @@ export const capabilityGrantSchemaDefinition = z.strictObject({
   methods: z.array(nonEmptyStringSchemaDefinition).check(z.maxLength(256)),
 });
 
+export const leaseModeSchemaDefinition = z.enum(['exclusive-control', 'shared-read']);
+
 export const publishedTargetSchemaDefinition = z.strictObject({
   availability: z.literal('available'),
   capabilities: capabilityGrantSchemaDefinition,
@@ -64,7 +66,7 @@ export const leaseSchemaDefinition = z.strictObject({
   id: leaseIdSchemaDefinition,
   issuedAt: timestampSchemaDefinition,
   methods: z.array(nonEmptyStringSchemaDefinition).check(z.maxLength(256)),
-  mode: z.literal('shared-read'),
+  mode: leaseModeSchemaDefinition,
   targetGeneration: positiveIntegerSchemaDefinition,
   targetId: targetIdSchemaDefinition,
 });
@@ -154,6 +156,7 @@ export const protocolVersionRangeSchema = exposeProtocolSchema(protocolVersionRa
 export const connectionLimitsSchema = exposeProtocolSchema(connectionLimitsSchemaDefinition);
 export const heartbeatParametersSchema = exposeProtocolSchema(heartbeatParametersSchemaDefinition);
 export const capabilityGrantSchema = exposeProtocolSchema(capabilityGrantSchemaDefinition);
+export const leaseModeSchema = exposeProtocolSchema(leaseModeSchemaDefinition);
 export const publishedTargetSchema = exposeProtocolSchema(publishedTargetSchemaDefinition);
 export const targetRevocationReasonSchema = exposeProtocolSchema(targetRevocationReasonSchemaDefinition);
 export const leaseSchema = exposeProtocolSchema(leaseSchemaDefinition);
@@ -170,6 +173,7 @@ export type ProtocolVersionRange = ProtocolSchemaOutput<typeof protocolVersionRa
 export type ConnectionLimits = ProtocolSchemaOutput<typeof connectionLimitsSchema>;
 export type HeartbeatParameters = ProtocolSchemaOutput<typeof heartbeatParametersSchema>;
 export type CapabilityGrant = ProtocolSchemaOutput<typeof capabilityGrantSchema>;
+export type LeaseMode = ProtocolSchemaOutput<typeof leaseModeSchema>;
 export type PublishedTarget = ProtocolSchemaOutput<typeof publishedTargetSchema>;
 export type TargetRevocationReason = ProtocolSchemaOutput<typeof targetRevocationReasonSchema>;
 export type Lease = ProtocolSchemaOutput<typeof leaseSchema>;

@@ -145,6 +145,29 @@ it('executes only a non-expired lease grant through the registered opaque target
   expect(Object.keys(result.value)).not.toContain('tabId');
 });
 
+it('arbitrates shared reads and exclusive control, with renewal, release, expiry, and policy-reduction cleanup', () => {
+  expect.assertions(8);
+  let currentTime = Date.parse('2026-08-04T12:00:00.000Z');
+  const broker = createTargetBroker({ now: () => currentTime });
+  broker.publishTarget(target);
+  const sharedReadLease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
+  const controllerLease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
+  const renewedLease = broker.renewLease({ durationMilliseconds: 2_000, leaseId: controllerLease.id, targetGeneration: target.generation, targetId: target.id });
+
+  expect(sharedReadLease.mode).toBe('shared-read');
+  expect(controllerLease.mode).toBe('exclusive-control');
+  expect(renewedLease.expiresAt).toBe('2026-08-04T12:00:02.000Z');
+  expect(() => broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: [], targetGeneration: target.generation, targetId: target.id })).toThrowError(expect.objectContaining({ code: 'LEASE_CONFLICT' }));
+  broker.releaseLease({ leaseId: controllerLease.id, targetGeneration: target.generation, targetId: target.id });
+  expect(broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: [], targetGeneration: target.generation, targetId: target.id }).mode).toBe('exclusive-control');
+  currentTime += 1_000;
+  expect(() => broker.renewLease({ durationMilliseconds: 1_000, leaseId: sharedReadLease.id, targetGeneration: target.generation, targetId: target.id })).toThrowError(expect.objectContaining({ code: 'LEASE_EXPIRED' }));
+  const policyLease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
+  broker.updateTarget({ ...target, capabilities: { methods: [] } });
+  expect(() => broker.renewLease({ durationMilliseconds: 1_000, leaseId: policyLease.id, targetGeneration: target.generation, targetId: target.id })).toThrowError(expect.objectContaining({ code: 'LEASE_REQUIRED' }));
+  expect(broker.listTargets()).toEqual([{ ...target, capabilities: { methods: [] } }]);
+});
+
 it('cancels a pending command and disposes its eventual response', async () => {
   expect.assertions(3);
   const broker = createTargetBroker();

@@ -42,6 +42,8 @@ export {
   type ImplementationInfo,
   implementationInfoSchema,
   type Lease,
+  type LeaseMode,
+  leaseModeSchema,
   leaseSchema,
   type ProtocolVersionRange,
   protocolVersionRangeSchema,

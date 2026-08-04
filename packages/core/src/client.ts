@@ -1,4 +1,4 @@
-import type { AcquireLeaseRequest, CdpSubscription } from './broker.js';
+import type { AcquireLeaseRequest, CdpSubscription, ReleaseLeaseRequest, RenewLeaseRequest } from './broker.js';
 import type { CdpCommand, CdpSubscriptionRequest, JsonObject, Lease, PublishedTarget, TargetRevocationReason } from './protocol.js';
 
 export type TargetChange
@@ -13,6 +13,8 @@ export interface TargetDirectory {
   acquireLease?: (request: AcquireLeaseRequest) => Lease | Promise<Lease>;
   executeCommand?: (command: CdpCommand) => Promise<{ readonly operationId: string; readonly value: JsonObject }>;
   listTargets: () => readonly PublishedTarget[] | Promise<readonly PublishedTarget[]>;
+  releaseLease?: (request: ReleaseLeaseRequest) => void | Promise<void>;
+  renewLease?: (request: RenewLeaseRequest) => Lease | Promise<Lease>;
   watchTargets?: () => AsyncIterable<TargetChange>;
   subscribe?: (request: CdpSubscriptionRequest) => CdpSubscription | Promise<CdpSubscription>;
 }
@@ -21,6 +23,8 @@ export interface ChromeDebuggerBridgeClient {
   acquireLease: (request: AcquireLeaseRequest) => Promise<Lease>;
   executeCommand: (command: CdpCommand) => Promise<{ readonly operationId: string; readonly value: JsonObject }>;
   listTargets: () => Promise<readonly PublishedTarget[]>;
+  releaseLease: (request: ReleaseLeaseRequest) => Promise<void>;
+  renewLease: (request: RenewLeaseRequest) => Promise<Lease>;
   subscribe: (request: CdpSubscriptionRequest) => Promise<CdpSubscription>;
   watchTargets: () => AsyncIterable<TargetChange>;
 }
@@ -42,6 +46,14 @@ export function createChromeDebuggerBridgeClient(directory: TargetDirectory): Ch
     },
     async listTargets() {
       return directory.listTargets();
+    },
+    async releaseLease(request) {
+      if (directory.releaseLease === undefined) throw new Error('The target directory does not support leases.');
+      await directory.releaseLease(request);
+    },
+    async renewLease(request) {
+      if (directory.renewLease === undefined) throw new Error('The target directory does not support leases.');
+      return directory.renewLease(request);
     },
     async subscribe(request) {
       if (directory.subscribe === undefined) throw new Error('The target directory does not support subscriptions.');

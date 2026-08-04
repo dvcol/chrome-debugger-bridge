@@ -10,6 +10,7 @@ import {
   cdpSubscriptionRequestSchemaDefinition,
   connectionLimitsSchemaDefinition,
   implementationInfoSchemaDefinition,
+  leaseModeSchemaDefinition,
   leaseSchemaDefinition,
   publishedTargetSchemaDefinition,
   targetRevocationReasonSchemaDefinition,
@@ -50,7 +51,7 @@ const leaseAcquireRequestSchemaDefinition = z.strictObject({
   method: z.literal('leases.acquire'),
   parameters: z.strictObject({
     durationMilliseconds: positiveIntegerSchemaDefinition,
-    mode: z.literal('shared-read'),
+    mode: leaseModeSchemaDefinition,
     requestedMethods: z.array(nonEmptyStringSchemaDefinition).check(z.maxLength(256)),
     targetGeneration: positiveIntegerSchemaDefinition,
     targetId: targetIdSchemaDefinition,
