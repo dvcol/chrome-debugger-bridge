@@ -1,8 +1,9 @@
-import type { CapabilityGrant, PublishedTarget } from '@dvcol/chrome-debugger-bridge/protocol';
+import type { CapabilityGrant, CdpCommand, JsonObject, PublishedTarget } from '@dvcol/chrome-debugger-bridge/protocol';
 
 export interface ChromeDebuggerPort {
   attach: (target: { readonly tabId: number }, requiredVersion: string) => Promise<void> | void;
   detach: (target: { readonly tabId: number }) => Promise<void> | void;
+  sendCommand: (target: { readonly tabId: number }, method: string, parameters?: JsonObject) => Promise<JsonObject>;
 }
 
 export interface SelectedTab {
@@ -17,11 +18,13 @@ export interface SelectedTabPublisherOptions {
   readonly chromeDebugger: ChromeDebuggerPort;
   readonly metadataPolicy?: (tab: Omit<SelectedTab, 'tabId'>) => Pick<PublishedTarget, 'title' | 'url'>;
   readonly publishTarget: (target: PublishedTarget) => Promise<void> | void;
+  readonly registerTargetExecutor?: (target: PublishedTarget, executor: { execute: (command: CdpCommand, abortSignal: AbortSignal) => Promise<JsonObject> }) => void;
   readonly revokeTarget: (target: Pick<PublishedTarget, 'generation' | 'id'>) => Promise<void> | void;
   readonly scopeId: string;
 }
 
 export interface SelectedTabPublisher {
+  executeCommand: (command: CdpCommand, abortSignal: AbortSignal) => Promise<JsonObject>;
   publish: (tab: SelectedTab) => Promise<PublishedTarget>;
   revoke: () => Promise<void>;
 }
@@ -53,6 +56,31 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     selectedTabId = undefined;
     await options.revokeTarget(targetToRevoke);
     await options.chromeDebugger.detach({ tabId: tabIdToDetach });
+  }
+
+  async function executeCommand(command: CdpCommand, abortSignal: AbortSignal): Promise<JsonObject> {
+    if (publishedTarget === undefined || selectedTabId === undefined) {
+      throw new Error('The requested target is not available.');
+    }
+    if (abortSignal.aborted) {
+      throw new Error('The requested command was cancelled.');
+    }
+    if (
+      command.targetId !== publishedTarget.id
+      || command.targetGeneration !== publishedTarget.generation
+      || !publishedTarget.capabilities.methods.includes(command.method)
+    ) {
+      throw new Error('The requested command is not permitted.');
+    }
+    try {
+      const value = await options.chromeDebugger.sendCommand({ tabId: selectedTabId }, command.method, command.parameters);
+      if (abortSignal.aborted) {
+        throw new Error('The requested command was cancelled.');
+      }
+      return value;
+    } catch {
+      throw new Error('The debugger command failed.');
+    }
   }
 
   return {
@@ -94,8 +122,10 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       }
       selectedTabId = tab.tabId;
       publishedTarget = target;
+      options.registerTargetExecutor?.(target, { execute: executeCommand });
       return target;
     },
+    executeCommand,
     revoke,
   };
 }

@@ -15,6 +15,9 @@ it('attaches one selected tab and publishes a redacted opaque target', async () 
         attachedTabs.push(target.tabId);
       },
       detach() {},
+      async sendCommand() {
+        return {};
+      },
     },
     metadataPolicy: () => ({ title: 'Safe title' }),
     publishTarget(target) {
@@ -40,12 +43,41 @@ it('attaches one selected tab and publishes a redacted opaque target', async () 
   expect(Object.keys(target)).not.toContain('tabId');
 });
 
+it('validates the opaque target grant before forwarding a debugger command', async () => {
+  expect.assertions(3);
+  const sendCommand = vi.fn(async () => ({ result: 'safe' }));
+  const publisher = createSelectedTabPublisher({
+    capabilities: { methods: ['Runtime.evaluate'] },
+    chromeDebugger: { attach() {}, detach() {}, sendCommand },
+    publishTarget() {},
+    revokeTarget() {},
+    scopeId,
+  });
+  const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+
+  await expect(publisher.executeCommand({
+    leaseId: '20000000-0000-4000-8000-000000000001',
+    method: 'Page.navigate',
+    operationId: '30000000-0000-4000-8000-000000000001',
+    targetGeneration: target.generation,
+    targetId: target.id,
+  }, new AbortController().signal)).rejects.toThrow('not permitted');
+  expect(sendCommand).not.toHaveBeenCalled();
+  expect(JSON.stringify(sendCommand.mock.calls)).not.toContain('42');
+});
+
 it('denies incognito and unsupported pages before attaching', async () => {
   expect.assertions(4);
   const attach = vi.fn();
   const publisher = createSelectedTabPublisher({
     capabilities: { methods: [] },
-    chromeDebugger: { attach, detach() {} },
+    chromeDebugger: {
+      attach,
+      detach() {},
+      async sendCommand() {
+        return {};
+      },
+    },
     publishTarget() {},
     revokeTarget() {},
     scopeId,
