@@ -318,7 +318,7 @@ it('filters event payloads, flushes independent batches, and records drop-newest
     const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
     const sessionId = '80000000-0000-4000-8000-000000000001';
     const subscription = await broker.subscribe({
-      batch: { flushMilliseconds: 10, maximumEvents: 2 },
+      batch: { flushMilliseconds: 10, maximumEvents: 1 },
       buffer: { capacity: 1, overflowStrategy: 'drop-newest' },
       leaseId: lease.id,
       match: { domain: 'Runtime' },
@@ -375,6 +375,43 @@ it('returns subscription demand to the extension executor when the client closes
 
   expect(setSubscriptionDemand).toHaveBeenNthCalledWith(1, 'Runtime.consoleAPICalled', true);
   expect(setSubscriptionDemand).toHaveBeenNthCalledWith(2, 'Runtime.consoleAPICalled', false);
+});
+
+it('reference-counts domain demand and reconciles activation failures and revocation', async () => {
+  expect.assertions(7);
+  const broker = createTargetBroker();
+  broker.publishTarget(target);
+  const setSubscriptionDemand = vi.fn().mockRejectedValueOnce(new Error('temporary failure')).mockResolvedValue(undefined);
+  broker.registerTargetExecutor(target, { async execute() {
+    return {};
+  }, setSubscriptionDemand });
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
+  const request = { buffer: { capacity: 1, overflowStrategy: 'disconnect' as const }, leaseId: lease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id };
+
+  await expect(broker.subscribe(request)).rejects.toMatchObject({ code: 'CDP_COMMAND_FAILED' });
+  const first = await broker.subscribe(request);
+  const second = await broker.subscribe(request);
+  expect(setSubscriptionDemand).toHaveBeenCalledTimes(2);
+  expect(setSubscriptionDemand).toHaveBeenLastCalledWith('Runtime.consoleAPICalled', true);
+  first.close();
+  expect(setSubscriptionDemand).toHaveBeenCalledTimes(2);
+  second.close();
+  await Promise.resolve();
+  expect(setSubscriptionDemand).toHaveBeenLastCalledWith('Runtime.consoleAPICalled', false);
+  const active = await broker.subscribe(request);
+  broker.revokeTarget(target.id, target.generation);
+  await Promise.resolve();
+  expect(active.droppedCount).toBe(0);
+  expect(setSubscriptionDemand).toHaveBeenLastCalledWith('Runtime.consoleAPICalled', false);
+});
+
+it('applies a tighter buffer limit to stateful subscription domains', async () => {
+  expect.assertions(1);
+  const broker = createTargetBroker();
+  broker.publishTarget(target);
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Tracing.tracingComplete'], targetGeneration: target.generation, targetId: target.id });
+
+  await expect(broker.subscribe({ buffer: { capacity: 17, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { method: 'Tracing.tracingComplete' }, targetGeneration: target.generation, targetId: target.id })).rejects.toMatchObject({ code: 'CAPABILITY_DENIED' });
 });
 
 it('rejects commands carrying the stale generation after a target is republished', async () => {

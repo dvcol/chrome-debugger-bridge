@@ -9,6 +9,8 @@ type TargetChangeInput
     | { readonly kind: 'snapshot'; readonly targets: readonly PublishedTarget[] }
     | { readonly kind: 'updated'; readonly target: PublishedTarget };
 
+const statefulSubscriptionDomains = new Set(['Fetch', 'Performance', 'Profiler', 'Tracing']);
+
 export interface AcquireLeaseRequest {
   readonly durationMilliseconds: number;
   readonly mode?: Lease['mode'];
@@ -92,6 +94,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   const executorsByTargetKey = new Map<string, TargetCommandExecutor>();
   const cancellationsByOperationId = new Map<string, AbortController>();
   const commandOperationIdsByTargetKey = new Map<string, Set<string>>();
+  const subscriptionDemandCountsByKey = new Map<string, number>();
   const subscriptions = new Map<string, SubscriptionState>();
   const targetWatchers = new Set<{ offer: (change: TargetChange) => void }>();
   let targetChangeSequence = 0;
@@ -138,6 +141,38 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       : 'method' in request.match
         ? request.match.method
         : request.match.methodPrefix;
+  }
+
+  function getSubscriptionDemandKey(target: Pick<PublishedTarget, 'generation' | 'id'>, request: CdpSubscriptionRequest): string {
+    return `${getTargetKey(target.id, target.generation)}:${request.sessionId ?? 'root'}:${getSubscriptionDemand(request).split('.', 1)[0]}`;
+  }
+
+  function hasStatefulSubscriptionDemand(request: CdpSubscriptionRequest): boolean {
+    return statefulSubscriptionDomains.has(getSubscriptionDemand(request).split('.', 1)[0] ?? '');
+  }
+
+  async function incrementSubscriptionDemand(target: PublishedTarget, request: CdpSubscriptionRequest): Promise<void> {
+    const demandKey = getSubscriptionDemandKey(target, request);
+    const count = subscriptionDemandCountsByKey.get(demandKey) ?? 0;
+    subscriptionDemandCountsByKey.set(demandKey, count + 1);
+    if (count !== 0) return;
+    const executor = executorsByTargetKey.get(getTargetKey(target.id, target.generation));
+    try {
+      await executor?.setSubscriptionDemand?.(getSubscriptionDemand(request), true);
+    } catch {
+      subscriptionDemandCountsByKey.delete(demandKey);
+      throw new TargetBrokerError('CDP_COMMAND_FAILED');
+    }
+  }
+
+  function decrementSubscriptionDemand(target: PublishedTarget, request: CdpSubscriptionRequest): void {
+    const demandKey = getSubscriptionDemandKey(target, request);
+    const count = subscriptionDemandCountsByKey.get(demandKey) ?? 0;
+    if (count <= 1) {
+      subscriptionDemandCountsByKey.delete(demandKey);
+      const executor = executorsByTargetKey.get(getTargetKey(target.id, target.generation));
+      void executor?.setSubscriptionDemand?.(getSubscriptionDemand(request), false).catch(() => {});
+    } else subscriptionDemandCountsByKey.set(demandKey, count - 1);
   }
 
   function removeExpiredLeases(): void {
@@ -269,7 +304,6 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       const target = targetsById.get(targetId);
       if (target?.generation === generation) {
         targetsById.delete(targetId);
-        executorsByTargetKey.delete(getTargetKey(targetId, generation));
         for (const operationId of commandOperationIdsByTargetKey.get(getTargetKey(targetId, generation)) ?? []) cancellationsByOperationId.get(operationId)?.abort();
         for (const [leaseId, lease] of leasesById) {
           if (lease.targetId === targetId && lease.targetGeneration === generation) {
@@ -277,6 +311,8 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
           }
         }
         for (const subscription of subscriptions.values()) if (subscription.request.targetId === targetId && subscription.request.targetGeneration === generation) subscription.close();
+        executorsByTargetKey.delete(getTargetKey(targetId, generation));
+        for (const demandKey of subscriptionDemandCountsByKey.keys()) if (demandKey.startsWith(`${getTargetKey(targetId, generation)}:`)) subscriptionDemandCountsByKey.delete(demandKey);
         publishTargetChange({ kind: 'revoked', reason, targetGeneration: generation, targetId });
       }
     },
@@ -348,6 +384,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       if (lease === undefined || lease.targetId !== target.id || lease.targetGeneration !== target.generation || Date.parse(lease.expiresAt) <= now()) throw new TargetBrokerError('LEASE_REQUIRED');
       const requestedName = 'method' in request.match ? request.match.method : undefined;
       if (requestedName !== undefined && (!lease.methods.includes(requestedName) || !isCdpNameAllowed(target.capabilities, requestedName, 'event') || (lease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [requestedName]) === 'exclusive-control'))) throw new TargetBrokerError('CAPABILITY_DENIED');
+      if ((request.batch !== undefined && request.batch.maximumEvents > request.buffer.capacity) || (hasStatefulSubscriptionDemand(request) && request.buffer.capacity > 16)) throw new TargetBrokerError('CAPABILITY_DENIED');
       const id = globalThis.crypto.randomUUID();
       const buffer: CdpEvent[] = [];
       const batch = request.batch ?? { flushMilliseconds: 1, maximumEvents: 1 };
@@ -356,6 +393,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       let flushTimeout: ReturnType<typeof setTimeout> | undefined;
       let lastDeliveredSequence = 0;
       let overflowed = false;
+      let demandActive = false;
       let resolver: ((result: IteratorResult<CdpEvent>) => void) | undefined;
       const flush = (): void => {
         flushTimeout = undefined;
@@ -376,10 +414,8 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         buffer.length = 0;
         subscriptions.delete(id);
         resolver?.({ done: true, value: undefined });
-        const executor = executorsByTargetKey.get(getTargetKey(target.id, target.generation));
-        if (executor?.setSubscriptionDemand !== undefined) {
-          void executor.setSubscriptionDemand(getSubscriptionDemand(request), false);
-        }
+        if (demandActive) decrementSubscriptionDemand(target, request);
+        demandActive = false;
       };
       const subscription: CdpSubscription = { close, get droppedCount() {
         return droppedCount;
@@ -399,6 +435,8 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
           scheduleFlush();
         });
       } }) };
+      await incrementSubscriptionDemand(target, request);
+      demandActive = true;
       subscriptions.set(id, { close, offer(method, parameters, sessionId) {
         const matches = eventMatchesSubscription(request, method, parameters, sessionId);
         if (!matches || closed || !lease.methods.includes(method) || !isCdpNameAllowed(target.capabilities, method, 'event') || (lease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [method]) === 'exclusive-control')) return;
@@ -420,10 +458,6 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
           }
         }
       }, request, sequence: 1 });
-      const executor = executorsByTargetKey.get(getTargetKey(target.id, target.generation));
-      if (executor?.setSubscriptionDemand !== undefined) {
-        await executor.setSubscriptionDemand(getSubscriptionDemand(request), true);
-      }
       return subscription;
     },
   };
