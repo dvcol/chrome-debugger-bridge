@@ -20,4 +20,10 @@ export {
   createChromeDebuggerBridgeClient,
   type TargetDirectory,
 } from './client.js';
+export {
+  createDiagnosticTraceStore,
+  type DiagnosticCode,
+  type DiagnosticTraceEntry,
+  type DiagnosticTraceStore,
+} from './diagnostic-trace.js';
 export * from './protocol.js';

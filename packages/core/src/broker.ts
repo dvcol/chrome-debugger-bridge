@@ -1,4 +1,5 @@
 import type { TargetChange, TargetRevocationReason } from './client.js';
+import type { DiagnosticCode, DiagnosticTraceStore } from './diagnostic-trace.js';
 import type { CdpCommand, CdpEvent, CdpSubscriptionRequest, JsonObject, JsonValue, Lease, PublishedTarget } from './protocol.js';
 
 import { isCdpNameAllowed, requiredLeaseMode } from './cdp-authorization.js';
@@ -62,6 +63,7 @@ export class TargetBrokerError extends Error {
 
 export interface CreateTargetBrokerOptions {
   readonly commandTimeoutMilliseconds?: number;
+  readonly diagnostics?: DiagnosticTraceStore;
   readonly maximumLeaseMilliseconds?: number;
   readonly now?: () => number;
 }
@@ -99,6 +101,10 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   const targetWatchers = new Set<{ offer: (change: TargetChange) => void }>();
   let targetChangeSequence = 0;
 
+  function recordDiagnostic(code: DiagnosticCode): void {
+    options.diagnostics?.record(code);
+  }
+
   function publishTargetChange(change: TargetChangeInput): void {
     const sequencedChange = { ...change, sequence: ++targetChangeSequence } as TargetChange;
     for (const watcher of targetWatchers) watcher.offer(sequencedChange);
@@ -111,9 +117,11 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   function getCurrentTarget(targetId: string, generation: number): PublishedTarget {
     const target = targetsById.get(targetId);
     if (target === undefined) {
+      recordDiagnostic('TARGET_NOT_FOUND');
       throw new TargetBrokerError('TARGET_NOT_FOUND');
     }
     if (target.generation !== generation) {
+      recordDiagnostic('TARGET_GENERATION_STALE');
       throw new TargetBrokerError('TARGET_GENERATION_STALE');
     }
     return target;
@@ -204,13 +212,16 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         || request.durationMilliseconds > maximumLeaseMilliseconds
         || request.requestedMethods.some(method => !isCdpNameAllowed(target.capabilities, method, 'command') && !isCdpNameAllowed(target.capabilities, method, 'event'))
       ) {
+        recordDiagnostic('CAPABILITY_DENIED');
         throw new TargetBrokerError('CAPABILITY_DENIED');
       }
       removeExpiredLeases();
       if (mode === 'shared-read' && requiredLeaseMode(target.capabilities, request.requestedMethods) === 'exclusive-control') {
+        recordDiagnostic('CAPABILITY_DENIED');
         throw new TargetBrokerError('CAPABILITY_DENIED');
       }
       if (mode === 'exclusive-control' && [...leasesById.values()].some(lease => lease.targetId === target.id && lease.targetGeneration === target.generation && lease.mode === 'exclusive-control')) {
+        recordDiagnostic('LEASE_CONFLICT');
         throw new TargetBrokerError('LEASE_CONFLICT');
       }
       const issuedAt = new Date(now()).toISOString();
@@ -233,17 +244,21 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       const target = getCurrentTarget(command.targetId, command.targetGeneration);
       const lease = leasesById.get(command.leaseId);
       if (lease === undefined || lease.targetId !== target.id || lease.targetGeneration !== target.generation) {
+        recordDiagnostic('LEASE_REQUIRED');
         throw new TargetBrokerError('LEASE_REQUIRED');
       }
       if (Date.parse(lease.expiresAt) <= now()) {
         leasesById.delete(lease.id);
+        recordDiagnostic('LEASE_EXPIRED');
         throw new TargetBrokerError('LEASE_EXPIRED');
       }
       if (!lease.methods.includes(command.method) || !isCdpNameAllowed(target.capabilities, command.method, 'command') || (lease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [command.method]) === 'exclusive-control')) {
+        recordDiagnostic('CAPABILITY_DENIED');
         throw new TargetBrokerError('CAPABILITY_DENIED');
       }
       const executor = executorsByTargetKey.get(getTargetKey(target.id, target.generation));
       if (executor === undefined) {
+        recordDiagnostic('TARGET_NOT_FOUND');
         throw new TargetBrokerError('TARGET_NOT_FOUND');
       }
       const abortController = new AbortController();
@@ -256,6 +271,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       try {
         const value = await executor.execute(command, abortController.signal, lease);
         if (abortController.signal.aborted) {
+          recordDiagnostic('REQUEST_CANCELLED');
           throw new TargetBrokerError('REQUEST_CANCELLED');
         }
         return { operationId: command.operationId, value };
@@ -264,8 +280,10 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
           throw error;
         }
         if (abortController.signal.aborted) {
+          recordDiagnostic('REQUEST_CANCELLED');
           throw new TargetBrokerError('REQUEST_CANCELLED');
         }
+        recordDiagnostic('CDP_COMMAND_FAILED');
         throw new TargetBrokerError('CDP_COMMAND_FAILED');
       } finally {
         clearTimeout(timeout);
@@ -307,6 +325,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     revokeTarget(targetId, generation, reason = 'explicit') {
       const target = targetsById.get(targetId);
       if (target?.generation === generation) {
+        recordDiagnostic('TARGET_REVOKED');
         targetsById.delete(targetId);
         for (const operationId of commandOperationIdsByTargetKey.get(getTargetKey(targetId, generation)) ?? []) cancellationsByOperationId.get(operationId)?.abort();
         for (const [leaseId, lease] of leasesById) {
