@@ -1,9 +1,11 @@
 import type {
+  AgentAuthenticationMessage,
   AgentPlaneMessage,
   ClientPlaneMessage,
 } from '@dvcol/chrome-debugger-bridge/protocol';
 
 import {
+  agentAuthenticationMessageSchema,
   agentPlaneMessageSchema,
   clientPlaneMessageSchema,
 } from '@dvcol/chrome-debugger-bridge/protocol';
@@ -55,6 +57,20 @@ const agentHelloRequest: AgentHelloRequest = {
 };
 
 void agentPlaneMessageSchema['~standard'].validate(agentHelloRequest);
+void agentAuthenticationMessageSchema['~standard'].validate({
+  kind: 'request',
+  method: 'agent.auth.begin',
+  parameters: {
+    agentId: '10000000-0000-4000-8000-000000000001',
+    clientNonce: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    endpointPath: '/__chrome_debugger_bridge/agent',
+    origin: 'chrome-extension://package-consumer',
+    protocolVersions: { maximum: 1, minimum: 1 },
+    role: 'agent',
+  },
+  protocolVersion: 1,
+  requestId: '70000000-0000-4000-8000-000000000003',
+} satisfies AgentAuthenticationMessage);
 void clientPlaneMessageSchema['~standard'].validate({
   kind: 'request',
   method: 'targets.list',

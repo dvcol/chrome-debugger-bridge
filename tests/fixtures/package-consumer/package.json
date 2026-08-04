@@ -4,6 +4,8 @@
   "version": "0.0.0",
   "private": true,
   "dependencies": {
-    "@dvcol/chrome-debugger-bridge": "workspace:*"
+    "@dvcol/chrome-debugger-bridge": "workspace:*",
+    "@dvcol/chrome-debugger-bridge-extension": "workspace:*",
+    "@dvcol/chrome-debugger-bridge-websocket": "workspace:*"
   }
 }

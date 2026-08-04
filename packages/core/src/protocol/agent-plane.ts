@@ -80,10 +80,18 @@ const cdpExecuteResponseSchemaDefinition = z.strictObject({
   result: cdpCommandResultSchemaDefinition,
 });
 
-const agentErrorResponseSchemaDefinition = z.strictObject({
+const agentHelloErrorResponseSchemaDefinition = z.strictObject({
   error: bridgeErrorSchemaDefinition,
   kind: z.literal('error'),
-  method: z.enum(['agent.hello', 'cdp.execute']),
+  method: z.literal('agent.hello'),
+  protocolVersion: protocolVersionSchemaDefinition,
+  requestId: requestIdSchemaDefinition,
+});
+
+const cdpExecuteErrorResponseSchemaDefinition = z.strictObject({
+  error: bridgeErrorSchemaDefinition,
+  kind: z.literal('error'),
+  method: z.literal('cdp.execute'),
   protocolVersion: protocolVersionSchemaDefinition,
   requestId: requestIdSchemaDefinition,
 });
@@ -120,18 +128,33 @@ const cdpEventNotificationSchemaDefinition = z.strictObject({
   protocolVersion: protocolVersionSchemaDefinition,
 });
 
-export const agentPlaneMessageSchemaDefinition = z.union([
-  z.discriminatedUnion('method', [agentHelloRequestSchemaDefinition, cdpExecuteRequestSchemaDefinition]),
-  z.discriminatedUnion('method', [agentHelloResponseSchemaDefinition, cdpExecuteResponseSchemaDefinition]),
-  agentErrorResponseSchemaDefinition,
+export const agentToBrokerMessageSchemaDefinition = z.union([
+  agentHelloRequestSchemaDefinition,
+  cdpExecuteResponseSchemaDefinition,
+  cdpExecuteErrorResponseSchemaDefinition,
   z.discriminatedUnion('method', [
     targetPublishedNotificationSchemaDefinition,
     targetRevokedNotificationSchemaDefinition,
-    cdpCancelledNotificationSchemaDefinition,
     cdpEventNotificationSchemaDefinition,
   ]),
 ]);
 
+export const brokerToAgentMessageSchemaDefinition = z.union([
+  agentHelloResponseSchemaDefinition,
+  agentHelloErrorResponseSchemaDefinition,
+  cdpExecuteRequestSchemaDefinition,
+  cdpCancelledNotificationSchemaDefinition,
+]);
+
+export const agentPlaneMessageSchemaDefinition = z.union([
+  agentToBrokerMessageSchemaDefinition,
+  brokerToAgentMessageSchemaDefinition,
+]);
+
+export const agentToBrokerMessageSchema = exposeProtocolSchema(agentToBrokerMessageSchemaDefinition);
+export const brokerToAgentMessageSchema = exposeProtocolSchema(brokerToAgentMessageSchemaDefinition);
 export const agentPlaneMessageSchema = exposeProtocolSchema(agentPlaneMessageSchemaDefinition);
 
+export type AgentToBrokerMessage = ProtocolSchemaOutput<typeof agentToBrokerMessageSchema>;
+export type BrokerToAgentMessage = ProtocolSchemaOutput<typeof brokerToAgentMessageSchema>;
 export type AgentPlaneMessage = ProtocolSchemaOutput<typeof agentPlaneMessageSchema>;

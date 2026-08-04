@@ -146,12 +146,24 @@ try {
   await mkdir(temporaryConsumerDirectory);
   await Promise.all([
     copyFile(
+      join(workspaceRoot, 'tests', 'fixtures', 'package-consumer', 'browser-transport-consumer.ts'),
+      join(temporaryConsumerDirectory, 'browser-transport-consumer.ts'),
+    ),
+    copyFile(
       join(workspaceRoot, 'tests', 'fixtures', 'package-consumer', 'protocol-consumer.ts'),
       join(temporaryConsumerDirectory, 'protocol-consumer.ts'),
     ),
     copyFile(
+      join(workspaceRoot, 'tests', 'fixtures', 'package-consumer', 'transport-consumer.ts'),
+      join(temporaryConsumerDirectory, 'transport-consumer.ts'),
+    ),
+    copyFile(
       join(workspaceRoot, 'tests', 'fixtures', 'package-consumer', 'tsconfig.json'),
       join(temporaryConsumerDirectory, 'tsconfig.json'),
+    ),
+    copyFile(
+      join(workspaceRoot, 'tests', 'fixtures', 'package-consumer', 'tsconfig.browser.json'),
+      join(temporaryConsumerDirectory, 'tsconfig.browser.json'),
     ),
   ]);
   await writeFile(
@@ -184,6 +196,17 @@ try {
       populatedStoreDirectory,
       ...packedPackages.map(({ artifactPath }) => artifactPath),
     ],
+    { cwd: temporaryConsumerDirectory },
+  );
+
+  await executeFile(
+    'pnpm',
+    ['exec', 'tsc', '--noEmit', '--project', join(temporaryConsumerDirectory, 'tsconfig.browser.json')],
+    { cwd: workspaceRoot },
+  );
+  await executeFile(
+    'pnpm',
+    ['add', '--offline', '--ignore-scripts', '--store-dir', populatedStoreDirectory, '@types/node@26.1.2'],
     { cwd: temporaryConsumerDirectory },
   );
 

@@ -34,7 +34,11 @@
     "verify:pack": "publint"
   },
   "dependencies": {
-    "@dvcol/chrome-debugger-bridge": "workspace:^"
+    "@dvcol/chrome-debugger-bridge": "workspace:^",
+    "ws": "catalog:transport"
+  },
+  "devDependencies": {
+    "@types/ws": "catalog:types"
   },
   "publishConfig": {
     "access": "public"

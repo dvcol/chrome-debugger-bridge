@@ -35,8 +35,11 @@ catalogs:
     jsdom: 30.0.1
     playwright: 1.62.1
     vitest: 4.1.10
+  transport:
+    ws: 8.21.1
   types:
     '@types/node': 26.1.2
+    '@types/ws': 8.18.1
     typescript: 5.9.3
 onlyBuiltDependencies:
   - esbuild

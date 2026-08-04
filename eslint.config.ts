@@ -28,6 +28,8 @@ export default defineTypescriptConfig(
       'packages/*/tsdown.config.ts',
       'packages/*/vitest.config.ts',
       'scripts/**/*.ts',
+      'tests/browser/**/*.ts',
+      'tests/e2e/**/*.ts',
       'vitest.config.ts',
     ],
     languageOptions: {

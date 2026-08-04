@@ -5,7 +5,9 @@ import { styleText } from 'node:util';
 const browserEntryPaths = [
   'packages/extension/src/index.ts',
   'packages/extension/src/bootstrap.ts',
+  'packages/extension/src/pairing-store.ts',
   'packages/websocket/src/browser.ts',
+  'packages/websocket/src/authentication.ts',
   'packages/devframe/src/client.ts',
 ];
 const browserOutputPaths = [

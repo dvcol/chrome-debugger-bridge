@@ -177,15 +177,16 @@ const targetRevokedNotificationSchemaDefinition = z.strictObject({
   protocolVersion: protocolVersionSchemaDefinition,
 });
 
-export const clientPlaneMessageSchemaDefinition = z.union([
-  z.discriminatedUnion('method', [
-    brokerInfoRequestSchemaDefinition,
-    targetsListRequestSchemaDefinition,
-    leaseAcquireRequestSchemaDefinition,
-    cdpSendRequestSchemaDefinition,
-    cdpSubscribeRequestEnvelopeSchemaDefinition,
-    cdpUnsubscribeRequestSchemaDefinition,
-  ]),
+export const clientToBrokerMessageSchemaDefinition = z.discriminatedUnion('method', [
+  brokerInfoRequestSchemaDefinition,
+  targetsListRequestSchemaDefinition,
+  leaseAcquireRequestSchemaDefinition,
+  cdpSendRequestSchemaDefinition,
+  cdpSubscribeRequestEnvelopeSchemaDefinition,
+  cdpUnsubscribeRequestSchemaDefinition,
+]);
+
+export const brokerToClientMessageSchemaDefinition = z.union([
   z.discriminatedUnion('method', [
     brokerInfoResponseSchemaDefinition,
     targetsListResponseSchemaDefinition,
@@ -202,6 +203,15 @@ export const clientPlaneMessageSchemaDefinition = z.union([
   ]),
 ]);
 
+export const clientPlaneMessageSchemaDefinition = z.union([
+  clientToBrokerMessageSchemaDefinition,
+  brokerToClientMessageSchemaDefinition,
+]);
+
+export const clientToBrokerMessageSchema = exposeProtocolSchema(clientToBrokerMessageSchemaDefinition);
+export const brokerToClientMessageSchema = exposeProtocolSchema(brokerToClientMessageSchemaDefinition);
 export const clientPlaneMessageSchema = exposeProtocolSchema(clientPlaneMessageSchemaDefinition);
 
+export type ClientToBrokerMessage = ProtocolSchemaOutput<typeof clientToBrokerMessageSchema>;
+export type BrokerToClientMessage = ProtocolSchemaOutput<typeof brokerToClientMessageSchema>;
 export type ClientPlaneMessage = ProtocolSchemaOutput<typeof clientPlaneMessageSchema>;

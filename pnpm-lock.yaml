@@ -66,10 +66,17 @@ catalogs:
     vitest:
       specifier: 4.1.10
       version: 4.1.10
+  transport:
+    ws:
+      specifier: 8.21.1
+      version: 8.21.1
   types:
     '@types/node':
       specifier: 26.1.2
       version: 26.1.2
+    '@types/ws':
+      specifier: 8.18.1
+      version: 8.18.1
     typescript:
       specifier: 5.9.3
       version: 5.9.3
@@ -244,12 +251,25 @@ importers:
       '@dvcol/chrome-debugger-bridge':
         specifier: workspace:^
         version: link:../core
+      ws:
+        specifier: catalog:transport
+        version: 8.21.1
+    devDependencies:
+      '@types/ws':
+        specifier: catalog:types
+        version: 8.18.1
 
   tests/fixtures/package-consumer:
     dependencies:
       '@dvcol/chrome-debugger-bridge':
         specifier: workspace:*
         version: link:../../../packages/core
+      '@dvcol/chrome-debugger-bridge-extension':
+        specifier: workspace:*
+        version: link:../../../packages/extension
+      '@dvcol/chrome-debugger-bridge-websocket':
+        specifier: workspace:*
+        version: link:../../../packages/websocket
 
 packages:
 
@@ -884,6 +904,9 @@ packages:
 
   '@types/unist@3.0.3':
     resolution: {integrity: sha512-ko/gIFJRv177XgZsZcBwnqJN5x/Gien8qNOn0D5bQU/zAzVf9Zt3BlcUiLqhV9y4ARk0GbT3tnUiPNgnTXzc/Q==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
   '@typescript-eslint/eslint-plugin@8.65.0':
     resolution: {integrity: sha512-IEgob78X12rHpUmtcwFsXhZdVGJtwTVP8FiCLZkR6GlYVrl2PcuB+KhCE5BlVC/eQpQnu8WXRtkHZuPar+gCRA==}
@@ -3240,6 +3263,10 @@ snapshots:
       undici-types: 8.3.0
 
   '@types/unist@3.0.3': {}
+
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 26.1.2
 
   '@typescript-eslint/eslint-plugin@8.65.0(@typescript-eslint/parser@8.65.0(eslint@10.8.0(jiti@2.7.0)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3))(eslint@10.8.0(jiti@2.7.0)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)':
     dependencies:

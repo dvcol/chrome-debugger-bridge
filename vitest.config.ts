@@ -25,6 +25,7 @@ export default defineConfig({
             trace: 'retain-on-failure',
           },
           include: ['tests/browser/**/*.test.ts'],
+          globalSetup: ['tests/browser/global-setup.ts'],
           name: 'browser-chromium',
         },
       },

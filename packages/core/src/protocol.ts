@@ -1,10 +1,22 @@
 export {
   type AgentPlaneMessage,
   agentPlaneMessageSchema,
+  type AgentToBrokerMessage,
+  agentToBrokerMessageSchema,
+  type BrokerToAgentMessage,
+  brokerToAgentMessageSchema,
 } from './protocol/agent-plane.js';
 export {
+  type AgentAuthenticationMessage,
+  agentAuthenticationMessageSchema,
+} from './protocol/authentication.js';
+export {
+  type BrokerToClientMessage,
+  brokerToClientMessageSchema,
   type ClientPlaneMessage,
   clientPlaneMessageSchema,
+  type ClientToBrokerMessage,
+  clientToBrokerMessageSchema,
 } from './protocol/client-plane.js';
 export {
   type BridgeError,

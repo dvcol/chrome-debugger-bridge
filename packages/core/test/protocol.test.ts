@@ -6,7 +6,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   agentPlaneMessageSchema,
+  agentToBrokerMessageSchema,
+  brokerToAgentMessageSchema,
+  brokerToClientMessageSchema,
   clientPlaneMessageSchema,
+  clientToBrokerMessageSchema,
 } from '../src/protocol.js';
 import { createProtocolJsonSchema } from '../src/protocol/json-schema.js';
 
@@ -85,6 +89,22 @@ async function validateAgentMessage(value: unknown) {
 }
 
 describe('protocol schemas', () => {
+  it('enforces message direction on both authenticated planes', async () => {
+    expect.assertions(4);
+    const brokerInfoRequest = {
+      kind: 'request',
+      method: 'broker.info',
+      parameters: {},
+      protocolVersion: 1,
+      requestId: '70000000-0000-4000-8000-000000000014',
+    };
+
+    expect(await brokerToAgentMessageSchema['~standard'].validate(agentHelloResponse)).toHaveProperty('value');
+    expect(await agentToBrokerMessageSchema['~standard'].validate(agentHelloResponse)).toHaveProperty('issues');
+    expect(await clientToBrokerMessageSchema['~standard'].validate(brokerInfoRequest)).toHaveProperty('value');
+    expect(await brokerToClientMessageSchema['~standard'].validate(brokerInfoRequest)).toHaveProperty('issues');
+  });
+
   it('validates the minimal handshake, target, lease, CDP, cancellation, revocation, and error envelopes', async () => {
     expect.assertions(12);
 
@@ -303,7 +323,7 @@ describe('protocol schemas', () => {
   });
 
   it('generates the published Draft 2020-12 schema from the runtime definitions', () => {
-    expect.assertions(6);
+    expect.assertions(7);
 
     const jsonSchema = createProtocolJsonSchema();
     const ajv = new Ajv2020({ strict: true });
@@ -346,6 +366,20 @@ describe('protocol schemas', () => {
       protocolVersion: 1,
       requestId: '70000000-0000-4000-8000-000000000012',
     };
+    const validAuthenticationBegin = {
+      kind: 'request',
+      method: 'agent.auth.begin',
+      parameters: {
+        agentId: agentInstanceId,
+        clientNonce: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        endpointPath: '/__chrome_debugger_bridge/agent',
+        origin: 'chrome-extension://abcdefghijklmnop',
+        protocolVersions: { maximum: 1, minimum: 1 },
+        role: 'agent',
+      },
+      protocolVersion: 1,
+      requestId: '70000000-0000-4000-8000-000000000013',
+    };
 
     expect(jsonSchema.$id).toBe('urn:dvcol:chrome-debugger-bridge:protocol:1');
     expect(jsonSchema.$schema).toBe('https://json-schema.org/draft/2020-12/schema');
@@ -359,6 +393,7 @@ describe('protocol schemas', () => {
       },
     })).toBe(false);
     expect(validateProtocolMessage(forwardCompatibleCommand)).toBe(true);
+    expect(validateProtocolMessage(validAuthenticationBegin)).toBe(true);
   });
 
   it('completes one validated in-memory broker and client command round trip', async () => {
