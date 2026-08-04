@@ -57,6 +57,8 @@ export const publishedTargetSchemaDefinition = z.strictObject({
   url: z.optional(z.url()),
 });
 
+export const targetRevocationReasonSchemaDefinition = z.enum(['closed', 'detached', 'explicit', 'policy-invalid']);
+
 export const leaseSchemaDefinition = z.strictObject({
   expiresAt: timestampSchemaDefinition,
   id: leaseIdSchemaDefinition,
@@ -153,6 +155,7 @@ export const connectionLimitsSchema = exposeProtocolSchema(connectionLimitsSchem
 export const heartbeatParametersSchema = exposeProtocolSchema(heartbeatParametersSchemaDefinition);
 export const capabilityGrantSchema = exposeProtocolSchema(capabilityGrantSchemaDefinition);
 export const publishedTargetSchema = exposeProtocolSchema(publishedTargetSchemaDefinition);
+export const targetRevocationReasonSchema = exposeProtocolSchema(targetRevocationReasonSchemaDefinition);
 export const leaseSchema = exposeProtocolSchema(leaseSchemaDefinition);
 export const cdpCommandSchema = exposeProtocolSchema(cdpCommandSchemaDefinition);
 export const cdpCommandResultSchema = exposeProtocolSchema(cdpCommandResultSchemaDefinition);
@@ -168,6 +171,7 @@ export type ConnectionLimits = ProtocolSchemaOutput<typeof connectionLimitsSchem
 export type HeartbeatParameters = ProtocolSchemaOutput<typeof heartbeatParametersSchema>;
 export type CapabilityGrant = ProtocolSchemaOutput<typeof capabilityGrantSchema>;
 export type PublishedTarget = ProtocolSchemaOutput<typeof publishedTargetSchema>;
+export type TargetRevocationReason = ProtocolSchemaOutput<typeof targetRevocationReasonSchema>;
 export type Lease = ProtocolSchemaOutput<typeof leaseSchema>;
 export type CdpCommand = ProtocolSchemaOutput<typeof cdpCommandSchema>;
 export type CdpCommandResult = ProtocolSchemaOutput<typeof cdpCommandResultSchema>;

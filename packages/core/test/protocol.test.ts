@@ -106,7 +106,7 @@ describe('protocol schemas', () => {
   });
 
   it('validates the minimal handshake, target, lease, CDP, cancellation, revocation, and error envelopes', async () => {
-    expect.assertions(12);
+    expect.assertions(14);
 
     const messages = [
       {
@@ -137,6 +137,12 @@ describe('protocol schemas', () => {
         kind: 'notification',
         method: 'targets.publish',
         parameters: { target: publishedTarget },
+        protocolVersion: 1,
+      },
+      {
+        kind: 'notification',
+        method: 'targets.update',
+        parameters: { target: { ...publishedTarget, title: 'Updated target' } },
         protocolVersion: 1,
       },
       {
@@ -189,7 +195,13 @@ describe('protocol schemas', () => {
       {
         kind: 'notification',
         method: 'targets.revoke',
-        parameters: { reason: 'explicit', targetGeneration: 1, targetId },
+        parameters: { reason: 'policy-invalid', targetGeneration: 1, targetId },
+        protocolVersion: 1,
+      },
+      {
+        kind: 'notification',
+        method: 'targets.updated',
+        parameters: { target: { ...publishedTarget, title: 'Updated target' } },
         protocolVersion: 1,
       },
       {
@@ -210,12 +222,14 @@ describe('protocol schemas', () => {
       agentPlaneMessageSchema,
       agentPlaneMessageSchema,
       agentPlaneMessageSchema,
+      agentPlaneMessageSchema,
       clientPlaneMessageSchema,
       clientPlaneMessageSchema,
       agentPlaneMessageSchema,
       clientPlaneMessageSchema,
       agentPlaneMessageSchema,
       agentPlaneMessageSchema,
+      clientPlaneMessageSchema,
       clientPlaneMessageSchema,
     ] as const;
 

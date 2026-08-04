@@ -47,6 +47,8 @@ export {
   protocolVersionRangeSchema,
   type PublishedTarget,
   publishedTargetSchema,
+  type TargetRevocationReason,
+  targetRevocationReasonSchema,
 } from './protocol/domain.js';
 export {
   type InstanceId,

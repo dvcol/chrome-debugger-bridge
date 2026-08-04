@@ -1,5 +1,5 @@
 import type { AcquireLeaseRequest, CdpSubscription } from './broker.js';
-import type { CdpCommand, CdpSubscriptionRequest, JsonObject, Lease, PublishedTarget } from './protocol.js';
+import type { CdpCommand, CdpSubscriptionRequest, JsonObject, Lease, PublishedTarget, TargetRevocationReason } from './protocol.js';
 
 export type TargetChange
   = | { readonly kind: 'published'; readonly sequence: number; readonly target: PublishedTarget }
@@ -7,7 +7,7 @@ export type TargetChange
     | { readonly kind: 'snapshot'; readonly sequence: number; readonly targets: readonly PublishedTarget[] }
     | { readonly kind: 'updated'; readonly sequence: number; readonly target: PublishedTarget };
 
-export type TargetRevocationReason = 'closed' | 'detached' | 'explicit' | 'policy-invalid';
+export type { TargetRevocationReason } from './protocol.js';
 
 export interface TargetDirectory {
   acquireLease?: (request: AcquireLeaseRequest) => Lease | Promise<Lease>;

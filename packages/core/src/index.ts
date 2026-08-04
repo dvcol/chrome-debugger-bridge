@@ -1,3 +1,4 @@
+export { type AgentTargetConnection, connectAgentTargetBroker } from './agent-target-connection.js';
 export { createTargetBroker, type TargetBroker } from './broker.js';
 export {
   type ChromeDebuggerBridgeClient,

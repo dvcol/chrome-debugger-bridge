@@ -13,6 +13,7 @@ import {
   implementationInfoSchemaDefinition,
   protocolVersionRangeSchemaDefinition,
   publishedTargetSchemaDefinition,
+  targetRevocationReasonSchemaDefinition,
 } from './domain.js';
 import {
   exposeProtocolSchema,
@@ -103,11 +104,25 @@ const targetPublishedNotificationSchemaDefinition = z.strictObject({
   protocolVersion: protocolVersionSchemaDefinition,
 });
 
+const targetUpdatedNotificationSchemaDefinition = z.strictObject({
+  kind: z.literal('notification'),
+  method: z.literal('targets.update'),
+  parameters: z.strictObject({ target: publishedTargetSchemaDefinition }),
+  protocolVersion: protocolVersionSchemaDefinition,
+});
+
+const targetReconciledNotificationSchemaDefinition = z.strictObject({
+  kind: z.literal('notification'),
+  method: z.literal('targets.reconcile'),
+  parameters: z.strictObject({ targets: z.array(publishedTargetSchemaDefinition) }),
+  protocolVersion: protocolVersionSchemaDefinition,
+});
+
 const targetRevokedNotificationSchemaDefinition = z.strictObject({
   kind: z.literal('notification'),
   method: z.literal('targets.revoke'),
   parameters: z.strictObject({
-    reason: z.enum(['closed', 'explicit']),
+    reason: targetRevocationReasonSchemaDefinition,
     targetGeneration: positiveIntegerSchemaDefinition,
     targetId: targetIdSchemaDefinition,
   }),
@@ -134,6 +149,8 @@ export const agentToBrokerMessageSchemaDefinition = z.union([
   cdpExecuteErrorResponseSchemaDefinition,
   z.discriminatedUnion('method', [
     targetPublishedNotificationSchemaDefinition,
+    targetReconciledNotificationSchemaDefinition,
+    targetUpdatedNotificationSchemaDefinition,
     targetRevokedNotificationSchemaDefinition,
     cdpEventNotificationSchemaDefinition,
   ]),

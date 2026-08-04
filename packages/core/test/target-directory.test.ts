@@ -1,9 +1,10 @@
-import type { CdpCommand, PublishedTarget } from '../src/protocol.js';
+import type { AgentToBrokerMessage, CdpCommand, PublishedTarget } from '../src/protocol.js';
 
 import { expect, it, vi } from 'vitest';
 
 import { createTargetBroker } from '../src/broker.js';
 import { createChromeDebuggerBridgeClient } from '../src/client.js';
+import { connectAgentTargetBroker } from '../src/index.js';
 
 const target = {
   availability: 'available',
@@ -54,6 +55,22 @@ it('reconciles agent state without accepting a stale target generation', () => {
   broker.revokeTarget(target.id, 3);
   expect(() => broker.reconcileTargets([target])).toThrowError('The requested target operation is not available.');
   expect(broker.listTargets()).toEqual([]);
+});
+
+it('applies authenticated agent lifecycle notifications to the broker', () => {
+  expect.assertions(2);
+  const broker = createTargetBroker();
+  let listener: ((message: AgentToBrokerMessage) => void) | undefined;
+  const disconnect = connectAgentTargetBroker({ onMessage(receivedListener) {
+    listener = receivedListener;
+    return () => listener = undefined;
+  } }, broker);
+
+  listener?.({ kind: 'notification', method: 'targets.publish', parameters: { target }, protocolVersion: 1 });
+  expect(broker.listTargets()).toEqual([target]);
+  listener?.({ kind: 'notification', method: 'targets.reconcile', parameters: { targets: [] }, protocolVersion: 1 });
+  expect(broker.listTargets()).toEqual([]);
+  disconnect();
 });
 
 it('executes only a non-expired lease grant through the registered opaque target executor', async () => {
