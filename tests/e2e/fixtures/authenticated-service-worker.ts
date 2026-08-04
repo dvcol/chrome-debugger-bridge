@@ -121,7 +121,7 @@ bridgeTestGlobal.runPublishedTargetLifecycleTest = async (updatedUrl) => {
   if (tab?.id === undefined) throw new Error('No active tab is available.');
   const outcomes: Array<{ readonly kind: 'published' | 'revoked' | 'updated'; readonly reason?: string }> = [];
   const publisher = createSelectedTabPublisher({
-    capabilities: { methods: ['Runtime.evaluate'] },
+    capabilities: { level: 'interact' },
     chromeDebugger: chrome.debugger,
     metadataPolicy: input => ({ title: input.title, url: input.url }),
     publishTarget() {

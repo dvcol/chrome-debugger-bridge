@@ -9,7 +9,7 @@ it('attaches one selected tab and publishes a redacted opaque target', async () 
   const attachedTabs: number[] = [];
   const publishedTargets: unknown[] = [];
   const publisher = createSelectedTabPublisher({
-    capabilities: { methods: ['Runtime.evaluate'] },
+    capabilities: { allow: ['Runtime.evaluate'] },
     chromeDebugger: {
       attach(target) {
         attachedTabs.push(target.tabId);
@@ -48,7 +48,7 @@ it('validates the opaque target grant before forwarding a debugger command', asy
   expect.assertions(3);
   const sendCommand = vi.fn(async () => ({ result: 'safe' }));
   const publisher = createSelectedTabPublisher({
-    capabilities: { methods: ['Runtime.evaluate'] },
+    capabilities: { allow: ['Runtime.evaluate'] },
     chromeDebugger: { attach() {}, detach() {}, sendCommand },
     publishTarget() {},
     revokeTarget() {},
@@ -72,7 +72,7 @@ it('forwards only an opaque published target with a CDP event', async () => {
   expect.assertions(3);
   const events: unknown[] = [];
   const publisher = createSelectedTabPublisher({
-    capabilities: { methods: [] },
+    capabilities: { level: 'unsafe' },
     chromeDebugger: { attach() {}, detach() {}, async sendCommand() {
       return {};
     } },
@@ -96,7 +96,7 @@ it('denies incognito and unsupported pages before attaching', async () => {
   expect.assertions(4);
   const attach = vi.fn();
   const publisher = createSelectedTabPublisher({
-    capabilities: { methods: [] },
+    capabilities: { level: 'unsafe' },
     chromeDebugger: {
       attach,
       detach() {},
@@ -122,7 +122,7 @@ it('publishes metadata changes and revokes the target when navigation invalidate
   const updateTarget = vi.fn();
   const revokeTarget = vi.fn();
   const publisher = createSelectedTabPublisher({
-    capabilities: { methods: [] },
+    capabilities: { level: 'unsafe' },
     chromeDebugger: { attach() {}, detach() {}, async sendCommand() {
       return {};
     } },
@@ -148,7 +148,7 @@ it('revokes only the selected target on tab closure or debugger detachment', asy
   expect.assertions(4);
   const revokeTarget = vi.fn();
   const publisher = createSelectedTabPublisher({
-    capabilities: { methods: [] },
+    capabilities: { level: 'unsafe' },
     chromeDebugger: { attach() {}, detach() {}, async sendCommand() {
       return {};
     } },
@@ -172,7 +172,7 @@ it('keeps revocation complete when Chrome detached the debugger first', async ()
   expect.assertions(2);
   const revokeTarget = vi.fn();
   const publisher = createSelectedTabPublisher({
-    capabilities: { methods: [] },
+    capabilities: { level: 'unsafe' },
     chromeDebugger: { attach() {}, detach() {
       throw new Error('Debugger is not attached.');
     }, async sendCommand() {

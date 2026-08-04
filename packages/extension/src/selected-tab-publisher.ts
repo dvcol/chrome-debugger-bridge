@@ -1,4 +1,6 @@
-import type { CapabilityGrant, CdpCommand, JsonObject, PublishedTarget } from '@dvcol/chrome-debugger-bridge/protocol';
+import type { CapabilityGrant, CdpCommand, JsonObject, Lease, PublishedTarget } from '@dvcol/chrome-debugger-bridge/protocol';
+
+import { isCdpNameAllowed, requiredLeaseMode } from '@dvcol/chrome-debugger-bridge/cdp-catalogue';
 
 export interface ChromeDebuggerPort {
   attach: (target: { readonly tabId: number }, requiredVersion: string) => Promise<void> | void;
@@ -21,7 +23,7 @@ export interface SelectedTabPublisherOptions {
   readonly publishTarget: (target: PublishedTarget) => Promise<void> | void;
   readonly publishEvent?: (target: Pick<PublishedTarget, 'generation' | 'id'>, method: string, parameters: JsonObject) => void;
   readonly registerTargetExecutor?: (target: PublishedTarget, executor: {
-    execute: (command: CdpCommand, abortSignal: AbortSignal) => Promise<JsonObject>;
+    execute: (command: CdpCommand, abortSignal: AbortSignal, lease: Lease) => Promise<JsonObject>;
     setSubscriptionDemand: (methodPrefix: string, active: boolean) => Promise<void>;
   }) => void;
   readonly revokeTarget: (target: Pick<PublishedTarget, 'generation' | 'id'>, reason: 'closed' | 'detached' | 'explicit' | 'policy-invalid') => Promise<void> | void;
@@ -82,7 +84,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     }
   }
 
-  async function executeCommand(command: CdpCommand, abortSignal: AbortSignal): Promise<JsonObject> {
+  async function executeCommand(command: CdpCommand, abortSignal: AbortSignal, lease?: Lease): Promise<JsonObject> {
     if (publishedTarget === undefined || selectedTabId === undefined) {
       throw new Error('The requested target is not available.');
     }
@@ -92,7 +94,13 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     if (
       command.targetId !== publishedTarget.id
       || command.targetGeneration !== publishedTarget.generation
-      || !publishedTarget.capabilities.methods.includes(command.method)
+      || !isCdpNameAllowed(publishedTarget.capabilities, command.method, 'command')
+      || lease === undefined
+      || lease.id !== command.leaseId
+      || lease.targetId !== publishedTarget.id
+      || lease.targetGeneration !== publishedTarget.generation
+      || !lease.methods.includes(command.method)
+      || (lease.mode === 'shared-read' && requiredLeaseMode(publishedTarget.capabilities, [command.method]) === 'exclusive-control')
     ) {
       throw new Error('The requested command is not permitted.');
     }
@@ -108,7 +116,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
   }
 
   function publishEvent(method: string, parameters: JsonObject): void {
-    if (publishedTarget === undefined) return;
+    if (publishedTarget === undefined || !isCdpNameAllowed(publishedTarget.capabilities, method, 'event')) return;
     options.publishEvent?.(publishedTarget, method, parameters);
   }
 
@@ -117,7 +125,6 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     const domain = methodPrefix.split('.', 1)[0];
     if (domain === undefined || !domainNamePattern.test(domain)) throw new Error('The subscription method is invalid.');
     const command = `${domain}.${active ? 'enable' : 'disable'}`;
-    if (!options.capabilities.methods.includes(command)) return;
     try {
       await options.chromeDebugger.sendCommand({ tabId: selectedTabId }, command);
     } catch {

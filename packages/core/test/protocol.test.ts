@@ -26,7 +26,7 @@ const expiresAt = '2026-08-03T10:01:00.000Z';
 
 const publishedTarget = {
   availability: 'available',
-  capabilities: { methods: ['Runtime.evaluate'] },
+  capabilities: { level: 'unsafe' },
   generation: 1,
   id: targetId,
   scopeId,

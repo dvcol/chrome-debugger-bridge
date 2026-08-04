@@ -1,3 +1,4 @@
+export { type CdpNameKind, isCdpNameAllowed, requiredLeaseMode } from './cdp-authorization.js';
 export {
   cdpCapabilityCatalogue,
   type CdpCapabilityLevel,

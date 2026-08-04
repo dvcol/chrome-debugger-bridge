@@ -43,7 +43,8 @@ export const heartbeatParametersSchemaDefinition = z.strictObject({
 });
 
 export const capabilityGrantSchemaDefinition = z.strictObject({
-  methods: z.array(nonEmptyStringSchemaDefinition).check(z.maxLength(256)),
+  allow: z.optional(z.array(nonEmptyStringSchemaDefinition).check(z.maxLength(256))),
+  level: z.optional(z.enum(['observe', 'inspect', 'interact', 'debug', 'unsafe'])),
 });
 
 export const leaseModeSchemaDefinition = z.enum(['exclusive-control', 'shared-read']);

@@ -1,6 +1,8 @@
 import type { TargetChange, TargetRevocationReason } from './client.js';
 import type { CdpCommand, CdpEvent, CdpSubscriptionRequest, JsonObject, Lease, PublishedTarget } from './protocol.js';
 
+import { isCdpNameAllowed, requiredLeaseMode } from './cdp-authorization.js';
+
 type TargetChangeInput
   = | { readonly kind: 'published'; readonly target: PublishedTarget }
     | { readonly kind: 'revoked'; readonly reason: TargetRevocationReason; readonly targetGeneration: number; readonly targetId: string }
@@ -29,7 +31,7 @@ export interface ReleaseLeaseRequest {
 }
 
 export interface TargetCommandExecutor {
-  execute: (command: CdpCommand, abortSignal: AbortSignal) => Promise<JsonObject>;
+  execute: (command: CdpCommand, abortSignal: AbortSignal, lease: Lease) => Promise<JsonObject>;
   setSubscriptionDemand?: (methodPrefix: string, active: boolean) => Promise<void>;
 }
 
@@ -126,11 +128,14 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         !Number.isSafeInteger(request.durationMilliseconds)
         || request.durationMilliseconds < 1
         || request.durationMilliseconds > maximumLeaseMilliseconds
-        || request.requestedMethods.some(method => !target.capabilities.methods.includes(method))
+        || request.requestedMethods.some(method => !isCdpNameAllowed(target.capabilities, method, 'command') && !isCdpNameAllowed(target.capabilities, method, 'event'))
       ) {
         throw new TargetBrokerError('CAPABILITY_DENIED');
       }
       removeExpiredLeases();
+      if (mode === 'shared-read' && requiredLeaseMode(target.capabilities, request.requestedMethods) === 'exclusive-control') {
+        throw new TargetBrokerError('CAPABILITY_DENIED');
+      }
       if (mode === 'exclusive-control' && [...leasesById.values()].some(lease => lease.targetId === target.id && lease.targetGeneration === target.generation && lease.mode === 'exclusive-control')) {
         throw new TargetBrokerError('LEASE_CONFLICT');
       }
@@ -160,7 +165,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         leasesById.delete(lease.id);
         throw new TargetBrokerError('LEASE_EXPIRED');
       }
-      if (!lease.methods.includes(command.method) || !target.capabilities.methods.includes(command.method)) {
+      if (!lease.methods.includes(command.method) || !isCdpNameAllowed(target.capabilities, command.method, 'command') || (lease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [command.method]) === 'exclusive-control')) {
         throw new TargetBrokerError('CAPABILITY_DENIED');
       }
       const executor = executorsByTargetKey.get(getTargetKey(target.id, target.generation));
@@ -175,7 +180,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       commandOperationIdsByTargetKey.set(targetKey, operationIds);
       const timeout = setTimeout(() => abortController.abort(), commandTimeoutMilliseconds);
       try {
-        const value = await executor.execute(command, abortController.signal);
+        const value = await executor.execute(command, abortController.signal, lease);
         if (abortController.signal.aborted) {
           throw new TargetBrokerError('REQUEST_CANCELLED');
         }
@@ -245,7 +250,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       targetsById.set(target.id, target);
       highestGenerationByTargetId.set(target.id, currentTarget.generation);
       for (const [leaseId, lease] of leasesById) {
-        if (lease.targetId === target.id && lease.targetGeneration === target.generation && lease.methods.some(method => !target.capabilities.methods.includes(method))) leasesById.delete(leaseId);
+        if (lease.targetId === target.id && lease.targetGeneration === target.generation && lease.methods.some(method => !isCdpNameAllowed(target.capabilities, method, 'command') && !isCdpNameAllowed(target.capabilities, method, 'event'))) leasesById.delete(leaseId);
       }
       publishTargetChange({ kind: 'updated', target });
     },
@@ -285,6 +290,8 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       };
     },
     publishEvent(target, method, parameters) {
+      const publishedTarget = getCurrentTarget(target.id, target.generation);
+      if (!isCdpNameAllowed(publishedTarget.capabilities, method, 'event')) return;
       for (const subscription of subscriptions.values()) if (subscription.request.targetId === target.id && subscription.request.targetGeneration === target.generation) subscription.offer(method, parameters);
     },
     releaseLease(request) {
@@ -304,6 +311,8 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       const target = getCurrentTarget(request.targetId, request.targetGeneration);
       const lease = leasesById.get(request.leaseId);
       if (lease === undefined || lease.targetId !== target.id || lease.targetGeneration !== target.generation || Date.parse(lease.expiresAt) <= now()) throw new TargetBrokerError('LEASE_REQUIRED');
+      const requestedName = 'method' in request.match ? request.match.method : undefined;
+      if (requestedName !== undefined && (!lease.methods.includes(requestedName) || !isCdpNameAllowed(target.capabilities, requestedName, 'event') || (lease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [requestedName]) === 'exclusive-control'))) throw new TargetBrokerError('CAPABILITY_DENIED');
       const id = globalThis.crypto.randomUUID();
       const buffer: CdpEvent[] = [];
       let closed = false;
@@ -329,7 +338,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       } }) };
       subscriptions.set(id, { close, offer(method, parameters) {
         const matches = 'method' in request.match ? method === request.match.method : method.startsWith(request.match.methodPrefix);
-        if (!matches || closed) return;
+        if (!matches || closed || !lease.methods.includes(method) || !isCdpNameAllowed(target.capabilities, method, 'event') || (lease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [method]) === 'exclusive-control')) return;
         const current = subscriptions.get(id);
         if (current === undefined) return;
         const event: CdpEvent = { method, parameters, sequence: current.sequence++, subscriptionId: id, targetGeneration: target.generation, targetId: target.id };

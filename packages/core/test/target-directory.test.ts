@@ -8,7 +8,7 @@ import { connectAgentTargetBroker, connectClientTargetBroker } from '../src/inde
 
 const target = {
   availability: 'available',
-  capabilities: { methods: ['Runtime.evaluate'] },
+  capabilities: { level: 'unsafe' },
   generation: 1,
   id: '60000000-0000-4000-8000-000000000001',
   scopeId: '40000000-0000-4000-8000-000000000001',
@@ -106,6 +106,7 @@ it('executes only a non-expired lease grant through the registered opaque target
   broker.registerTargetExecutor(target, { execute });
   const lease = await client.acquireLease({
     durationMilliseconds: 1_000,
+    mode: 'exclusive-control',
     requestedMethods: ['Runtime.evaluate'],
     targetGeneration: target.generation,
     targetId: target.id,
@@ -134,7 +135,7 @@ it('executes only a non-expired lease grant through the registered opaque target
     operationId: '30000000-0000-4000-8000-000000000002',
     targetGeneration: target.generation,
     targetId: target.id,
-  })).rejects.toMatchObject({ code: 'LEASE_EXPIRED' });
+  })).rejects.toMatchObject({ code: 'LEASE_REQUIRED' });
   await expect(client.executeCommand({
     leaseId: globalThis.crypto.randomUUID(),
     method: 'Runtime.evaluate',
@@ -150,22 +151,40 @@ it('arbitrates shared reads and exclusive control, with renewal, release, expiry
   let currentTime = Date.parse('2026-08-04T12:00:00.000Z');
   const broker = createTargetBroker({ now: () => currentTime });
   broker.publishTarget(target);
-  const sharedReadLease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
+  const sharedReadLease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['Network.canEmulateNetworkConditions'], targetGeneration: target.generation, targetId: target.id });
   const controllerLease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
   const renewedLease = broker.renewLease({ durationMilliseconds: 2_000, leaseId: controllerLease.id, targetGeneration: target.generation, targetId: target.id });
 
   expect(sharedReadLease.mode).toBe('shared-read');
   expect(controllerLease.mode).toBe('exclusive-control');
   expect(renewedLease.expiresAt).toBe('2026-08-04T12:00:02.000Z');
-  expect(() => broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: [], targetGeneration: target.generation, targetId: target.id })).toThrowError(expect.objectContaining({ code: 'LEASE_CONFLICT' }));
+  expect(() => broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id })).toThrowError(expect.objectContaining({ code: 'LEASE_CONFLICT' }));
   broker.releaseLease({ leaseId: controllerLease.id, targetGeneration: target.generation, targetId: target.id });
-  expect(broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: [], targetGeneration: target.generation, targetId: target.id }).mode).toBe('exclusive-control');
+  expect(broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id }).mode).toBe('exclusive-control');
   currentTime += 1_000;
   expect(() => broker.renewLease({ durationMilliseconds: 1_000, leaseId: sharedReadLease.id, targetGeneration: target.generation, targetId: target.id })).toThrowError(expect.objectContaining({ code: 'LEASE_EXPIRED' }));
-  const policyLease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
-  broker.updateTarget({ ...target, capabilities: { methods: [] } });
+  const policyLease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
+  broker.updateTarget({ ...target, capabilities: { level: 'observe' } });
   expect(() => broker.renewLease({ durationMilliseconds: 1_000, leaseId: policyLease.id, targetGeneration: target.generation, targetId: target.id })).toThrowError(expect.objectContaining({ code: 'LEASE_REQUIRED' }));
-  expect(broker.listTargets()).toEqual([{ ...target, capabilities: { methods: [] } }]);
+  expect(broker.listTargets()).toEqual([{ ...target, capabilities: { level: 'observe' } }]);
+});
+
+it('compiles hierarchy and exact-name grants into catalogue-backed lease authority', () => {
+  expect.assertions(6);
+  const broker = createTargetBroker();
+  const inspectTarget = { ...target, capabilities: { level: 'inspect' as const } };
+  broker.publishTarget(inspectTarget);
+
+  expect(broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['DOM.getDocument'], targetGeneration: target.generation, targetId: target.id }).mode).toBe('shared-read');
+  expect(() => broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id })).toThrowError(expect.objectContaining({ code: 'CAPABILITY_DENIED' }));
+  broker.updateTarget({ ...inspectTarget, capabilities: { allow: ['Page.navigate'] } });
+  expect(() => broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['Page.navigate'], targetGeneration: target.generation, targetId: target.id })).toThrowError(expect.objectContaining({ code: 'CAPABILITY_DENIED' }));
+  const exactNameLease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Page.navigate'], targetGeneration: target.generation, targetId: target.id });
+  expect(exactNameLease.mode).toBe('exclusive-control');
+  broker.releaseLease({ leaseId: exactNameLease.id, targetGeneration: target.generation, targetId: target.id });
+  broker.updateTarget({ ...inspectTarget, capabilities: { level: 'unsafe' } });
+  expect(() => broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Target.attachToTarget'], targetGeneration: target.generation, targetId: target.id })).toThrowError(expect.objectContaining({ code: 'CAPABILITY_DENIED' }));
+  expect(broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Experimental.newCommand'], targetGeneration: target.generation, targetId: target.id }).mode).toBe('exclusive-control');
 });
 
 it('cancels a pending command and disposes its eventual response', async () => {
@@ -180,6 +199,7 @@ it('cancels a pending command and disposes its eventual response', async () => {
   });
   const lease = broker.acquireLease({
     durationMilliseconds: 1_000,
+    mode: 'exclusive-control',
     requestedMethods: ['Runtime.evaluate'],
     targetGeneration: target.generation,
     targetId: target.id,
@@ -205,11 +225,11 @@ it('delivers bounded matching events with opaque sequence numbers and closes on 
   expect.assertions(5);
   const broker = createTargetBroker();
   broker.publishTarget(target);
-  const lease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: [], targetGeneration: target.generation, targetId: target.id });
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
   const subscription = await broker.subscribe({
     buffer: { capacity: 1, overflowStrategy: 'drop-oldest' },
     leaseId: lease.id,
-    match: { methodPrefix: 'Runtime.' },
+    match: { method: 'Runtime.consoleAPICalled' },
     targetGeneration: target.generation,
     targetId: target.id,
   });
@@ -230,14 +250,14 @@ it('reports overflow and retains the newest event for a drop-oldest subscription
   expect.assertions(3);
   const broker = createTargetBroker();
   broker.publishTarget(target);
-  const lease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: [], targetGeneration: target.generation, targetId: target.id });
-  const subscription = await broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { methodPrefix: 'Runtime.' }, targetGeneration: target.generation, targetId: target.id });
-  broker.publishEvent(target, 'Runtime.first', {});
-  broker.publishEvent(target, 'Runtime.second', {});
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
+  const subscription = await broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });
+  broker.publishEvent(target, 'Runtime.consoleAPICalled', {});
+  broker.publishEvent(target, 'Runtime.consoleAPICalled', {});
   const event = await subscription[Symbol.asyncIterator]().next();
 
   expect(subscription.overflowed).toBe(true);
-  expect(event).toMatchObject({ done: false, value: { method: 'Runtime.second', sequence: 2 } });
+  expect(event).toMatchObject({ done: false, value: { method: 'Runtime.consoleAPICalled', sequence: 2 } });
   expect(Object.keys(event.done ? {} : event.value)).not.toContain('sessionId');
 });
 
@@ -249,19 +269,19 @@ it('returns subscription demand to the extension executor when the client closes
   broker.registerTargetExecutor(target, { async execute() {
     return {};
   }, setSubscriptionDemand });
-  const lease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: [], targetGeneration: target.generation, targetId: target.id });
-  const subscription = await broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'disconnect' }, leaseId: lease.id, match: { methodPrefix: 'Runtime.' }, targetGeneration: target.generation, targetId: target.id });
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
+  const subscription = await broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'disconnect' }, leaseId: lease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });
   subscription.close();
 
-  expect(setSubscriptionDemand).toHaveBeenNthCalledWith(1, 'Runtime.', true);
-  expect(setSubscriptionDemand).toHaveBeenNthCalledWith(2, 'Runtime.', false);
+  expect(setSubscriptionDemand).toHaveBeenNthCalledWith(1, 'Runtime.consoleAPICalled', true);
+  expect(setSubscriptionDemand).toHaveBeenNthCalledWith(2, 'Runtime.consoleAPICalled', false);
 });
 
 it('rejects commands carrying the stale generation after a target is republished', async () => {
   expect.assertions(2);
   const broker = createTargetBroker();
   broker.publishTarget(target);
-  const lease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
   broker.revokeTarget(target.id, target.generation);
   broker.publishTarget({ ...target, generation: 2 });
 
@@ -276,7 +296,7 @@ it('aborts an in-flight command when its target is revoked', async () => {
   broker.registerTargetExecutor(target, { async execute(_command, abortSignal) {
     return new Promise(resolve => abortSignal.addEventListener('abort', () => resolve({}), { once: true }));
   } });
-  const lease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
   const command = broker.executeCommand({ leaseId: lease.id, method: 'Runtime.evaluate', operationId: '30000000-0000-4000-8000-000000000006', targetGeneration: target.generation, targetId: target.id });
   broker.revokeTarget(target.id, target.generation);
   await expect(command).rejects.toMatchObject({ code: 'REQUEST_CANCELLED' });
