@@ -55,6 +55,7 @@ export interface SelectedTabPublisher {
   publishEvent: (method: string, parameters: JsonObject) => void;
   publish: (tab: SelectedTab) => Promise<PublishedTarget>;
   refresh: (tab: SelectedTab) => Promise<void>;
+  renewAuthority: () => Promise<PublishedTarget>;
   revoke: (reason?: 'closed' | 'detached' | 'explicit' | 'policy-invalid') => Promise<void>;
   tabClosed: (tabId: number) => Promise<void>;
   debuggerDetached: (tabId: number) => Promise<void>;
@@ -226,6 +227,30 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     }
   }
 
+  async function renewAuthority(): Promise<PublishedTarget> {
+    if (publishedTarget === undefined || selectedTabId === undefined) {
+      throw new Error('The requested target is not available.');
+    }
+    const priorTarget = publishedTarget;
+    const renewedTarget: PublishedTarget = {
+      ...priorTarget,
+      generation: 1,
+      id: globalThis.crypto.randomUUID(),
+    };
+    childSessionRouter.revoke();
+    activeRootSubscriptionDomains.clear();
+    publishedTarget = renewedTarget;
+    try {
+      await options.revokeTarget(priorTarget, 'explicit');
+      await options.publishTarget(renewedTarget);
+    } catch (error) {
+      publishedTarget = priorTarget;
+      throw error;
+    }
+    options.registerTargetExecutor?.(renewedTarget, { execute: executeCommand, setSubscriptionDemand });
+    return renewedTarget;
+  }
+
   return {
     attachChildSession(chromeSessionId) {
       if (publishedTarget === undefined) throw new Error('The requested target is not available.');
@@ -334,5 +359,6 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     },
     publishEvent,
     revoke,
+    renewAuthority,
   };
 }

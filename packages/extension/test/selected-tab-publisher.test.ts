@@ -233,6 +233,37 @@ it('invalidates child-session routing when the published root is revoked', async
   expect(() => publisher.attachChildSession('private-child-session')).toThrow('not available');
 });
 
+it('renews a published target with fresh opaque authority and no child sessions', async () => {
+  expect.assertions(7);
+  const publishedTargets: unknown[] = [];
+  const revokedTargets: unknown[] = [];
+  const publisher = createSelectedTabPublisher({
+    capabilities: { level: 'unsafe' },
+    chromeDebugger: { attach() {}, detach() {}, async sendCommand() {
+      return {};
+    } },
+    publishTarget(target) {
+      publishedTargets.push(target);
+    },
+    revokeTarget(target, reason) {
+      revokedTargets.push({ reason, target });
+    },
+    scopeId,
+    updateTarget() {},
+  });
+  const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+  const child = publisher.attachChildSession('private-child-session');
+  const renewedTarget = await publisher.renewAuthority();
+
+  expect(renewedTarget.id).not.toBe(target.id);
+  expect(renewedTarget.generation).toBe(1);
+  expect(revokedTargets).toEqual([{ reason: 'explicit', target }]);
+  expect(publishedTargets).toEqual([target, renewedTarget]);
+  await expect(publisher.executeCommand({ leaseId: '20000000-0000-4000-8000-000000000001', method: 'Runtime.evaluate', operationId: '30000000-0000-4000-8000-000000000001', targetGeneration: target.generation, targetId: target.id }, new AbortController().signal)).rejects.toThrow('not permitted');
+  expect(publisher.detachChildSession('private-child-session')).toBeUndefined();
+  expect(child.id).toMatch(/^[0-9a-f-]{36}$/u);
+});
+
 it('configures recursive flat sessions and exposes only eligible child-session identities', async () => {
   expect.assertions(6);
   const sendCommand = vi.fn(async () => ({}));
