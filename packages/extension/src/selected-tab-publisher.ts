@@ -130,9 +130,9 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       && eligibleChildTargetTypes.has(targetInfo.type);
   }
 
-  function handleAttachedChild(parameters: JsonObject): void {
-    if (!isEligibleChildAttachment(parameters)) return;
-    childSessionRouter.attach(parameters.sessionId);
+  function handleAttachedChild(parameters: JsonObject): PublicChildSession | undefined {
+    if (!isEligibleChildAttachment(parameters)) return undefined;
+    const childSession = childSessionRouter.attach(parameters.sessionId);
     void (async () => {
       await configureFlatSessions(parameters.sessionId);
       await enableActiveRootDomains(parameters.sessionId);
@@ -140,6 +140,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     })().catch(() => {
       childSessionRouter.detach(parameters.sessionId);
     });
+    return childSession;
   }
 
   function handleDetachedChild(parameters: JsonObject): void {
@@ -259,7 +260,10 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     debuggerEvent(source, method, parameters) {
       if (source.tabId !== undefined && source.tabId !== selectedTabId) return;
       if (method === 'Target.attachedToTarget') {
-        handleAttachedChild(parameters);
+        const childSession = handleAttachedChild(parameters);
+        if (childSession !== undefined && isEligibleChildAttachment(parameters)) {
+          publishEvent('Bridge.childSessionAttached', { type: parameters.targetInfo.type }, childSession.id);
+        }
         return;
       }
       if (method === 'Target.detachedFromTarget') {

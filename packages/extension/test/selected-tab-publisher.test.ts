@@ -265,12 +265,16 @@ it('renews a published target with fresh opaque authority and no child sessions'
 });
 
 it('configures recursive flat sessions and exposes only eligible child-session identities', async () => {
-  expect.assertions(6);
+  expect.assertions(8);
   const sendCommand = vi.fn(async () => ({}));
+  const events: unknown[] = [];
   let execute: ((command: CdpCommand, abortSignal: AbortSignal, lease: Lease) => Promise<JsonObject>) | undefined;
   const publisher = createSelectedTabPublisher({
     capabilities: { level: 'unsafe' },
     chromeDebugger: { attach() {}, detach() {}, sendCommand },
+    publishEvent(target, method, parameters, sessionId) {
+      events.push({ method, parameters, sessionId, target });
+    },
     publishTarget() {},
     registerTargetExecutor(_target, executor) {
       execute = executor.execute;
@@ -303,6 +307,8 @@ it('configures recursive flat sessions and exposes only eligible child-session i
   expect(publisher.attachChildSession('private-frame-session').id).not.toBe(child.id);
   expect(() => publisher.attachChildSession('private-page-session')).not.toThrow();
   expect(JSON.stringify(sendCommand.mock.calls)).not.toContain('private-page-session');
+  expect(events).toHaveLength(1);
+  expect(JSON.stringify(events)).toMatch(/"method":"Bridge\.childSessionAttached".*"type":"iframe"/u);
 });
 
 it('replays active root domain demand for an eligible child session', async () => {
