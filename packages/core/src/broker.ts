@@ -1,4 +1,11 @@
+import type { TargetChange, TargetRevocationReason } from './client.js';
 import type { CdpCommand, CdpEvent, CdpSubscriptionRequest, JsonObject, Lease, PublishedTarget } from './protocol.js';
+
+type TargetChangeInput
+  = | { readonly kind: 'published'; readonly target: PublishedTarget }
+    | { readonly kind: 'revoked'; readonly reason: TargetRevocationReason; readonly targetGeneration: number; readonly targetId: string }
+    | { readonly kind: 'snapshot'; readonly targets: readonly PublishedTarget[] }
+    | { readonly kind: 'updated'; readonly target: PublishedTarget };
 
 export interface AcquireLeaseRequest {
   readonly durationMilliseconds: number;
@@ -37,7 +44,10 @@ export interface TargetBroker {
   listTargets: () => readonly PublishedTarget[];
   publishTarget: (target: PublishedTarget) => void;
   registerTargetExecutor: (target: Pick<PublishedTarget, 'generation' | 'id'>, executor: TargetCommandExecutor) => void;
-  revokeTarget: (targetId: string, generation: number) => void;
+  reconcileTargets: (targets: readonly PublishedTarget[]) => void;
+  revokeTarget: (targetId: string, generation: number, reason?: TargetRevocationReason) => void;
+  updateTarget: (target: PublishedTarget) => void;
+  watchTargets: () => AsyncIterable<TargetChange>;
   publishEvent: (target: Pick<PublishedTarget, 'generation' | 'id'>, method: string, parameters: JsonObject) => void;
   subscribe: (request: CdpSubscriptionRequest) => Promise<CdpSubscription>;
 }
@@ -48,11 +58,19 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   const maximumLeaseMilliseconds = options.maximumLeaseMilliseconds ?? 60_000;
   const now = options.now ?? Date.now;
   const targetsById = new Map<string, PublishedTarget>();
+  const highestGenerationByTargetId = new Map<string, number>();
   const leasesById = new Map<string, Lease>();
   const executorsByTargetKey = new Map<string, TargetCommandExecutor>();
   const cancellationsByOperationId = new Map<string, AbortController>();
   const commandOperationIdsByTargetKey = new Map<string, Set<string>>();
   const subscriptions = new Map<string, { close: () => void; offer: (method: string, parameters: JsonObject) => void; request: CdpSubscriptionRequest; sequence: number }>();
+  const targetWatchers = new Set<{ offer: (change: TargetChange) => void }>();
+  let targetChangeSequence = 0;
+
+  function publishTargetChange(change: TargetChangeInput): void {
+    const sequencedChange = { ...change, sequence: ++targetChangeSequence } as TargetChange;
+    for (const watcher of targetWatchers) watcher.offer(sequencedChange);
+  }
 
   function getTargetKey(targetId: string, generation: number): string {
     return `${targetId}:${generation}`;
@@ -69,7 +87,8 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     return target;
   }
 
-  return {
+  let targetBroker: TargetBroker;
+  return targetBroker = {
     acquireLease(request) {
       const target = getCurrentTarget(request.targetId, request.targetGeneration);
       if (
@@ -145,12 +164,33 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       return [...targetsById.values()];
     },
     publishTarget(target) {
+      const highestGeneration = highestGenerationByTargetId.get(target.id);
+      if (highestGeneration !== undefined && target.generation <= highestGeneration) {
+        throw new TargetBrokerError('TARGET_GENERATION_STALE');
+      }
       targetsById.set(target.id, target);
+      highestGenerationByTargetId.set(target.id, target.generation);
+      publishTargetChange({ kind: 'published', target });
     },
     registerTargetExecutor(target, executor) {
       executorsByTargetKey.set(getTargetKey(target.id, target.generation), executor);
     },
-    revokeTarget(targetId, generation) {
+    reconcileTargets(targets) {
+      const targetIds = new Set(targets.map(target => target.id));
+      for (const target of [...targetsById.values()]) {
+        if (!targetIds.has(target.id)) targetBroker.revokeTarget(target.id, target.generation, 'detached');
+      }
+      for (const target of targets) {
+        const currentTarget = targetsById.get(target.id);
+        if (currentTarget === undefined) targetBroker.publishTarget(target);
+        else if (currentTarget.generation === target.generation) targetBroker.updateTarget(target);
+        else if (currentTarget.generation < target.generation) {
+          targetBroker.revokeTarget(currentTarget.id, currentTarget.generation, 'detached');
+          targetBroker.publishTarget(target);
+        }
+      }
+    },
+    revokeTarget(targetId, generation, reason = 'explicit') {
       const target = targetsById.get(targetId);
       if (target?.generation === generation) {
         targetsById.delete(targetId);
@@ -162,7 +202,49 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
           }
         }
         for (const subscription of subscriptions.values()) if (subscription.request.targetId === targetId && subscription.request.targetGeneration === generation) subscription.close();
+        publishTargetChange({ kind: 'revoked', reason, targetGeneration: generation, targetId });
       }
+    },
+    updateTarget(target) {
+      const currentTarget = getCurrentTarget(target.id, target.generation);
+      targetsById.set(target.id, target);
+      highestGenerationByTargetId.set(target.id, currentTarget.generation);
+      publishTargetChange({ kind: 'updated', target });
+    },
+    watchTargets() {
+      const changes: TargetChange[] = [{ kind: 'snapshot', sequence: targetChangeSequence, targets: [...targetsById.values()] }];
+      let resolver: ((result: IteratorResult<TargetChange>) => void) | undefined;
+      let closed = false;
+      const watcher = {
+        offer(change: TargetChange) {
+          if (closed) return;
+          if (resolver !== undefined) {
+            const resolve = resolver;
+            resolver = undefined;
+            resolve({ done: false, value: change });
+          } else changes.push(change);
+        },
+      };
+      targetWatchers.add(watcher);
+      return {
+        [Symbol.asyncIterator]() {
+          return {
+            async next(): Promise<IteratorResult<TargetChange>> {
+              const change = changes.shift();
+              if (change !== undefined) return { done: false, value: change };
+              if (closed) return { done: true, value: undefined };
+              return new Promise(resolve => resolver = resolve);
+            },
+            async return(): Promise<IteratorResult<TargetChange>> {
+              closed = true;
+              targetWatchers.delete(watcher);
+              resolver?.({ done: true, value: undefined });
+              resolver = undefined;
+              return { done: true, value: undefined };
+            },
+          };
+        },
+      };
     },
     publishEvent(target, method, parameters) {
       for (const subscription of subscriptions.values()) if (subscription.request.targetId === target.id && subscription.request.targetGeneration === target.generation) subscription.offer(method, parameters);

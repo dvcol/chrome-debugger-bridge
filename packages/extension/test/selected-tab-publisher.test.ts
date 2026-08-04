@@ -25,6 +25,7 @@ it('attaches one selected tab and publishes a redacted opaque target', async () 
     },
     revokeTarget() {},
     scopeId,
+    updateTarget() {},
   });
 
   const target = await publisher.publish({
@@ -52,6 +53,7 @@ it('validates the opaque target grant before forwarding a debugger command', asy
     publishTarget() {},
     revokeTarget() {},
     scopeId,
+    updateTarget() {},
   });
   const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
 
@@ -80,6 +82,7 @@ it('forwards only an opaque published target with a CDP event', async () => {
     publishTarget() {},
     revokeTarget() {},
     scopeId,
+    updateTarget() {},
   });
   await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
   publisher.publishEvent('Runtime.consoleAPICalled', { type: 'log' });
@@ -104,6 +107,7 @@ it('denies incognito and unsupported pages before attaching', async () => {
     publishTarget() {},
     revokeTarget() {},
     scopeId,
+    updateTarget() {},
   });
 
   await expect(publisher.publish({ incognito: true, tabId: 42, url: 'https://example.com/' })).rejects.toThrow('Incognito');
@@ -111,4 +115,55 @@ it('denies incognito and unsupported pages before attaching', async () => {
 
   expect(attach).not.toHaveBeenCalled();
   expect(attach).not.toHaveBeenCalled();
+});
+
+it('publishes metadata changes and revokes the target when navigation invalidates policy', async () => {
+  expect.assertions(5);
+  const updateTarget = vi.fn();
+  const revokeTarget = vi.fn();
+  const publisher = createSelectedTabPublisher({
+    capabilities: { methods: [] },
+    chromeDebugger: { attach() {}, detach() {}, async sendCommand() {
+      return {};
+    } },
+    isExposureAllowed: tab => tab.url !== 'https://example.com/blocked',
+    metadataPolicy: tab => ({ title: tab.title }),
+    publishTarget() {},
+    revokeTarget,
+    scopeId,
+    updateTarget,
+  });
+  const target = await publisher.publish({ incognito: false, tabId: 42, title: 'Before', url: 'https://example.com/' });
+  await publisher.refresh({ incognito: false, tabId: 42, title: 'After', url: 'https://example.com/' });
+  await publisher.refresh({ incognito: false, tabId: 42, title: 'Blocked', url: 'https://example.com/blocked' });
+
+  expect(updateTarget).toHaveBeenCalledWith({ ...target, title: 'After' });
+  expect(revokeTarget).toHaveBeenCalledWith({ ...target, title: 'After' }, 'policy-invalid');
+  expect(updateTarget).toHaveBeenCalledOnce();
+  expect(revokeTarget).toHaveBeenCalledOnce();
+  expect(target.generation).toBe(1);
+});
+
+it('revokes only the selected target on tab closure or debugger detachment', async () => {
+  expect.assertions(4);
+  const revokeTarget = vi.fn();
+  const publisher = createSelectedTabPublisher({
+    capabilities: { methods: [] },
+    chromeDebugger: { attach() {}, detach() {}, async sendCommand() {
+      return {};
+    } },
+    publishTarget() {},
+    revokeTarget,
+    scopeId,
+    updateTarget() {},
+  });
+  const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+  await publisher.tabClosed(7);
+  await publisher.debuggerDetached(42);
+  await publisher.tabClosed(42);
+
+  expect(revokeTarget).toHaveBeenCalledWith(target, 'detached');
+  expect(revokeTarget).toHaveBeenCalledOnce();
+  expect(revokeTarget).not.toHaveBeenCalledWith(target, 'closed');
+  expect(target.generation).toBe(1);
 });

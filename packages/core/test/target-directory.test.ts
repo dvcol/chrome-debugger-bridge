@@ -30,6 +30,32 @@ it('lists only opaque targets published by the agent', async () => {
   expect(await client.listTargets()).toEqual([]);
 });
 
+it('orders target changes and starts every watcher from a fresh snapshot', async () => {
+  expect.assertions(4);
+  const broker = createTargetBroker();
+  const watcher = broker.watchTargets()[Symbol.asyncIterator]();
+  broker.publishTarget(target);
+  broker.updateTarget({ ...target, title: 'Changed title' });
+  broker.revokeTarget(target.id, target.generation, 'closed');
+
+  expect(await watcher.next()).toEqual({ done: false, value: { kind: 'snapshot', sequence: 0, targets: [] } });
+  expect(await watcher.next()).toMatchObject({ done: false, value: { kind: 'published', sequence: 1, target } });
+  expect(await watcher.next()).toMatchObject({ done: false, value: { kind: 'updated', sequence: 2, target: { title: 'Changed title' } } });
+  expect(await watcher.next()).toEqual({ done: false, value: { kind: 'revoked', reason: 'closed', sequence: 3, targetGeneration: 1, targetId: target.id } });
+});
+
+it('reconciles agent state without accepting a stale target generation', () => {
+  expect.assertions(3);
+  const broker = createTargetBroker();
+  broker.publishTarget({ ...target, generation: 2 });
+  broker.reconcileTargets([{ ...target, generation: 3, title: 'Reconnected target' }]);
+
+  expect(broker.listTargets()).toEqual([{ ...target, generation: 3, title: 'Reconnected target' }]);
+  broker.revokeTarget(target.id, 3);
+  expect(() => broker.reconcileTargets([target])).toThrowError('The requested target operation is not available.');
+  expect(broker.listTargets()).toEqual([]);
+});
+
 it('executes only a non-expired lease grant through the registered opaque target executor', async () => {
   expect.assertions(6);
   let currentTime = Date.parse('2026-08-04T12:00:00.000Z');
