@@ -224,7 +224,7 @@ it('publishes, updates, and revokes a target through real Chrome lifecycle event
 }, 20_000);
 
 it('arbitrates authenticated clients and routes shared real-Chrome events through the MV3 agent', async () => {
-  expect.assertions(26);
+  expect.assertions(27);
   const brokerId = crypto.randomUUID();
   const pairingCode = '147258';
   const server = createServer((_request, response) => {
@@ -292,7 +292,7 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   const unexposedTarget = await sendClientRequest(firstReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: 1, targetId: crypto.randomUUID() }, protocolVersion: 1, requestId: crypto.randomUUID() });
   const forbiddenMethod = await sendClientRequest(firstReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'exclusive-control', requestedMethods: ['Target.attachToTarget'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
   const staleGeneration = await sendClientRequest(firstReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation + 1, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
-  const firstReaderLeaseResponse = await sendClientRequest(firstReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const firstReaderLeaseResponse = await sendClientRequest(firstReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'shared-read', requestedMethods: ['Bridge.childSessionAttached', 'Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
   const secondReaderLeaseResponse = await sendClientRequest(secondReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
   const controllerLeaseResponse = await sendClientRequest(controller, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
   const competingLeaseResponse = await sendClientRequest(competingController, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
@@ -300,6 +300,7 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   const secondReaderLease = secondReaderLeaseResponse.kind === 'response' && secondReaderLeaseResponse.method === 'leases.acquire' ? secondReaderLeaseResponse.result.lease : undefined;
   const lease = controllerLeaseResponse.kind === 'response' && controllerLeaseResponse.method === 'leases.acquire' ? controllerLeaseResponse.result.lease : undefined;
   const firstSubscription = await sendClientRequest(firstReader, { kind: 'request', method: 'cdp.subscribe', parameters: { buffer: { capacity: 2, overflowStrategy: 'drop-oldest' }, leaseId: firstReaderLease!.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const childSessionSubscription = await sendClientRequest(firstReader, { kind: 'request', method: 'cdp.subscribe', parameters: { buffer: { capacity: 2, overflowStrategy: 'drop-oldest' }, leaseId: firstReaderLease!.id, match: { method: 'Bridge.childSessionAttached' }, targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
   const secondSubscription = await sendClientRequest(secondReader, { kind: 'request', method: 'cdp.subscribe', parameters: { buffer: { capacity: 2, overflowStrategy: 'drop-oldest' }, leaseId: secondReaderLease!.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
   const overflowSubscription = await targetBroker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: firstReaderLease!.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });
   const firstEvent = waitForClientNotification(firstReader, 'cdp.event');
@@ -328,6 +329,7 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   expect(lease?.mode).toBe('exclusive-control');
   expect(competingLeaseResponse).toMatchObject({ kind: 'error', method: 'leases.acquire', error: { code: 'LEASE_CONFLICT' } });
   expect(firstSubscription).toMatchObject({ kind: 'response', method: 'cdp.subscribe' });
+  expect(childSessionSubscription).toMatchObject({ kind: 'response', method: 'cdp.subscribe' });
   expect(secondSubscription).toMatchObject({ kind: 'response', method: 'cdp.subscribe' });
   expect(result).toMatchObject({ kind: 'response', method: 'cdp.send', result: { value: { result: { type: 'string', value: 'Broker command target' } } } });
   expect(firstReaderEvent).toMatchObject({ method: 'cdp.event', parameters: { method: 'Runtime.consoleAPICalled' } });
