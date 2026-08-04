@@ -4,3 +4,10 @@ export {
   type IndexedDbPairingStore,
   type StoredBrokerPairing,
 } from './pairing-store.js';
+export {
+  type ChromeDebuggerPort,
+  createSelectedTabPublisher,
+  type SelectedTab,
+  type SelectedTabPublisher,
+  type SelectedTabPublisherOptions,
+} from './selected-tab-publisher.js';

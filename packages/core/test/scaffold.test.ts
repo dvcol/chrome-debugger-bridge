@@ -9,8 +9,8 @@ import * as testingModule from '../src/testing.js';
 it('keeps the core scaffold importable', () => {
   expect.assertions(5);
   expect(Object.keys(indexModule)).toEqual(expect.arrayContaining(Object.keys(protocolModule)));
-  expect(Object.keys(brokerModule)).toEqual([]);
-  expect(Object.keys(clientModule)).toEqual([]);
+  expect(Object.keys(brokerModule)).toEqual(['createTargetBroker']);
+  expect(Object.keys(clientModule)).toEqual(['createChromeDebuggerBridgeClient']);
   expect(Object.keys(protocolModule)).not.toEqual([]);
   expect(Object.keys(testingModule)).toEqual([]);
 });
