@@ -1,5 +1,13 @@
 export { type AgentTargetConnection, connectAgentTargetBroker } from './agent-target-connection.js';
 export {
+  type ArtifactAuthority,
+  type ArtifactDescriptor,
+  createMemoryArtifactStore,
+  externalizeJsonResult,
+  type InlineOrArtifactResult,
+  type MemoryArtifactStore,
+} from './artifact-store.js';
+export {
   type AcquireLeaseRequest,
   createTargetBroker,
   type ReleaseLeaseRequest,
