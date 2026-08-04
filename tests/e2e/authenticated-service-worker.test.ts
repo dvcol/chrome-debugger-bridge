@@ -236,7 +236,7 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   cleanupTasks.push(async () => new Promise((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error))));
   let currentTime = Date.now();
   const targetBroker = createTargetBroker({ now: () => currentTime });
-  const receivedAgentEvents: Array<{ readonly method: string; readonly sessionId?: string; readonly targetGeneration: number; readonly targetId: string }> = [];
+  const receivedAgentEvents: Array<{ readonly method: string; readonly targetGeneration: number; readonly targetId: string }> = [];
   const targetWatcher = targetBroker.watchTargets()[Symbol.asyncIterator]();
   await targetWatcher.next();
   const bridge = await createStandaloneAuthenticatedWebSocketBridge({
@@ -246,7 +246,13 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
     onAgentConnection({ connection }) {
       const disconnect = connectAgentTargetBroker(connection, targetBroker);
       connection.onMessage((message) => {
-        if (message.kind === 'notification' && message.method === 'cdp.event') receivedAgentEvents.push(message.parameters);
+        if (message.kind === 'notification' && message.method === 'cdp.event') {
+          receivedAgentEvents.push({
+            method: message.parameters.method,
+            targetGeneration: message.parameters.targetGeneration,
+            targetId: message.parameters.targetId,
+          });
+        }
       });
       cleanupTasks.push(async () => disconnect());
     },

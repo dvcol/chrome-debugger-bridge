@@ -252,7 +252,7 @@ it('configures recursive flat sessions and exposes only eligible child-session i
   sendCommand.mockClear();
   publisher.debuggerEvent({ tabId: 42 }, 'Target.attachedToTarget', { sessionId: 'private-frame-session', targetInfo: { type: 'iframe' } });
   publisher.debuggerEvent({ tabId: 42 }, 'Target.attachedToTarget', { sessionId: 'private-page-session', targetInfo: { type: 'page' } });
-  await Promise.resolve();
+  await new Promise(resolve => setTimeout(resolve, 0));
   const child = publisher.attachChildSession('private-frame-session');
   const lease = { expiresAt: '2026-08-05T00:00:00.000Z', id: '20000000-0000-4000-8000-000000000001', issuedAt: '2026-08-04T00:00:00.000Z', methods: ['Runtime.evaluate'], mode: 'exclusive-control' as const, targetGeneration: target.generation, targetId: target.id };
   const childCommand = {
@@ -266,7 +266,7 @@ it('configures recursive flat sessions and exposes only eligible child-session i
   await execute?.(childCommand, new AbortController().signal, lease);
   publisher.debuggerEvent({ tabId: 42 }, 'Page.frameNavigated', { frame: { id: 'private-root-frame' } });
 
-  expect(sendCommand).toHaveBeenNthCalledWith(1, { sessionId: 'private-frame-session', tabId: 42 }, 'Target.setAutoAttach', { autoAttach: true, flatten: true, waitForDebuggerOnStart: true });
+  expect(sendCommand).toHaveBeenNthCalledWith(1, { sessionId: 'private-frame-session', tabId: 42 }, 'Target.setAutoAttach', { autoAttach: true, filter: [{ exclude: false, type: 'iframe' }, { exclude: false, type: 'service_worker' }, { exclude: false, type: 'shared_worker' }, { exclude: false, type: 'worker' }], flatten: true, waitForDebuggerOnStart: true });
   expect(sendCommand).toHaveBeenNthCalledWith(3, { sessionId: 'private-frame-session', tabId: 42 }, 'Runtime.evaluate', undefined);
   await expect(execute?.(childCommand, new AbortController().signal, lease)).rejects.toThrow('not permitted');
   expect(publisher.attachChildSession('private-frame-session').id).not.toBe(child.id);
@@ -293,10 +293,10 @@ it('replays active root domain demand for an eligible child session', async () =
   sendCommand.mockClear();
   await setSubscriptionDemand?.('Runtime.consoleAPICalled', true);
   publisher.debuggerEvent({ tabId: 42 }, 'Target.attachedToTarget', { sessionId: 'private-worker-session', targetInfo: { type: 'worker' } });
-  await Promise.resolve();
+  await new Promise(resolve => setTimeout(resolve, 0));
 
   expect(sendCommand).toHaveBeenNthCalledWith(1, { tabId: 42 }, 'Runtime.enable');
-  expect(sendCommand).toHaveBeenNthCalledWith(2, { sessionId: 'private-worker-session', tabId: 42 }, 'Target.setAutoAttach', { autoAttach: true, flatten: true, waitForDebuggerOnStart: true });
+  expect(sendCommand).toHaveBeenNthCalledWith(2, { sessionId: 'private-worker-session', tabId: 42 }, 'Target.setAutoAttach', { autoAttach: true, filter: [{ exclude: false, type: 'iframe' }, { exclude: false, type: 'service_worker' }, { exclude: false, type: 'shared_worker' }, { exclude: false, type: 'worker' }], flatten: true, waitForDebuggerOnStart: true });
   expect(sendCommand).toHaveBeenNthCalledWith(3, { sessionId: 'private-worker-session', tabId: 42 }, 'Runtime.enable');
   expect(sendCommand).toHaveBeenNthCalledWith(4, { sessionId: 'private-worker-session', tabId: 42 }, 'Runtime.runIfWaitingForDebugger');
 });

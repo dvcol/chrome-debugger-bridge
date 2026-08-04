@@ -99,7 +99,12 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       await options.chromeDebugger.sendCommand(
         { tabId: selectedTabId, ...(chromeSessionId === undefined ? {} : { sessionId: chromeSessionId }) },
         'Target.setAutoAttach',
-        { autoAttach: true, flatten: true, waitForDebuggerOnStart: true },
+        {
+          autoAttach: true,
+          filter: Array.from(eligibleChildTargetTypes, type => ({ exclude: false, type })),
+          flatten: true,
+          waitForDebuggerOnStart: true,
+        },
       );
     } catch {
       throw new Error('The debugger session setup failed.');
