@@ -97,7 +97,7 @@ it('runs the authenticated browser transport inside an MV3 service worker', asyn
     background: { service_worker: 'service-worker.js', type: 'module' },
     manifest_version: 3,
     name: 'Chrome Debugger Bridge MV3 Test',
-    permissions: ['storage'],
+    permissions: ['debugger', 'storage', 'tabs'],
     version: '0.0.0',
   }, null, 2)}\n`, 'utf8');
 
@@ -111,6 +111,8 @@ it('runs the authenticated browser transport inside an MV3 service worker', asyn
   });
   cleanupTasks.push(async () => context.close());
   const serviceWorker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
+  const inspectedPage = await context.newPage();
+  await inspectedPage.goto('data:text/html,<title>Bridge debugger test</title>');
   const result = await serviceWorker.evaluate(async ({ endpoint, pairingCode: code }) => {
     const serviceWorkerGlobal = globalThis as typeof globalThis & {
       runAuthenticatedBridgeTest: (input: {
@@ -133,4 +135,23 @@ it('runs the authenticated browser transport inside an MV3 service worker', asyn
   expect(result.connectionId).toMatch(/^[\da-f-]{36}$/u);
   expect(result.responseKind).toBe('response');
   expect(result.responseMethod).toBe('agent.hello');
+}, 20_000);
+
+it('attaches and detaches the real MV3 debugger from an eligible tab', async () => {
+  expect.assertions(3);
+  const extensionDirectory = await mkdtemp(join(tmpdir(), 'chrome-debugger-bridge-extension-'));
+  const userDataDirectory = await mkdtemp(join(tmpdir(), 'chrome-debugger-bridge-profile-'));
+  cleanupTasks.push(async () => rm(extensionDirectory, { force: true, recursive: true }));
+  cleanupTasks.push(async () => rm(userDataDirectory, { force: true, recursive: true }));
+  await build({ build: { emptyOutDir: true, lib: { entry: resolve('tests/e2e/fixtures/authenticated-service-worker.ts'), fileName: () => 'service-worker.js', formats: ['es'] }, outDir: extensionDirectory }, configFile: false, logLevel: 'silent' });
+  await writeFile(join(extensionDirectory, 'manifest.json'), `${JSON.stringify({ background: { service_worker: 'service-worker.js', type: 'module' }, manifest_version: 3, name: 'Chrome Debugger Bridge MV3 Test', permissions: ['debugger', 'tabs'], version: '0.0.0' }, null, 2)}\n`, 'utf8');
+  const context = await chromium.launchPersistentContext(userDataDirectory, { args: [`--disable-extensions-except=${extensionDirectory}`, `--load-extension=${extensionDirectory}`], channel: 'chromium', headless: true });
+  cleanupTasks.push(async () => context.close());
+  const page = await context.newPage();
+  await page.setContent('<title>Bridge debugger test</title>');
+  const serviceWorker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
+  const result = await serviceWorker.evaluate(async () => (globalThis as unknown as { runDebuggerLifecycleTest: () => Promise<{ readonly revoked: boolean; readonly value: string }> }).runDebuggerLifecycleTest());
+  expect(result.value).toBe('Bridge debugger test');
+  expect(result.revoked).toBe(true);
+  await expect(page.title()).resolves.toBe('Bridge debugger test');
 }, 20_000);

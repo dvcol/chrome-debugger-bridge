@@ -17,7 +17,17 @@ interface ServiceWorkerTestResult {
 
 interface BridgeTestGlobal {
   runAuthenticatedBridgeTest: (input: ServiceWorkerTestInput) => Promise<ServiceWorkerTestResult>;
+  runDebuggerLifecycleTest: () => Promise<{ readonly revoked: boolean; readonly value: string }>;
 }
+
+declare const chrome: {
+  debugger: {
+    attach: (target: { readonly tabId: number }, version: string) => Promise<void>;
+    detach: (target: { readonly tabId: number }) => Promise<void>;
+    sendCommand: (target: { readonly tabId: number }, method: string, parameters?: Record<string, unknown>) => Promise<{ readonly result?: { readonly value?: string } }>;
+  };
+  tabs: { query: (queryInfo: { readonly active: boolean }) => Promise<Array<{ readonly id?: number }>> };
+};
 
 const bridgeTestGlobal = globalThis as typeof globalThis & BridgeTestGlobal;
 
@@ -68,4 +78,24 @@ bridgeTestGlobal.runAuthenticatedBridgeTest = async (input) => {
     responseKind: message.kind,
     responseMethod: message.method,
   };
+};
+
+bridgeTestGlobal.runDebuggerLifecycleTest = async () => {
+  const [tab] = await chrome.tabs.query({ active: true });
+  if (tab?.id === undefined) throw new Error('No active tab is available.');
+  const target = { tabId: tab.id };
+  await chrome.debugger.attach(target, '1.3');
+  let value = '';
+  try {
+    const result = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', { expression: 'document.title' });
+    value = result.result?.value ?? '';
+  } finally {
+    await chrome.debugger.detach(target);
+  }
+  try {
+    await chrome.debugger.sendCommand(target, 'Runtime.evaluate', { expression: 'document.title' });
+    return { revoked: false, value };
+  } catch {
+    return { revoked: true, value };
+  }
 };
