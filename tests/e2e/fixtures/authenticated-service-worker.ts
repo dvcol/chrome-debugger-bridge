@@ -1,6 +1,6 @@
 import type { AgentToBrokerMessage, BrokerToAgentMessage } from '../../../packages/core/src/protocol.js';
 
-import { createIndexedDbPairingStore } from '../../../packages/extension/src/index.js';
+import { createIndexedDbPairingStore, createSelectedTabLifecycle, createSelectedTabPublisher } from '../../../packages/extension/src/index.js';
 import { connectAgentWebSocket } from '../../../packages/websocket/src/browser.js';
 
 interface ServiceWorkerTestInput {
@@ -18,6 +18,7 @@ interface ServiceWorkerTestResult {
 interface BridgeTestGlobal {
   runAuthenticatedBridgeTest: (input: ServiceWorkerTestInput) => Promise<ServiceWorkerTestResult>;
   runDebuggerLifecycleTest: () => Promise<{ readonly revoked: boolean; readonly value: string }>;
+  runPublishedTargetLifecycleTest: (updatedUrl: string) => Promise<readonly { readonly kind: 'published' | 'revoked' | 'updated'; readonly reason?: string }[]>;
 }
 
 declare const chrome: {
@@ -25,8 +26,23 @@ declare const chrome: {
     attach: (target: { readonly tabId: number }, version: string) => Promise<void>;
     detach: (target: { readonly tabId: number }) => Promise<void>;
     sendCommand: (target: { readonly tabId: number }, method: string, parameters?: Record<string, unknown>) => Promise<{ readonly result?: { readonly value?: string } }>;
+    onDetach: {
+      addListener: (listener: (source: { readonly tabId?: number }) => void) => void;
+      removeListener: (listener: (source: { readonly tabId?: number }) => void) => void;
+    };
   };
-  tabs: { query: (queryInfo: { readonly active: boolean }) => Promise<Array<{ readonly id?: number }>> };
+  tabs: {
+    onRemoved: {
+      addListener: (listener: (tabId: number) => void) => void;
+      removeListener: (listener: (tabId: number) => void) => void;
+    };
+    onUpdated: {
+      addListener: (listener: (tabId: number, changeInfo: unknown, tab: { readonly id?: number; readonly incognito: boolean; readonly title?: string; readonly url?: string }) => void) => void;
+      removeListener: (listener: (tabId: number, changeInfo: unknown, tab: { readonly id?: number; readonly incognito: boolean; readonly title?: string; readonly url?: string }) => void) => void;
+    };
+    query: (queryInfo: { readonly active: boolean }) => Promise<Array<{ readonly id?: number; readonly incognito?: boolean; readonly title?: string; readonly url?: string }>>;
+    update: (tabId: number, updateProperties: { readonly url: string }) => Promise<void>;
+  };
 };
 
 const bridgeTestGlobal = globalThis as typeof globalThis & BridgeTestGlobal;
@@ -97,5 +113,44 @@ bridgeTestGlobal.runDebuggerLifecycleTest = async () => {
     return { revoked: false, value };
   } catch {
     return { revoked: true, value };
+  }
+};
+
+bridgeTestGlobal.runPublishedTargetLifecycleTest = async (updatedUrl) => {
+  const [tab] = await chrome.tabs.query({ active: true });
+  if (tab?.id === undefined) throw new Error('No active tab is available.');
+  const outcomes: Array<{ readonly kind: 'published' | 'revoked' | 'updated'; readonly reason?: string }> = [];
+  const publisher = createSelectedTabPublisher({
+    capabilities: { methods: ['Runtime.evaluate'] },
+    chromeDebugger: chrome.debugger,
+    metadataPolicy: input => ({ title: input.title, url: input.url }),
+    publishTarget() {
+      outcomes.push({ kind: 'published' });
+    },
+    revokeTarget(_target, reason) {
+      outcomes.push({ kind: 'revoked', reason });
+    },
+    scopeId: crypto.randomUUID(),
+    updateTarget() {
+      outcomes.push({ kind: 'updated' });
+    },
+  });
+  const lifecycle = createSelectedTabLifecycle({ chrome: chrome as never, publisher });
+  lifecycle.start();
+  try {
+    await publisher.publish({
+      incognito: tab.incognito ?? false,
+      tabId: tab.id,
+      ...(tab.title === undefined ? {} : { title: tab.title }),
+      ...(tab.url === undefined ? {} : { url: tab.url }),
+    });
+    await chrome.tabs.update(tab.id, { url: updatedUrl });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await chrome.debugger.detach({ tabId: tab.id });
+    await publisher.debuggerDetached(tab.id);
+    return outcomes;
+  } finally {
+    lifecycle.stop();
+    await publisher.revoke();
   }
 };

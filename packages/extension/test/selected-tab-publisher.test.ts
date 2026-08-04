@@ -167,3 +167,23 @@ it('revokes only the selected target on tab closure or debugger detachment', asy
   expect(revokeTarget).not.toHaveBeenCalledWith(target, 'closed');
   expect(target.generation).toBe(1);
 });
+
+it('keeps revocation complete when Chrome detached the debugger first', async () => {
+  expect.assertions(2);
+  const revokeTarget = vi.fn();
+  const publisher = createSelectedTabPublisher({
+    capabilities: { methods: [] },
+    chromeDebugger: { attach() {}, detach() {
+      throw new Error('Debugger is not attached.');
+    }, async sendCommand() {
+      return {};
+    } },
+    publishTarget() {},
+    revokeTarget,
+    scopeId,
+    updateTarget() {},
+  });
+  const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+  await expect(publisher.debuggerDetached(42)).resolves.toBeUndefined();
+  expect(revokeTarget).toHaveBeenCalledWith(target, 'detached');
+});

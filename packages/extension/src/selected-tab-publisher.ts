@@ -75,7 +75,11 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     publishedTarget = undefined;
     selectedTabId = undefined;
     await options.revokeTarget(targetToRevoke, reason);
-    await options.chromeDebugger.detach({ tabId: tabIdToDetach });
+    try {
+      await options.chromeDebugger.detach({ tabId: tabIdToDetach });
+    } catch {
+      /** Chrome can report a detach event before this cleanup call reaches it. */
+    }
   }
 
   async function executeCommand(command: CdpCommand, abortSignal: AbortSignal): Promise<JsonObject> {
