@@ -51,6 +51,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   const leasesById = new Map<string, Lease>();
   const executorsByTargetKey = new Map<string, TargetCommandExecutor>();
   const cancellationsByOperationId = new Map<string, AbortController>();
+  const commandOperationIdsByTargetKey = new Map<string, Set<string>>();
   const subscriptions = new Map<string, { close: () => void; offer: (method: string, parameters: JsonObject) => void; request: CdpSubscriptionRequest; sequence: number }>();
 
   function getTargetKey(targetId: string, generation: number): string {
@@ -114,6 +115,10 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       }
       const abortController = new AbortController();
       cancellationsByOperationId.set(command.operationId, abortController);
+      const targetKey = getTargetKey(target.id, target.generation);
+      const operationIds = commandOperationIdsByTargetKey.get(targetKey) ?? new Set<string>();
+      operationIds.add(command.operationId);
+      commandOperationIdsByTargetKey.set(targetKey, operationIds);
       const timeout = setTimeout(() => abortController.abort(), commandTimeoutMilliseconds);
       try {
         const value = await executor.execute(command, abortController.signal);
@@ -132,6 +137,8 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       } finally {
         clearTimeout(timeout);
         cancellationsByOperationId.delete(command.operationId);
+        operationIds.delete(command.operationId);
+        if (operationIds.size === 0) commandOperationIdsByTargetKey.delete(targetKey);
       }
     },
     listTargets() {
@@ -148,6 +155,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       if (target?.generation === generation) {
         targetsById.delete(targetId);
         executorsByTargetKey.delete(getTargetKey(targetId, generation));
+        for (const operationId of commandOperationIdsByTargetKey.get(getTargetKey(targetId, generation)) ?? []) cancellationsByOperationId.get(operationId)?.abort();
         for (const [leaseId, lease] of leasesById) {
           if (lease.targetId === targetId && lease.targetGeneration === generation) {
             leasesById.delete(leaseId);

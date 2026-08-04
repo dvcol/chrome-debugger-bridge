@@ -167,3 +167,28 @@ it('returns subscription demand to the extension executor when the client closes
   expect(setSubscriptionDemand).toHaveBeenNthCalledWith(1, 'Runtime.', true);
   expect(setSubscriptionDemand).toHaveBeenNthCalledWith(2, 'Runtime.', false);
 });
+
+it('rejects commands carrying the stale generation after a target is republished', async () => {
+  expect.assertions(2);
+  const broker = createTargetBroker();
+  broker.publishTarget(target);
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
+  broker.revokeTarget(target.id, target.generation);
+  broker.publishTarget({ ...target, generation: 2 });
+
+  await expect(broker.executeCommand({ leaseId: lease.id, method: 'Runtime.evaluate', operationId: '30000000-0000-4000-8000-000000000005', targetGeneration: target.generation, targetId: target.id })).rejects.toMatchObject({ code: 'TARGET_GENERATION_STALE' });
+  expect(broker.listTargets()).toEqual([{ ...target, generation: 2 }]);
+});
+
+it('aborts an in-flight command when its target is revoked', async () => {
+  expect.assertions(1);
+  const broker = createTargetBroker();
+  broker.publishTarget(target);
+  broker.registerTargetExecutor(target, { async execute(_command, abortSignal) {
+    return new Promise(resolve => abortSignal.addEventListener('abort', () => resolve({}), { once: true }));
+  } });
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
+  const command = broker.executeCommand({ leaseId: lease.id, method: 'Runtime.evaluate', operationId: '30000000-0000-4000-8000-000000000006', targetGeneration: target.generation, targetId: target.id });
+  broker.revokeTarget(target.id, target.generation);
+  await expect(command).rejects.toMatchObject({ code: 'REQUEST_CANCELLED' });
+});
