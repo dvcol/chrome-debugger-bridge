@@ -57,6 +57,14 @@ export function connectClientTargetBroker(connection: ClientTargetConnection, br
           subscriptions.get(message.parameters.subscriptionId)?.close();
           subscriptions.delete(message.parameters.subscriptionId);
           await connection.send({ kind: 'response', method: 'cdp.unsubscribe', protocolVersion: 1, requestId: message.requestId, result: {} });
+        } else if (message.method === 'targets.list') {
+          await connection.send({ kind: 'response', method: 'targets.list', protocolVersion: 1, requestId: message.requestId, result: { targets: [...broker.listTargets()] } });
+        } else if (message.method === 'leases.acquire') {
+          const lease = broker.acquireLease(message.parameters);
+          await connection.send({ kind: 'response', method: 'leases.acquire', protocolVersion: 1, requestId: message.requestId, result: { lease } });
+        } else if (message.method === 'cdp.send') {
+          const result = await broker.executeCommand(message.parameters);
+          await connection.send({ kind: 'response', method: 'cdp.send', protocolVersion: 1, requestId: message.requestId, result });
         } else {
           await sendError(message, new Error('Unsupported request'));
         }

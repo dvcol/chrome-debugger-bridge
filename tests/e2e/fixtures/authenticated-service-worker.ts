@@ -1,4 +1,4 @@
-import type { AgentToBrokerMessage, BrokerToAgentMessage } from '../../../packages/core/src/protocol.js';
+import type { AgentToBrokerMessage, BrokerToAgentMessage, JsonObject, PublishedTarget } from '../../../packages/core/src/protocol.js';
 import type { BrowserAgentConnection } from '../../../packages/websocket/src/browser.js';
 
 import { createAgentRecovery, createIndexedDbPairingStore, createSelectedTabLifecycle, createSelectedTabPublisher } from '../../../packages/extension/src/index.js';
@@ -21,6 +21,9 @@ interface BridgeTestGlobal {
   runAuthenticatedBridgeTest: (input: ServiceWorkerTestInput) => Promise<ServiceWorkerTestResult>;
   runDebuggerLifecycleTest: () => Promise<{ readonly revoked: boolean; readonly value: string }>;
   runPublishedTargetLifecycleTest: (updatedUrl: string) => Promise<readonly { readonly kind: 'published' | 'revoked' | 'updated'; readonly reason?: string }[]>;
+  runPublishedTargetAgentTest: (input: ServiceWorkerTestInput) => Promise<Pick<PublishedTarget, 'generation' | 'id'>>;
+  interruptPublishedTargetAgentTest: () => Promise<void>;
+  revokePublishedTargetAgentTest: () => Promise<void>;
 }
 
 declare const chrome: {
@@ -33,8 +36,8 @@ declare const chrome: {
       removeListener: (listener: (source: { readonly tabId?: number }) => void) => void;
     };
     onEvent: {
-      addListener: (listener: (source: { readonly sessionId?: string; readonly tabId?: number }, method: string, parameters: Record<string, unknown>) => void) => void;
-      removeListener: (listener: (source: { readonly sessionId?: string; readonly tabId?: number }, method: string, parameters: Record<string, unknown>) => void) => void;
+      addListener: (listener: (source: { readonly sessionId?: string; readonly tabId?: number }, method: string, parameters: JsonObject) => void) => void;
+      removeListener: (listener: (source: { readonly sessionId?: string; readonly tabId?: number }, method: string, parameters: JsonObject) => void) => void;
     };
   };
   tabs: {
@@ -52,6 +55,7 @@ declare const chrome: {
 };
 
 const bridgeTestGlobal = globalThis as typeof globalThis & BridgeTestGlobal;
+let publishedTargetAgent: { readonly connection: BrowserAgentConnection; readonly publisher: ReturnType<typeof createSelectedTabPublisher>; readonly removeDebuggerEventListener: () => void } | undefined;
 
 bridgeTestGlobal.runAuthenticatedBridgeTest = async (input) => {
   let connection: BrowserAgentConnection | undefined;
@@ -201,4 +205,88 @@ bridgeTestGlobal.runPublishedTargetLifecycleTest = async (updatedUrl) => {
     lifecycle.stop();
     await publisher.revoke();
   }
+};
+
+bridgeTestGlobal.runPublishedTargetAgentTest = async (input) => {
+  const [tab] = await chrome.tabs.query({ active: true });
+  if (tab?.id === undefined) throw new Error('No active tab is available.');
+  const connection = await connectAgentWebSocket({
+    credentialStore: createIndexedDbPairingStore({ databaseName: 'mv3-published-target-agent-test' }),
+    endpoint: input.endpoint,
+    async requestPairingCode() {
+      return input.pairingCode;
+    },
+  });
+  let setSubscriptionDemand: ((methodPrefix: string, active: boolean, sessionId?: string) => Promise<void>) | undefined;
+  const publisher = createSelectedTabPublisher({
+    capabilities: { level: 'unsafe' },
+    chromeDebugger: chrome.debugger,
+    publishEvent(target, method, parameters, sessionId) {
+      void connection.send({ kind: 'notification', method: 'cdp.event', parameters: { method, parameters, ...(sessionId === undefined ? {} : { sessionId }), targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1 });
+    },
+    async publishTarget(target) {
+      await connection.send({ kind: 'notification', method: 'targets.publish', parameters: { target }, protocolVersion: 1 });
+    },
+    async revokeTarget(target, reason) {
+      await connection.send({ kind: 'notification', method: 'targets.revoke', parameters: { reason, targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1 });
+    },
+    scopeId: crypto.randomUUID(),
+    registerTargetExecutor(_target, executor) {
+      setSubscriptionDemand = executor.setSubscriptionDemand;
+    },
+    async updateTarget(target) {
+      await connection.send({ kind: 'notification', method: 'targets.update', parameters: { target }, protocolVersion: 1 });
+    },
+  });
+  const cancellations = new Map<string, AbortController>();
+  connection.onMessage((message) => {
+    if (message.kind === 'notification' && message.method === 'cdp.cancel') {
+      cancellations.get(message.parameters.operationId)?.abort();
+      return;
+    }
+    if (message.kind === 'notification' && message.method === 'cdp.subscription-demand') {
+      void setSubscriptionDemand?.(message.parameters.methodPrefix, message.parameters.active, message.parameters.sessionId);
+      return;
+    }
+    if (message.kind !== 'request' || message.method !== 'cdp.execute') return;
+    const executionRequest = message;
+    const { command, lease } = executionRequest.parameters;
+    const abortController = new AbortController();
+    cancellations.set(command.operationId, abortController);
+    void publisher.executeCommand(command, abortController.signal, lease).then(
+      async value => connection.send({ kind: 'response', method: 'cdp.execute', protocolVersion: 1, requestId: executionRequest.requestId, result: { operationId: command.operationId, value } }),
+      async () => connection.send({ error: { code: 'CDP_COMMAND_FAILED', message: 'The debugger command failed.', retryable: false }, kind: 'error', method: 'cdp.execute', protocolVersion: 1, requestId: executionRequest.requestId }),
+    ).finally(() => cancellations.delete(command.operationId));
+  });
+  const debuggerEventListener = (source: { readonly sessionId?: string; readonly tabId?: number }, method: string, parameters: JsonObject): void => {
+    publisher.debuggerEvent(source, method, parameters);
+  };
+  chrome.debugger.onEvent.addListener(debuggerEventListener);
+  const target = await publisher.publish({
+    incognito: tab.incognito ?? false,
+    tabId: tab.id,
+    ...(tab.title === undefined ? {} : { title: tab.title }),
+    ...(tab.url === undefined ? {} : { url: tab.url }),
+  });
+  publishedTargetAgent = { connection, publisher, removeDebuggerEventListener: () => chrome.debugger.onEvent.removeListener(debuggerEventListener) };
+  return { generation: target.generation, id: target.id };
+};
+
+bridgeTestGlobal.revokePublishedTargetAgentTest = async () => {
+  const activeAgent = publishedTargetAgent;
+  publishedTargetAgent = undefined;
+  if (activeAgent === undefined) return;
+  activeAgent.removeDebuggerEventListener();
+  await activeAgent.publisher.revoke();
+  activeAgent.connection.close(1000, 'Published target test completed');
+  await activeAgent.connection.closed;
+};
+
+bridgeTestGlobal.interruptPublishedTargetAgentTest = async () => {
+  const activeAgent = publishedTargetAgent;
+  publishedTargetAgent = undefined;
+  if (activeAgent === undefined) return;
+  activeAgent.removeDebuggerEventListener();
+  activeAgent.connection.close(3001, 'Published target transport interruption');
+  await activeAgent.connection.closed;
 };

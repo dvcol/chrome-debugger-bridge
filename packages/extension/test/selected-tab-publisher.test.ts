@@ -266,10 +266,37 @@ it('configures recursive flat sessions and exposes only eligible child-session i
   await execute?.(childCommand, new AbortController().signal, lease);
   publisher.debuggerEvent({ tabId: 42 }, 'Page.frameNavigated', { frame: { id: 'private-root-frame' } });
 
-  expect(sendCommand).toHaveBeenNthCalledWith(1, { sessionId: 'private-frame-session', tabId: 42 }, 'Target.setAutoAttach', { autoAttach: true, flatten: true, waitForDebuggerOnStart: false });
-  expect(sendCommand).toHaveBeenNthCalledWith(2, { sessionId: 'private-frame-session', tabId: 42 }, 'Runtime.evaluate', undefined);
+  expect(sendCommand).toHaveBeenNthCalledWith(1, { sessionId: 'private-frame-session', tabId: 42 }, 'Target.setAutoAttach', { autoAttach: true, flatten: true, waitForDebuggerOnStart: true });
+  expect(sendCommand).toHaveBeenNthCalledWith(3, { sessionId: 'private-frame-session', tabId: 42 }, 'Runtime.evaluate', undefined);
   await expect(execute?.(childCommand, new AbortController().signal, lease)).rejects.toThrow('not permitted');
   expect(publisher.attachChildSession('private-frame-session').id).not.toBe(child.id);
   expect(() => publisher.attachChildSession('private-page-session')).not.toThrow();
   expect(JSON.stringify(sendCommand.mock.calls)).not.toContain('private-page-session');
+});
+
+it('replays active root domain demand for an eligible child session', async () => {
+  expect.assertions(4);
+  const sendCommand = vi.fn(async () => ({}));
+  let setSubscriptionDemand: ((methodPrefix: string, active: boolean, sessionId?: string) => Promise<void>) | undefined;
+  const publisher = createSelectedTabPublisher({
+    capabilities: { level: 'unsafe' },
+    chromeDebugger: { attach() {}, detach() {}, sendCommand },
+    publishTarget() {},
+    registerTargetExecutor(_target, executor) {
+      setSubscriptionDemand = executor.setSubscriptionDemand;
+    },
+    revokeTarget() {},
+    scopeId,
+    updateTarget() {},
+  });
+  await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+  sendCommand.mockClear();
+  await setSubscriptionDemand?.('Runtime.consoleAPICalled', true);
+  publisher.debuggerEvent({ tabId: 42 }, 'Target.attachedToTarget', { sessionId: 'private-worker-session', targetInfo: { type: 'worker' } });
+  await Promise.resolve();
+
+  expect(sendCommand).toHaveBeenNthCalledWith(1, { tabId: 42 }, 'Runtime.enable');
+  expect(sendCommand).toHaveBeenNthCalledWith(2, { sessionId: 'private-worker-session', tabId: 42 }, 'Target.setAutoAttach', { autoAttach: true, flatten: true, waitForDebuggerOnStart: true });
+  expect(sendCommand).toHaveBeenNthCalledWith(3, { sessionId: 'private-worker-session', tabId: 42 }, 'Runtime.enable');
+  expect(sendCommand).toHaveBeenNthCalledWith(4, { sessionId: 'private-worker-session', tabId: 42 }, 'Runtime.runIfWaitingForDebugger');
 });

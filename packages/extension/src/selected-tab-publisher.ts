@@ -50,7 +50,7 @@ export interface SelectedTabPublisherOptions {
 export interface SelectedTabPublisher {
   attachChildSession: (chromeSessionId: string) => PublicChildSession;
   debuggerEvent: (source: ChromeDebuggerEventSource, method: string, parameters: JsonObject) => void;
-  executeCommand: (command: CdpCommand, abortSignal: AbortSignal) => Promise<JsonObject>;
+  executeCommand: (command: CdpCommand, abortSignal: AbortSignal, lease?: Lease) => Promise<JsonObject>;
   detachChildSession: (chromeSessionId: string) => PublicChildSession | undefined;
   publishEvent: (method: string, parameters: JsonObject) => void;
   publish: (tab: SelectedTab) => Promise<PublishedTarget>;
@@ -78,6 +78,7 @@ function isSupportedPage(url: string | undefined): boolean {
 /** Keeps Chrome's tab identifier in this closure and publishes only a lifecycle-bound opaque target. */
 export function createSelectedTabPublisher(options: SelectedTabPublisherOptions): SelectedTabPublisher {
   const childSessionRouter = createChildSessionRouter();
+  const activeRootSubscriptionDomains = new Set<string>();
   let selectedTabId: number | undefined;
   let publishedTarget: PublishedTarget | undefined;
 
@@ -98,10 +99,17 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       await options.chromeDebugger.sendCommand(
         { tabId: selectedTabId, ...(chromeSessionId === undefined ? {} : { sessionId: chromeSessionId }) },
         'Target.setAutoAttach',
-        { autoAttach: true, flatten: true, waitForDebuggerOnStart: false },
+        { autoAttach: true, flatten: true, waitForDebuggerOnStart: true },
       );
     } catch {
       throw new Error('The debugger session setup failed.');
+    }
+  }
+
+  async function enableActiveRootDomains(chromeSessionId: string): Promise<void> {
+    if (selectedTabId === undefined) throw new Error('The requested target is not available.');
+    for (const domain of activeRootSubscriptionDomains) {
+      await options.chromeDebugger.sendCommand({ sessionId: chromeSessionId, tabId: selectedTabId }, `${domain}.enable`);
     }
   }
 
@@ -119,7 +127,11 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
   function handleAttachedChild(parameters: JsonObject): void {
     if (!isEligibleChildAttachment(parameters)) return;
     childSessionRouter.attach(parameters.sessionId);
-    void configureFlatSessions(parameters.sessionId).catch(() => {
+    void (async () => {
+      await configureFlatSessions(parameters.sessionId);
+      await enableActiveRootDomains(parameters.sessionId);
+      await options.chromeDebugger.sendCommand({ sessionId: parameters.sessionId, tabId: selectedTabId! }, 'Runtime.runIfWaitingForDebugger');
+    })().catch(() => {
       childSessionRouter.detach(parameters.sessionId);
     });
   }
@@ -144,6 +156,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     publishedTarget = undefined;
     selectedTabId = undefined;
     childSessionRouter.revoke();
+    activeRootSubscriptionDomains.clear();
     await options.revokeTarget(targetToRevoke, reason);
     try {
       await options.chromeDebugger.detach({ tabId: tabIdToDetach });
@@ -199,6 +212,10 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     if (sessionId !== undefined && chromeSessionId === undefined) throw new Error('The requested session is not available.');
     try {
       await options.chromeDebugger.sendCommand({ tabId: selectedTabId, ...(chromeSessionId === undefined ? {} : { sessionId: chromeSessionId }) }, command);
+      if (sessionId === undefined) {
+        if (active) activeRootSubscriptionDomains.add(domain);
+        else activeRootSubscriptionDomains.delete(domain);
+      }
     } catch {
       throw new Error('The debugger subscription setup failed.');
     }
@@ -210,7 +227,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       return childSessionRouter.attach(chromeSessionId);
     },
     debuggerEvent(source, method, parameters) {
-      if (source.tabId !== selectedTabId) return;
+      if (source.tabId !== undefined && source.tabId !== selectedTabId) return;
       if (method === 'Target.attachedToTarget') {
         handleAttachedChild(parameters);
         return;

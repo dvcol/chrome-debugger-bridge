@@ -1,4 +1,4 @@
-import type { BrokerToAgentMessage } from '../../packages/core/src/protocol.js';
+import type { BrokerToAgentMessage, BrokerToClientMessage, ClientToBrokerMessage } from '../../packages/core/src/protocol.js';
 
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -9,7 +9,8 @@ import { chromium } from 'playwright';
 import { build } from 'vite';
 import { afterEach, expect, it } from 'vitest';
 
-import { createStandaloneAuthenticatedWebSocketBridge } from '../../packages/websocket/src/node.js';
+import { connectAgentTargetBroker, connectClientTargetBroker, createTargetBroker } from '../../packages/core/src/index.js';
+import { connectNodeClientWebSocket, createStandaloneAuthenticatedWebSocketBridge } from '../../packages/websocket/src/node.js';
 import {
   createMemoryAgentAuthenticationAdapter,
   createStaticClientAuthenticationAdapter,
@@ -22,6 +23,39 @@ afterEach(async () => {
     await cleanup();
   }
 });
+
+interface ClientTestConnection {
+  onMessage: (listener: (message: BrokerToClientMessage) => void) => () => void;
+  send: (message: ClientToBrokerMessage) => Promise<void>;
+}
+
+async function sendClientRequest(connection: ClientTestConnection, request: Extract<ClientToBrokerMessage, { readonly kind: 'request' }>): Promise<Extract<BrokerToClientMessage, { readonly requestId: string }>> {
+  const response = new Promise<Extract<BrokerToClientMessage, { readonly requestId: string }>>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${request.method}.`)), 5_000);
+    const removeListener = connection.onMessage((message) => {
+      if ('requestId' in message && message.requestId === request.requestId) {
+        removeListener();
+        clearTimeout(timeout);
+        resolve(message);
+      }
+    });
+  });
+  await connection.send(request);
+  return response;
+}
+
+async function waitForClientNotification(connection: ClientTestConnection, method: Extract<BrokerToClientMessage, { readonly kind: 'notification' }>['method']): Promise<Extract<BrokerToClientMessage, { readonly kind: 'notification' }>> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${method}.`)), 5_000);
+    const removeListener = connection.onMessage((message) => {
+      if (message.kind === 'notification' && message.method === method) {
+        removeListener();
+        clearTimeout(timeout);
+        resolve(message);
+      }
+    });
+  });
+}
 
 it('runs the authenticated browser transport inside an MV3 service worker', async () => {
   expect.assertions(6);
@@ -187,4 +221,112 @@ it('publishes, updates, and revokes a target through real Chrome lifecycle event
   expect(outcomes.map(outcome => outcome.kind)).toContain('published');
   expect(outcomes.map(outcome => outcome.kind)).toContain('updated');
   expect(outcomes).toContainEqual({ kind: 'revoked', reason: 'detached' });
+}, 20_000);
+
+it('arbitrates authenticated clients and routes shared real-Chrome events through the MV3 agent', async () => {
+  expect.assertions(22);
+  const brokerId = crypto.randomUUID();
+  const pairingCode = '147258';
+  const server = createServer((_request, response) => {
+    response.end('<title>Broker command target</title>');
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('The test server did not expose a TCP address.');
+  cleanupTasks.push(async () => new Promise((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error))));
+  let currentTime = Date.now();
+  const targetBroker = createTargetBroker({ now: () => currentTime });
+  const receivedAgentEvents: Array<{ readonly method: string; readonly sessionId?: string; readonly targetGeneration: number; readonly targetId: string }> = [];
+  const targetWatcher = targetBroker.watchTargets()[Symbol.asyncIterator]();
+  await targetWatcher.next();
+  const bridge = await createStandaloneAuthenticatedWebSocketBridge({
+    agentAuthentication: createMemoryAgentAuthenticationAdapter({ brokerId, pairingCode, pairingCodeExpiresAt: Date.now() + 300_000, principal: { id: crypto.randomUUID(), role: 'agent' as const } }),
+    brokerId,
+    clientAuthentication: createStaticClientAuthenticationAdapter('Bearer mv3-agent-test-client', { id: crypto.randomUUID(), role: 'client' as const }),
+    onAgentConnection({ connection }) {
+      const disconnect = connectAgentTargetBroker(connection, targetBroker);
+      connection.onMessage((message) => {
+        if (message.kind === 'notification' && message.method === 'cdp.event') receivedAgentEvents.push(message.parameters);
+      });
+      cleanupTasks.push(async () => disconnect());
+    },
+    onClientConnection({ connection }) {
+      const disconnect = connectClientTargetBroker(connection, targetBroker);
+      void connection.closed.then(disconnect);
+    },
+    originPolicy({ origin }) {
+      return origin === undefined || origin.startsWith('chrome-extension://');
+    },
+  });
+  cleanupTasks.push(async () => bridge.close());
+  const extensionDirectory = await mkdtemp(join(tmpdir(), 'chrome-debugger-bridge-extension-'));
+  const userDataDirectory = await mkdtemp(join(tmpdir(), 'chrome-debugger-bridge-profile-'));
+  cleanupTasks.push(async () => rm(extensionDirectory, { force: true, recursive: true }));
+  cleanupTasks.push(async () => rm(userDataDirectory, { force: true, recursive: true }));
+  await build({ build: { emptyOutDir: true, lib: { entry: resolve('tests/e2e/fixtures/authenticated-service-worker.ts'), fileName: () => 'service-worker.js', formats: ['es'] }, outDir: extensionDirectory }, configFile: false, logLevel: 'silent' });
+  await writeFile(join(extensionDirectory, 'manifest.json'), `${JSON.stringify({ background: { service_worker: 'service-worker.js', type: 'module' }, manifest_version: 3, name: 'Chrome Debugger Bridge MV3 Test', permissions: ['debugger', 'storage', 'tabs'], version: '0.0.0' }, null, 2)}\n`, 'utf8');
+  const context = await chromium.launchPersistentContext(userDataDirectory, { args: [`--disable-extensions-except=${extensionDirectory}`, `--load-extension=${extensionDirectory}`], channel: 'chromium', headless: true });
+  cleanupTasks.push(async () => context.close());
+  const page = await context.newPage();
+  await page.goto(`http://127.0.0.1:${address.port}/target`);
+  const serviceWorker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
+  const target = await serviceWorker.evaluate(async ({ endpoint, pairingCode: code }) => (globalThis as unknown as { runPublishedTargetAgentTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<{ readonly generation: number; readonly id: string }> }).runPublishedTargetAgentTest({ endpoint, pairingCode: code }), { endpoint: `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`, pairingCode });
+  const publication = await targetWatcher.next();
+  const clientEndpoint = `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/client`;
+  const firstReader = await connectNodeClientWebSocket({ authorization: 'Bearer mv3-agent-test-client', endpoint: clientEndpoint });
+  const secondReader = await connectNodeClientWebSocket({ authorization: 'Bearer mv3-agent-test-client', endpoint: clientEndpoint });
+  const controller = await connectNodeClientWebSocket({ authorization: 'Bearer mv3-agent-test-client', endpoint: clientEndpoint });
+  const competingController = await connectNodeClientWebSocket({ authorization: 'Bearer mv3-agent-test-client', endpoint: clientEndpoint });
+  cleanupTasks.push(async () => firstReader.close());
+  cleanupTasks.push(async () => secondReader.close());
+  cleanupTasks.push(async () => controller.close());
+  cleanupTasks.push(async () => competingController.close());
+  const firstReaderTargets = await sendClientRequest(firstReader, { kind: 'request', method: 'targets.list', parameters: {}, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const secondReaderTargets = await sendClientRequest(secondReader, { kind: 'request', method: 'targets.list', parameters: {}, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const unexposedTarget = await sendClientRequest(firstReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: 1, targetId: crypto.randomUUID() }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const forbiddenMethod = await sendClientRequest(firstReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'exclusive-control', requestedMethods: ['Target.attachToTarget'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const staleGeneration = await sendClientRequest(firstReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation + 1, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const firstReaderLeaseResponse = await sendClientRequest(firstReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const secondReaderLeaseResponse = await sendClientRequest(secondReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const controllerLeaseResponse = await sendClientRequest(controller, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const competingLeaseResponse = await sendClientRequest(competingController, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const firstReaderLease = firstReaderLeaseResponse.kind === 'response' && firstReaderLeaseResponse.method === 'leases.acquire' ? firstReaderLeaseResponse.result.lease : undefined;
+  const secondReaderLease = secondReaderLeaseResponse.kind === 'response' && secondReaderLeaseResponse.method === 'leases.acquire' ? secondReaderLeaseResponse.result.lease : undefined;
+  const lease = controllerLeaseResponse.kind === 'response' && controllerLeaseResponse.method === 'leases.acquire' ? controllerLeaseResponse.result.lease : undefined;
+  const firstSubscription = await sendClientRequest(firstReader, { kind: 'request', method: 'cdp.subscribe', parameters: { buffer: { capacity: 2, overflowStrategy: 'drop-oldest' }, leaseId: firstReaderLease!.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const secondSubscription = await sendClientRequest(secondReader, { kind: 'request', method: 'cdp.subscribe', parameters: { buffer: { capacity: 2, overflowStrategy: 'drop-oldest' }, leaseId: secondReaderLease!.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const overflowSubscription = await targetBroker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: firstReaderLease!.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });
+  const firstEvent = waitForClientNotification(firstReader, 'cdp.event');
+  const secondEvent = waitForClientNotification(secondReader, 'cdp.event');
+  const result = await sendClientRequest(controller, { kind: 'request', method: 'cdp.send', parameters: { leaseId: lease!.id, method: 'Runtime.evaluate', operationId: crypto.randomUUID(), parameters: { expression: 'console.log("bridge event one"); console.log("bridge event two"); document.title' }, targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const [firstReaderEvent, secondReaderEvent] = await Promise.all([firstEvent, secondEvent]);
+  await sendClientRequest(controller, { kind: 'request', method: 'cdp.send', parameters: { leaseId: lease!.id, method: 'Runtime.evaluate', operationId: crypto.randomUUID(), parameters: { expression: 'globalThis.__bridgeWorker = new Worker(URL.createObjectURL(new Blob(["setTimeout(() => console.log(\\\"child bridge event\\\"), 1000)"], { type: "text/javascript" }))); "worker created"' }, targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  await new Promise(resolve => setTimeout(resolve, 2_000));
+  currentTime += 5_000;
+  const expiredCommand = await sendClientRequest(controller, { kind: 'request', method: 'cdp.send', parameters: { leaseId: lease!.id, method: 'Runtime.evaluate', operationId: crypto.randomUUID(), parameters: { expression: 'document.title' }, targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  await serviceWorker.evaluate(async () => (globalThis as unknown as { interruptPublishedTargetAgentTest: () => Promise<void> }).interruptPublishedTargetAgentTest());
+  const revocation = await targetWatcher.next();
+
+  expect(publication).toMatchObject({ done: false, value: { kind: 'published', target: { generation: target.generation, id: target.id } } });
+  expect(firstReaderTargets).toMatchObject({ kind: 'response', method: 'targets.list', result: { targets: [{ id: target.id }] } });
+  expect(secondReaderTargets).toMatchObject({ kind: 'response', method: 'targets.list', result: { targets: [{ id: target.id }] } });
+  expect(unexposedTarget).toMatchObject({ kind: 'error', method: 'leases.acquire', error: { code: 'TARGET_NOT_FOUND' } });
+  expect(forbiddenMethod).toMatchObject({ kind: 'error', method: 'leases.acquire', error: { code: 'CAPABILITY_DENIED' } });
+  expect(staleGeneration).toMatchObject({ kind: 'error', method: 'leases.acquire', error: { code: 'TARGET_GENERATION_STALE' } });
+  expect(firstReaderLease?.mode).toBe('shared-read');
+  expect(secondReaderLease?.mode).toBe('shared-read');
+  expect(lease?.mode).toBe('exclusive-control');
+  expect(competingLeaseResponse).toMatchObject({ kind: 'error', method: 'leases.acquire', error: { code: 'LEASE_CONFLICT' } });
+  expect(firstSubscription).toMatchObject({ kind: 'response', method: 'cdp.subscribe' });
+  expect(secondSubscription).toMatchObject({ kind: 'response', method: 'cdp.subscribe' });
+  expect(result).toMatchObject({ kind: 'response', method: 'cdp.send', result: { value: { result: { type: 'string', value: 'Broker command target' } } } });
+  expect(firstReaderEvent).toMatchObject({ method: 'cdp.event', parameters: { method: 'Runtime.consoleAPICalled' } });
+  expect(secondReaderEvent).toMatchObject({ method: 'cdp.event', parameters: { method: 'Runtime.consoleAPICalled' } });
+  expect(receivedAgentEvents).toContainEqual(expect.objectContaining({ method: 'Runtime.consoleAPICalled', targetGeneration: target.generation, targetId: target.id }));
+  expect(overflowSubscription.overflowed).toBe(true);
+  expect(overflowSubscription.droppedCount).toBeGreaterThan(0);
+  expect(expiredCommand).toMatchObject({ kind: 'error', method: 'cdp.send', error: { code: 'LEASE_EXPIRED' } });
+  expect(JSON.stringify(result)).not.toContain('tabId');
+  expect(revocation).toMatchObject({ done: false, value: { kind: 'revoked', reason: 'detached', targetGeneration: target.generation, targetId: target.id } });
+  expect(targetBroker.listTargets()).toEqual([]);
 }, 20_000);

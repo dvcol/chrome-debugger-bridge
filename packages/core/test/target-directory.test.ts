@@ -1,4 +1,4 @@
-import type { AgentToBrokerMessage, BrokerToClientMessage, CdpCommand, ClientToBrokerMessage, PublishedTarget } from '../src/protocol.js';
+import type { AgentToBrokerMessage, BrokerToAgentMessage, BrokerToClientMessage, CdpCommand, ClientToBrokerMessage, PublishedTarget } from '../src/protocol.js';
 
 import { expect, it, vi } from 'vitest';
 
@@ -73,6 +73,61 @@ it('applies authenticated agent lifecycle notifications to the broker', () => {
   disconnect();
 });
 
+it('revokes every target when its authenticated agent connection closes', async () => {
+  expect.assertions(2);
+  const broker = createTargetBroker();
+  let listener: ((message: AgentToBrokerMessage) => void) | undefined;
+  let closeConnection: (() => void) | undefined;
+  const closed = new Promise<void>((resolve) => {
+    closeConnection = resolve;
+  });
+  connectAgentTargetBroker({
+    closed,
+    onMessage(receivedListener) {
+      listener = receivedListener;
+      return () => listener = undefined;
+    },
+  }, broker);
+
+  listener?.({ kind: 'notification', method: 'targets.publish', parameters: { target }, protocolVersion: 1 });
+  expect(broker.listTargets()).toEqual([target]);
+  closeConnection?.();
+  await Promise.resolve();
+  expect(broker.listTargets()).toEqual([]);
+});
+
+it('relays broker commands and agent events through opaque published targets', async () => {
+  expect.assertions(6);
+  const broker = createTargetBroker();
+  const sentMessages: BrokerToAgentMessage[] = [];
+  let listener: ((message: AgentToBrokerMessage) => void) | undefined;
+  const disconnect = connectAgentTargetBroker({
+    onMessage(receivedListener) {
+      listener = receivedListener;
+      return () => listener = undefined;
+    },
+    async send(message) {
+      sentMessages.push(message);
+    },
+  }, broker);
+
+  listener?.({ kind: 'notification', method: 'targets.publish', parameters: { target }, protocolVersion: 1 });
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate', 'Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
+  const subscription = await broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });
+  const execution = broker.executeCommand({ leaseId: lease.id, method: 'Runtime.evaluate', operationId: '30000000-0000-4000-8000-000000000010', parameters: { expression: 'document.title' }, targetGeneration: target.generation, targetId: target.id });
+  const request = sentMessages.find((message): message is Extract<BrokerToAgentMessage, { readonly kind: 'request'; readonly method: 'cdp.execute' }> => message.kind === 'request' && message.method === 'cdp.execute');
+  listener?.({ kind: 'response', method: 'cdp.execute', protocolVersion: 1, requestId: request!.requestId, result: { operationId: '30000000-0000-4000-8000-000000000010', value: { result: 'Bridge target' } } });
+  listener?.({ kind: 'notification', method: 'cdp.event', parameters: { method: 'Runtime.consoleAPICalled', parameters: { type: 'log' }, targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1 });
+
+  expect(request?.parameters.command.targetId).toBe(target.id);
+  expect(request?.parameters.lease.id).toBe(lease.id);
+  await expect(execution).resolves.toEqual({ operationId: '30000000-0000-4000-8000-000000000010', value: { result: 'Bridge target' } });
+  expect(await subscription[Symbol.asyncIterator]().next()).toMatchObject({ done: false, value: { method: 'Runtime.consoleAPICalled', parameters: { type: 'log' } } });
+  expect(JSON.stringify(sentMessages)).not.toContain('tabId');
+  expect(listener).toBeDefined();
+  disconnect();
+});
+
 it('streams a fresh target snapshot followed by ordered lifecycle notifications to a client', async () => {
   expect.assertions(4);
   const broker = createTargetBroker();
@@ -141,6 +196,54 @@ it('serves independent subscription responses and event streams over the client-
   expect(subscriptionId).toMatch(/^[0-9a-f-]{36}$/u);
   expect(event).toMatchObject({ parameters: { method: 'Runtime.consoleAPICalled', parameters: { type: 'log' } } });
   expect(messages.some(message => message.kind === 'response' && message.method === 'cdp.unsubscribe')).toBe(true);
+  expect(listener).toBeUndefined();
+});
+
+it('serves target listing, leases, and authorized commands over the client-plane connection', async () => {
+  expect.assertions(5);
+  const broker = createTargetBroker();
+  const messages: BrokerToClientMessage[] = [];
+  let listener: ((message: ClientToBrokerMessage) => void) | undefined;
+  let resolveResponse: ((message: BrokerToClientMessage) => void) | undefined;
+  const disconnect = connectClientTargetBroker({
+    onMessage(receivedListener) {
+      listener = receivedListener;
+      return () => listener = undefined;
+    },
+    async send(message) {
+      messages.push(message);
+      resolveResponse?.(message);
+    },
+  }, broker);
+  broker.publishTarget(target);
+  broker.registerTargetExecutor(target, { async execute(command) {
+    return { result: command.parameters?.expression ?? '' };
+  } });
+  const waitForResponse = async (method: Extract<BrokerToClientMessage, { readonly kind: 'response' }>['method']): Promise<Extract<BrokerToClientMessage, { readonly kind: 'response' }>> => new Promise((resolve) => {
+    resolveResponse = (message) => {
+      if (message.kind === 'response' && message.method === method) {
+        resolveResponse = undefined;
+        resolve(message);
+      }
+    };
+  });
+
+  const listed = waitForResponse('targets.list');
+  listener?.({ kind: 'request', method: 'targets.list', parameters: {}, protocolVersion: 1, requestId: '70000000-0000-4000-8000-000000000020' });
+  const listedResponse = await listed;
+  const acquired = waitForResponse('leases.acquire');
+  listener?.({ kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: '70000000-0000-4000-8000-000000000021' });
+  const acquiredResponse = await acquired;
+  const lease = acquiredResponse.kind === 'response' && acquiredResponse.method === 'leases.acquire' ? acquiredResponse.result.lease : undefined;
+  const executed = waitForResponse('cdp.send');
+  listener?.({ kind: 'request', method: 'cdp.send', parameters: { leaseId: lease!.id, method: 'Runtime.evaluate', operationId: '30000000-0000-4000-8000-000000000020', parameters: { expression: 'document.title' }, targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: '70000000-0000-4000-8000-000000000022' });
+  const executedResponse = await executed;
+  disconnect();
+
+  expect(listedResponse).toMatchObject({ result: { targets: [{ id: target.id }] } });
+  expect(lease?.mode).toBe('exclusive-control');
+  expect(executedResponse).toMatchObject({ result: { operationId: '30000000-0000-4000-8000-000000000020', value: { result: 'document.title' } } });
+  expect(JSON.stringify(messages)).not.toContain('tabId');
   expect(listener).toBeUndefined();
 });
 

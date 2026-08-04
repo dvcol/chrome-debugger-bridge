@@ -7,21 +7,23 @@ import {
   cdpCancellationSchemaDefinition,
   cdpCommandResultSchemaDefinition,
   cdpCommandSchemaDefinition,
-  cdpEventSchemaDefinition,
   connectionLimitsSchemaDefinition,
   heartbeatParametersSchemaDefinition,
   implementationInfoSchemaDefinition,
+  leaseSchemaDefinition,
   protocolVersionRangeSchemaDefinition,
   publishedTargetSchemaDefinition,
   targetRevocationReasonSchemaDefinition,
 } from './domain.js';
 import {
   exposeProtocolSchema,
+  jsonObjectSchemaDefinition,
   nonEmptyStringSchemaDefinition,
   positiveIntegerSchemaDefinition,
 
   protocolVersionSchemaDefinition,
   requestIdSchemaDefinition,
+  sessionIdSchemaDefinition,
   targetIdSchemaDefinition,
 } from './primitives.js';
 
@@ -53,7 +55,7 @@ const agentHelloRequestSchemaDefinition = z.strictObject({
 const cdpExecuteRequestSchemaDefinition = z.strictObject({
   kind: z.literal('request'),
   method: z.literal('cdp.execute'),
-  parameters: cdpCommandSchemaDefinition,
+  parameters: z.strictObject({ command: cdpCommandSchemaDefinition, lease: leaseSchemaDefinition }),
   protocolVersion: protocolVersionSchemaDefinition,
   requestId: requestIdSchemaDefinition,
 });
@@ -136,10 +138,29 @@ const cdpCancelledNotificationSchemaDefinition = z.strictObject({
   protocolVersion: protocolVersionSchemaDefinition,
 });
 
+const cdpSubscriptionDemandNotificationSchemaDefinition = z.strictObject({
+  kind: z.literal('notification'),
+  method: z.literal('cdp.subscription-demand'),
+  parameters: z.strictObject({
+    active: z.boolean(),
+    methodPrefix: nonEmptyStringSchemaDefinition,
+    sessionId: z.optional(sessionIdSchemaDefinition),
+    targetGeneration: positiveIntegerSchemaDefinition,
+    targetId: targetIdSchemaDefinition,
+  }),
+  protocolVersion: protocolVersionSchemaDefinition,
+});
+
 const cdpEventNotificationSchemaDefinition = z.strictObject({
   kind: z.literal('notification'),
   method: z.literal('cdp.event'),
-  parameters: cdpEventSchemaDefinition,
+  parameters: z.strictObject({
+    method: nonEmptyStringSchemaDefinition,
+    parameters: jsonObjectSchemaDefinition,
+    sessionId: z.optional(sessionIdSchemaDefinition),
+    targetGeneration: positiveIntegerSchemaDefinition,
+    targetId: targetIdSchemaDefinition,
+  }),
   protocolVersion: protocolVersionSchemaDefinition,
 });
 
@@ -161,6 +182,7 @@ export const brokerToAgentMessageSchemaDefinition = z.union([
   agentHelloErrorResponseSchemaDefinition,
   cdpExecuteRequestSchemaDefinition,
   cdpCancelledNotificationSchemaDefinition,
+  cdpSubscriptionDemandNotificationSchemaDefinition,
 ]);
 
 export const agentPlaneMessageSchemaDefinition = z.union([

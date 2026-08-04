@@ -442,7 +442,7 @@ describe('protocol schemas', () => {
         protocolVersion: 1,
         requestId: message.requestId,
         result: {
-          operationId: message.parameters.operationId,
+          operationId: message.parameters.command.operationId,
           value: { result: { type: 'string', value: 'Example target' } },
         },
       });
@@ -477,7 +477,7 @@ describe('protocol schemas', () => {
         const agentResponse = await agentChannel.request({
           kind: 'request',
           method: 'cdp.execute',
-          parameters: message.parameters,
+          parameters: { command: message.parameters, lease },
           protocolVersion: 1,
           requestId: message.requestId,
         });
@@ -549,6 +549,6 @@ describe('protocol schemas', () => {
     expect(commandResponse).toMatchObject({
       result: { operationId, value: { result: { value: 'Example target' } } },
     });
-    expect(forwardedAgentRequest).toMatchObject({ parameters: { targetId } });
+    expect(forwardedAgentRequest).toMatchObject({ parameters: { command: { targetId }, lease: { id: leaseId } } });
   });
 });
