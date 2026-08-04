@@ -147,6 +147,27 @@ it('publishes metadata changes and revokes the target when navigation invalidate
   expect(target.generation).toBe(1);
 });
 
+it('reevaluates extension-owned selector scopes on every tab refresh', async () => {
+  expect.assertions(2);
+  const revokeTarget = vi.fn();
+  const publisher = createSelectedTabPublisher({
+    capabilities: { level: 'unsafe' },
+    chromeDebugger: { attach() {}, detach() {}, async sendCommand() {
+      return {};
+    } },
+    publishTarget() {},
+    revokeTarget,
+    scopeId,
+    tabScopeSelector: { kind: 'window', windowId: 3 },
+    updateTarget() {},
+  });
+  const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/', windowId: 3 });
+  await publisher.refresh({ incognito: false, tabId: 42, url: 'https://example.com/', windowId: 4 });
+
+  expect(revokeTarget).toHaveBeenCalledWith(target, 'policy-invalid');
+  expect(revokeTarget).toHaveBeenCalledOnce();
+});
+
 it('revokes only the selected target on tab closure or debugger detachment', async () => {
   expect.assertions(4);
   const revokeTarget = vi.fn();

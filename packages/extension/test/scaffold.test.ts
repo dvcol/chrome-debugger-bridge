@@ -6,7 +6,7 @@ import * as testingModule from '../src/testing.js';
 
 it('keeps the extension scaffold importable', () => {
   expect.assertions(3);
-  expect(Object.keys(indexModule)).toEqual(['createAgentRecovery', 'createChildSessionRouter', 'createIndexedDbPairingStore', 'createSelectedTabLifecycle', 'createSelectedTabPublisher']);
+  expect(Object.keys(indexModule)).toEqual(['createAgentRecovery', 'createChildSessionRouter', 'createIndexedDbPairingStore', 'createSelectedTabLifecycle', 'createSelectedTabPublisher', 'matchesTabScope']);
   expect(Object.keys(bootstrapModule)).toEqual([]);
   expect(Object.keys(testingModule)).toEqual([]);
 });

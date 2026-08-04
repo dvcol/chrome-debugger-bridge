@@ -19,3 +19,4 @@ export {
   type SelectedTabPublisher,
   type SelectedTabPublisherOptions,
 } from './selected-tab-publisher.js';
+export { matchesTabScope, type TabScopeSelector } from './tab-scope.js';

@@ -1,10 +1,12 @@
 import type { CapabilityGrant, CdpCommand, JsonObject, Lease, PublishedTarget } from '@dvcol/chrome-debugger-bridge/protocol';
 
 import type { PublicChildSession } from './child-session-router.js';
+import type { TabScopeSelector } from './tab-scope.js';
 
 import { isCdpNameAllowed, requiredLeaseMode } from '@dvcol/chrome-debugger-bridge/cdp-catalogue';
 
 import { createChildSessionRouter } from './child-session-router.js';
+import { matchesTabScope } from './tab-scope.js';
 
 export interface ChromeDebuggerPort {
   attach: (target: { readonly sessionId?: string; readonly tabId: number }, requiredVersion: string) => Promise<void> | void;
@@ -18,10 +20,13 @@ export interface ChromeDebuggerEventSource {
 }
 
 export interface SelectedTab {
+  readonly active?: boolean;
+  readonly groupId?: number;
   readonly incognito: boolean;
   readonly tabId: number;
   readonly title?: string;
   readonly url?: string;
+  readonly windowId?: number;
 }
 
 export interface SelectedTabPublisherOptions {
@@ -37,6 +42,8 @@ export interface SelectedTabPublisherOptions {
   }) => void;
   readonly revokeTarget: (target: Pick<PublishedTarget, 'generation' | 'id'>, reason: 'closed' | 'detached' | 'explicit' | 'policy-invalid') => Promise<void> | void;
   readonly scopeId: string;
+  /** An extension-only selector; it is evaluated before every publication and refresh. */
+  readonly tabScopeSelector?: TabScopeSelector;
   readonly updateTarget: (target: PublishedTarget) => Promise<void> | void;
 }
 
@@ -79,7 +86,10 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
   }
 
   function isPublishable(tab: SelectedTab): boolean {
-    return !tab.incognito && isSupportedPage(tab.url) && (options.isExposureAllowed?.(tab) ?? true);
+    return !tab.incognito
+      && isSupportedPage(tab.url)
+      && (options.tabScopeSelector === undefined || matchesTabScope(options.tabScopeSelector, tab))
+      && (options.isExposureAllowed?.(tab) ?? true);
   }
 
   async function configureFlatSessions(chromeSessionId?: string): Promise<void> {
@@ -227,7 +237,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       if (!isSupportedPage(tab.url)) {
         throw new Error('The selected page is not supported.');
       }
-      if (!(options.isExposureAllowed?.(tab) ?? true)) {
+      if (!isPublishable(tab)) {
         throw new Error('The selected page is not authorized for publication.');
       }
 
