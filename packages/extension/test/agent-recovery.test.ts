@@ -108,3 +108,28 @@ it('closes a live connection when its scheduled heartbeat fails', async () => {
   expect((await connection.closed).code).toBe(3001);
   expect(recovery.state).toBe('reconnecting');
 });
+
+it('cancels a connection attempt when recovery stops before authentication finishes', async () => {
+  expect.assertions(3);
+  const connection = createConnection();
+  let resolveConnection: (() => void) | undefined;
+  const connectionGate = new Promise<void>(resolve => resolveConnection = resolve);
+  const recovery = createAgentRecovery({
+    async connect() {
+      await connectionGate;
+      return connection;
+    },
+    async reconcile() {},
+  });
+
+  recovery.start();
+  await Promise.resolve();
+  expect(recovery.state).toBe('connecting');
+  recovery.stop();
+  resolveConnection?.();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(recovery.state).toBe('stopped');
+  expect((await connection.closed).code).toBe(1000);
+});
