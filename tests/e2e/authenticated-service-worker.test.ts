@@ -224,7 +224,7 @@ it('publishes, updates, and revokes a target through real Chrome lifecycle event
 }, 20_000);
 
 it('arbitrates authenticated clients and routes shared real-Chrome events through the MV3 agent', async () => {
-  expect.assertions(22);
+  expect.assertions(26);
   const brokerId = crypto.randomUUID();
   const pairingCode = '147258';
   const server = createServer((_request, response) => {
@@ -310,8 +310,12 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   await new Promise(resolve => setTimeout(resolve, 2_000));
   currentTime += 5_000;
   const expiredCommand = await sendClientRequest(controller, { kind: 'request', method: 'cdp.send', parameters: { leaseId: lease!.id, method: 'Runtime.evaluate', operationId: crypto.randomUUID(), parameters: { expression: 'document.title' }, targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
-  await serviceWorker.evaluate(async () => (globalThis as unknown as { interruptPublishedTargetAgentTest: () => Promise<void> }).interruptPublishedTargetAgentTest());
+  const renewedTarget = await serviceWorker.evaluate(async ({ endpoint, pairingCode: code }) => (globalThis as unknown as { recoverPublishedTargetAgentTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<{ readonly generation: number; readonly id: string }> }).recoverPublishedTargetAgentTest({ endpoint, pairingCode: code }), { endpoint: `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`, pairingCode });
   const revocation = await targetWatcher.next();
+  const renewedPublication = await targetWatcher.next();
+  const staleTargetAfterRecovery = await sendClientRequest(firstReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  await serviceWorker.evaluate(async () => (globalThis as unknown as { interruptPublishedTargetAgentTest: () => Promise<void> }).interruptPublishedTargetAgentTest());
+  const renewedRevocation = await targetWatcher.next();
 
   expect(publication).toMatchObject({ done: false, value: { kind: 'published', target: { generation: target.generation, id: target.id } } });
   expect(firstReaderTargets).toMatchObject({ kind: 'response', method: 'targets.list', result: { targets: [{ id: target.id }] } });
@@ -334,5 +338,9 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   expect(expiredCommand).toMatchObject({ kind: 'error', method: 'cdp.send', error: { code: 'LEASE_EXPIRED' } });
   expect(JSON.stringify(result)).not.toContain('tabId');
   expect(revocation).toMatchObject({ done: false, value: { kind: 'revoked', reason: 'detached', targetGeneration: target.generation, targetId: target.id } });
+  expect(renewedPublication).toMatchObject({ done: false, value: { kind: 'published', target: { generation: renewedTarget.generation, id: renewedTarget.id } } });
+  expect(renewedTarget.id).not.toBe(target.id);
+  expect(staleTargetAfterRecovery).toMatchObject({ kind: 'error', method: 'leases.acquire', error: { code: 'TARGET_NOT_FOUND' } });
+  expect(renewedRevocation).toMatchObject({ done: false, value: { kind: 'revoked', reason: 'detached', targetGeneration: renewedTarget.generation, targetId: renewedTarget.id } });
   expect(targetBroker.listTargets()).toEqual([]);
 }, 20_000);

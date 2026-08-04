@@ -22,6 +22,7 @@ interface BridgeTestGlobal {
   runDebuggerLifecycleTest: () => Promise<{ readonly revoked: boolean; readonly value: string }>;
   runPublishedTargetLifecycleTest: (updatedUrl: string) => Promise<readonly { readonly kind: 'published' | 'revoked' | 'updated'; readonly reason?: string }[]>;
   runPublishedTargetAgentTest: (input: ServiceWorkerTestInput) => Promise<Pick<PublishedTarget, 'generation' | 'id'>>;
+  recoverPublishedTargetAgentTest: (input: ServiceWorkerTestInput) => Promise<Pick<PublishedTarget, 'generation' | 'id'>>;
   interruptPublishedTargetAgentTest: () => Promise<void>;
   revokePublishedTargetAgentTest: () => Promise<void>;
 }
@@ -55,7 +56,12 @@ declare const chrome: {
 };
 
 const bridgeTestGlobal = globalThis as typeof globalThis & BridgeTestGlobal;
-let publishedTargetAgent: { readonly connection: BrowserAgentConnection; readonly publisher: ReturnType<typeof createSelectedTabPublisher>; readonly removeDebuggerEventListener: () => void } | undefined;
+let publishedTargetAgent: {
+  bindConnection: (connection: BrowserAgentConnection) => void;
+  connection: BrowserAgentConnection;
+  readonly publisher: ReturnType<typeof createSelectedTabPublisher>;
+  readonly removeDebuggerEventListener: () => void;
+} | undefined;
 
 bridgeTestGlobal.runAuthenticatedBridgeTest = async (input) => {
   let connection: BrowserAgentConnection | undefined;
@@ -210,7 +216,7 @@ bridgeTestGlobal.runPublishedTargetLifecycleTest = async (updatedUrl) => {
 bridgeTestGlobal.runPublishedTargetAgentTest = async (input) => {
   const [tab] = await chrome.tabs.query({ active: true });
   if (tab?.id === undefined) throw new Error('No active tab is available.');
-  const connection = await connectAgentWebSocket({
+  let connection = await connectAgentWebSocket({
     credentialStore: createIndexedDbPairingStore({ databaseName: 'mv3-published-target-agent-test' }),
     endpoint: input.endpoint,
     async requestPairingCode() {
@@ -239,25 +245,29 @@ bridgeTestGlobal.runPublishedTargetAgentTest = async (input) => {
     },
   });
   const cancellations = new Map<string, AbortController>();
-  connection.onMessage((message) => {
-    if (message.kind === 'notification' && message.method === 'cdp.cancel') {
-      cancellations.get(message.parameters.operationId)?.abort();
-      return;
-    }
-    if (message.kind === 'notification' && message.method === 'cdp.subscription-demand') {
-      void setSubscriptionDemand?.(message.parameters.methodPrefix, message.parameters.active, message.parameters.sessionId);
-      return;
-    }
-    if (message.kind !== 'request' || message.method !== 'cdp.execute') return;
-    const executionRequest = message;
-    const { command, lease } = executionRequest.parameters;
-    const abortController = new AbortController();
-    cancellations.set(command.operationId, abortController);
-    void publisher.executeCommand(command, abortController.signal, lease).then(
-      async value => connection.send({ kind: 'response', method: 'cdp.execute', protocolVersion: 1, requestId: executionRequest.requestId, result: { operationId: command.operationId, value } }),
-      async () => connection.send({ error: { code: 'CDP_COMMAND_FAILED', message: 'The debugger command failed.', retryable: false }, kind: 'error', method: 'cdp.execute', protocolVersion: 1, requestId: executionRequest.requestId }),
-    ).finally(() => cancellations.delete(command.operationId));
-  });
+  const bindConnection = (nextConnection: BrowserAgentConnection): void => {
+    connection = nextConnection;
+    connection.onMessage((message) => {
+      if (message.kind === 'notification' && message.method === 'cdp.cancel') {
+        cancellations.get(message.parameters.operationId)?.abort();
+        return;
+      }
+      if (message.kind === 'notification' && message.method === 'cdp.subscription-demand') {
+        void setSubscriptionDemand?.(message.parameters.methodPrefix, message.parameters.active, message.parameters.sessionId);
+        return;
+      }
+      if (message.kind !== 'request' || message.method !== 'cdp.execute') return;
+      const executionRequest = message;
+      const { command, lease } = executionRequest.parameters;
+      const abortController = new AbortController();
+      cancellations.set(command.operationId, abortController);
+      void publisher.executeCommand(command, abortController.signal, lease).then(
+        async value => connection.send({ kind: 'response', method: 'cdp.execute', protocolVersion: 1, requestId: executionRequest.requestId, result: { operationId: command.operationId, value } }),
+        async () => connection.send({ error: { code: 'CDP_COMMAND_FAILED', message: 'The debugger command failed.', retryable: false }, kind: 'error', method: 'cdp.execute', protocolVersion: 1, requestId: executionRequest.requestId }),
+      ).finally(() => cancellations.delete(command.operationId));
+    });
+  };
+  bindConnection(connection);
   const debuggerEventListener = (source: { readonly sessionId?: string; readonly tabId?: number }, method: string, parameters: JsonObject): void => {
     publisher.debuggerEvent(source, method, parameters);
   };
@@ -268,8 +278,25 @@ bridgeTestGlobal.runPublishedTargetAgentTest = async (input) => {
     ...(tab.title === undefined ? {} : { title: tab.title }),
     ...(tab.url === undefined ? {} : { url: tab.url }),
   });
-  publishedTargetAgent = { connection, publisher, removeDebuggerEventListener: () => chrome.debugger.onEvent.removeListener(debuggerEventListener) };
+  publishedTargetAgent = { bindConnection, connection, publisher, removeDebuggerEventListener: () => chrome.debugger.onEvent.removeListener(debuggerEventListener) };
   return { generation: target.generation, id: target.id };
+};
+
+bridgeTestGlobal.recoverPublishedTargetAgentTest = async (input) => {
+  const activeAgent = publishedTargetAgent;
+  if (activeAgent === undefined) throw new Error('No published target agent is available.');
+  activeAgent.connection.close(3001, 'Published target transport interruption');
+  await activeAgent.connection.closed;
+  const recoveredConnection = await connectAgentWebSocket({
+    credentialStore: createIndexedDbPairingStore({ databaseName: 'mv3-published-target-agent-test' }),
+    endpoint: input.endpoint,
+    async requestPairingCode() {
+      return input.pairingCode;
+    },
+  });
+  activeAgent.bindConnection(recoveredConnection);
+  activeAgent.connection = recoveredConnection;
+  return activeAgent.publisher.renewAuthority();
 };
 
 bridgeTestGlobal.revokePublishedTargetAgentTest = async () => {
