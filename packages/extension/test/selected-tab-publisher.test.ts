@@ -1,3 +1,5 @@
+import type { CdpCommand, JsonObject, Lease } from '@dvcol/chrome-debugger-bridge/protocol';
+
 import { expect, it, vi } from 'vitest';
 
 import { createSelectedTabPublisher } from '../src/selected-tab-publisher.js';
@@ -56,6 +58,7 @@ it('validates the opaque target grant before forwarding a debugger command', asy
     updateTarget() {},
   });
   const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+  sendCommand.mockClear();
 
   await expect(publisher.executeCommand({
     leaseId: '20000000-0000-4000-8000-000000000001',
@@ -186,4 +189,66 @@ it('keeps revocation complete when Chrome detached the debugger first', async ()
   const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
   await expect(publisher.debuggerDetached(42)).resolves.toBeUndefined();
   expect(revokeTarget).toHaveBeenCalledWith(target, 'detached');
+});
+
+it('invalidates child-session routing when the published root is revoked', async () => {
+  expect.assertions(3);
+  const publisher = createSelectedTabPublisher({
+    capabilities: { level: 'unsafe' },
+    chromeDebugger: { attach() {}, detach() {}, async sendCommand() {
+      return {};
+    } },
+    publishTarget() {},
+    revokeTarget() {},
+    scopeId,
+    updateTarget() {},
+  });
+  await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+  const child = publisher.attachChildSession('private-child-session');
+  await publisher.revoke();
+
+  expect(child.id).toMatch(/^[0-9a-f-]{36}$/u);
+  expect(publisher.detachChildSession('private-child-session')).toBeUndefined();
+  expect(() => publisher.attachChildSession('private-child-session')).toThrow('not available');
+});
+
+it('configures recursive flat sessions and exposes only eligible child-session identities', async () => {
+  expect.assertions(6);
+  const sendCommand = vi.fn(async () => ({}));
+  let execute: ((command: CdpCommand, abortSignal: AbortSignal, lease: Lease) => Promise<JsonObject>) | undefined;
+  const publisher = createSelectedTabPublisher({
+    capabilities: { level: 'unsafe' },
+    chromeDebugger: { attach() {}, detach() {}, sendCommand },
+    publishTarget() {},
+    registerTargetExecutor(_target, executor) {
+      execute = executor.execute;
+    },
+    revokeTarget() {},
+    scopeId,
+    updateTarget() {},
+  });
+  const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+  sendCommand.mockClear();
+  publisher.debuggerEvent({ tabId: 42 }, 'Target.attachedToTarget', { sessionId: 'private-frame-session', targetInfo: { type: 'iframe' } });
+  publisher.debuggerEvent({ tabId: 42 }, 'Target.attachedToTarget', { sessionId: 'private-page-session', targetInfo: { type: 'page' } });
+  await Promise.resolve();
+  const child = publisher.attachChildSession('private-frame-session');
+  const lease = { expiresAt: '2026-08-05T00:00:00.000Z', id: '20000000-0000-4000-8000-000000000001', issuedAt: '2026-08-04T00:00:00.000Z', methods: ['Runtime.evaluate'], mode: 'exclusive-control' as const, targetGeneration: target.generation, targetId: target.id };
+  const childCommand = {
+    leaseId: '20000000-0000-4000-8000-000000000001',
+    method: 'Runtime.evaluate',
+    operationId: '30000000-0000-4000-8000-000000000001',
+    sessionId: child.id,
+    targetGeneration: target.generation,
+    targetId: target.id,
+  } satisfies CdpCommand;
+  await execute?.(childCommand, new AbortController().signal, lease);
+  publisher.debuggerEvent({ tabId: 42 }, 'Page.frameNavigated', { frame: { id: 'private-root-frame' } });
+
+  expect(sendCommand).toHaveBeenNthCalledWith(1, { sessionId: 'private-frame-session', tabId: 42 }, 'Target.setAutoAttach', { autoAttach: true, flatten: true, waitForDebuggerOnStart: false });
+  expect(sendCommand).toHaveBeenNthCalledWith(2, { sessionId: 'private-frame-session', tabId: 42 }, 'Runtime.evaluate', undefined);
+  await expect(execute?.(childCommand, new AbortController().signal, lease)).rejects.toThrow('not permitted');
+  expect(publisher.attachChildSession('private-frame-session').id).not.toBe(child.id);
+  expect(() => publisher.attachChildSession('private-page-session')).not.toThrow();
+  expect(JSON.stringify(sendCommand.mock.calls)).not.toContain('private-page-session');
 });

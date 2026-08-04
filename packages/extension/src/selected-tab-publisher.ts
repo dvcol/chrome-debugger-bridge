@@ -1,11 +1,20 @@
 import type { CapabilityGrant, CdpCommand, JsonObject, Lease, PublishedTarget } from '@dvcol/chrome-debugger-bridge/protocol';
 
+import type { PublicChildSession } from './child-session-router.js';
+
 import { isCdpNameAllowed, requiredLeaseMode } from '@dvcol/chrome-debugger-bridge/cdp-catalogue';
 
+import { createChildSessionRouter } from './child-session-router.js';
+
 export interface ChromeDebuggerPort {
-  attach: (target: { readonly tabId: number }, requiredVersion: string) => Promise<void> | void;
-  detach: (target: { readonly tabId: number }) => Promise<void> | void;
-  sendCommand: (target: { readonly tabId: number }, method: string, parameters?: JsonObject) => Promise<JsonObject>;
+  attach: (target: { readonly sessionId?: string; readonly tabId: number }, requiredVersion: string) => Promise<void> | void;
+  detach: (target: { readonly sessionId?: string; readonly tabId: number }) => Promise<void> | void;
+  sendCommand: (target: { readonly sessionId?: string; readonly tabId: number }, method: string, parameters?: JsonObject) => Promise<JsonObject>;
+}
+
+export interface ChromeDebuggerEventSource {
+  readonly sessionId?: string;
+  readonly tabId?: number;
 }
 
 export interface SelectedTab {
@@ -21,10 +30,10 @@ export interface SelectedTabPublisherOptions {
   readonly isExposureAllowed?: (tab: Omit<SelectedTab, 'tabId'>) => boolean;
   readonly metadataPolicy?: (tab: Omit<SelectedTab, 'tabId'>) => Pick<PublishedTarget, 'title' | 'url'>;
   readonly publishTarget: (target: PublishedTarget) => Promise<void> | void;
-  readonly publishEvent?: (target: Pick<PublishedTarget, 'generation' | 'id'>, method: string, parameters: JsonObject) => void;
+  readonly publishEvent?: (target: Pick<PublishedTarget, 'generation' | 'id'>, method: string, parameters: JsonObject, sessionId?: string) => void;
   readonly registerTargetExecutor?: (target: PublishedTarget, executor: {
     execute: (command: CdpCommand, abortSignal: AbortSignal, lease: Lease) => Promise<JsonObject>;
-    setSubscriptionDemand: (methodPrefix: string, active: boolean) => Promise<void>;
+    setSubscriptionDemand: (methodPrefix: string, active: boolean, sessionId?: string) => Promise<void>;
   }) => void;
   readonly revokeTarget: (target: Pick<PublishedTarget, 'generation' | 'id'>, reason: 'closed' | 'detached' | 'explicit' | 'policy-invalid') => Promise<void> | void;
   readonly scopeId: string;
@@ -32,7 +41,10 @@ export interface SelectedTabPublisherOptions {
 }
 
 export interface SelectedTabPublisher {
+  attachChildSession: (chromeSessionId: string) => PublicChildSession;
+  debuggerEvent: (source: ChromeDebuggerEventSource, method: string, parameters: JsonObject) => void;
   executeCommand: (command: CdpCommand, abortSignal: AbortSignal) => Promise<JsonObject>;
+  detachChildSession: (chromeSessionId: string) => PublicChildSession | undefined;
   publishEvent: (method: string, parameters: JsonObject) => void;
   publish: (tab: SelectedTab) => Promise<PublishedTarget>;
   refresh: (tab: SelectedTab) => Promise<void>;
@@ -42,6 +54,7 @@ export interface SelectedTabPublisher {
 }
 
 const domainNamePattern = /^[A-Za-z]+$/u;
+const eligibleChildTargetTypes = new Set(['iframe', 'service_worker', 'shared_worker', 'worker']);
 
 function isSupportedPage(url: string | undefined): boolean {
   if (url === undefined) {
@@ -57,6 +70,7 @@ function isSupportedPage(url: string | undefined): boolean {
 
 /** Keeps Chrome's tab identifier in this closure and publishes only a lifecycle-bound opaque target. */
 export function createSelectedTabPublisher(options: SelectedTabPublisherOptions): SelectedTabPublisher {
+  const childSessionRouter = createChildSessionRouter();
   let selectedTabId: number | undefined;
   let publishedTarget: PublishedTarget | undefined;
 
@@ -68,6 +82,49 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     return !tab.incognito && isSupportedPage(tab.url) && (options.isExposureAllowed?.(tab) ?? true);
   }
 
+  async function configureFlatSessions(chromeSessionId?: string): Promise<void> {
+    if (selectedTabId === undefined) throw new Error('The requested target is not available.');
+    try {
+      await options.chromeDebugger.sendCommand(
+        { tabId: selectedTabId, ...(chromeSessionId === undefined ? {} : { sessionId: chromeSessionId }) },
+        'Target.setAutoAttach',
+        { autoAttach: true, flatten: true, waitForDebuggerOnStart: false },
+      );
+    } catch {
+      throw new Error('The debugger session setup failed.');
+    }
+  }
+
+  function isEligibleChildAttachment(parameters: JsonObject): parameters is JsonObject & { readonly sessionId: string; readonly targetInfo: JsonObject & { readonly type: string } } {
+    const sessionId = parameters.sessionId;
+    const targetInfo = parameters.targetInfo;
+    return typeof sessionId === 'string'
+      && targetInfo !== null
+      && typeof targetInfo === 'object'
+      && !Array.isArray(targetInfo)
+      && typeof targetInfo.type === 'string'
+      && eligibleChildTargetTypes.has(targetInfo.type);
+  }
+
+  function handleAttachedChild(parameters: JsonObject): void {
+    if (!isEligibleChildAttachment(parameters)) return;
+    childSessionRouter.attach(parameters.sessionId);
+    void configureFlatSessions(parameters.sessionId).catch(() => {
+      childSessionRouter.detach(parameters.sessionId);
+    });
+  }
+
+  function handleDetachedChild(parameters: JsonObject): void {
+    if (typeof parameters.sessionId === 'string') childSessionRouter.detach(parameters.sessionId);
+  }
+
+  function invalidateChildrenOnRootNavigation(method: string, parameters: JsonObject): void {
+    if (method !== 'Page.frameNavigated') return;
+    const frame = parameters.frame;
+    if (frame === null || typeof frame !== 'object' || Array.isArray(frame) || frame.parentId !== undefined) return;
+    childSessionRouter.revoke();
+  }
+
   async function revoke(reason: 'closed' | 'detached' | 'explicit' | 'policy-invalid' = 'explicit'): Promise<void> {
     if (publishedTarget === undefined || selectedTabId === undefined) {
       return;
@@ -76,6 +133,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     const tabIdToDetach = selectedTabId;
     publishedTarget = undefined;
     selectedTabId = undefined;
+    childSessionRouter.revoke();
     await options.revokeTarget(targetToRevoke, reason);
     try {
       await options.chromeDebugger.detach({ tabId: tabIdToDetach });
@@ -104,8 +162,10 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     ) {
       throw new Error('The requested command is not permitted.');
     }
+    const chromeSessionId = command.sessionId === undefined ? undefined : childSessionRouter.resolve(command.sessionId);
+    if (command.sessionId !== undefined && chromeSessionId === undefined) throw new Error('The requested command is not permitted.');
     try {
-      const value = await options.chromeDebugger.sendCommand({ tabId: selectedTabId }, command.method, command.parameters);
+      const value = await options.chromeDebugger.sendCommand({ tabId: selectedTabId, ...(chromeSessionId === undefined ? {} : { sessionId: chromeSessionId }) }, command.method, command.parameters);
       if (abortSignal.aborted) {
         throw new Error('The requested command was cancelled.');
       }
@@ -115,24 +175,48 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     }
   }
 
-  function publishEvent(method: string, parameters: JsonObject): void {
+  function publishEvent(method: string, parameters: JsonObject, sessionId?: string): void {
     if (publishedTarget === undefined || !isCdpNameAllowed(publishedTarget.capabilities, method, 'event')) return;
-    options.publishEvent?.(publishedTarget, method, parameters);
+    options.publishEvent?.(publishedTarget, method, parameters, sessionId);
   }
 
-  async function setSubscriptionDemand(methodPrefix: string, active: boolean): Promise<void> {
+  async function setSubscriptionDemand(methodPrefix: string, active: boolean, sessionId?: string): Promise<void> {
     if (selectedTabId === undefined) throw new Error('The requested target is not available.');
     const domain = methodPrefix.split('.', 1)[0];
     if (domain === undefined || !domainNamePattern.test(domain)) throw new Error('The subscription method is invalid.');
     const command = `${domain}.${active ? 'enable' : 'disable'}`;
+    const chromeSessionId = sessionId === undefined ? undefined : childSessionRouter.resolve(sessionId);
+    if (sessionId !== undefined && chromeSessionId === undefined) throw new Error('The requested session is not available.');
     try {
-      await options.chromeDebugger.sendCommand({ tabId: selectedTabId }, command);
+      await options.chromeDebugger.sendCommand({ tabId: selectedTabId, ...(chromeSessionId === undefined ? {} : { sessionId: chromeSessionId }) }, command);
     } catch {
       throw new Error('The debugger subscription setup failed.');
     }
   }
 
   return {
+    attachChildSession(chromeSessionId) {
+      if (publishedTarget === undefined) throw new Error('The requested target is not available.');
+      return childSessionRouter.attach(chromeSessionId);
+    },
+    debuggerEvent(source, method, parameters) {
+      if (source.tabId !== selectedTabId) return;
+      if (method === 'Target.attachedToTarget') {
+        handleAttachedChild(parameters);
+        return;
+      }
+      if (method === 'Target.detachedFromTarget') {
+        handleDetachedChild(parameters);
+        return;
+      }
+      if (source.sessionId === undefined && method === 'Page.frameNavigated') {
+        invalidateChildrenOnRootNavigation(method, parameters);
+        return;
+      }
+      const publicSession = source.sessionId === undefined ? undefined : childSessionRouter.resolve(source.sessionId);
+      if (source.sessionId !== undefined && publicSession === undefined) return;
+      publishEvent(method, parameters, publicSession);
+    },
     async publish(tab) {
       if (!Number.isSafeInteger(tab.tabId) || tab.tabId < 0) {
         throw new Error('The selected tab is invalid.');
@@ -166,14 +250,18 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
         ...(metadata.url === undefined ? {} : { url: metadata.url }),
       };
 
+      selectedTabId = tab.tabId;
+      publishedTarget = target;
       try {
+        await configureFlatSessions();
         await options.publishTarget(target);
       } catch (error) {
+        childSessionRouter.revoke();
+        publishedTarget = undefined;
+        selectedTabId = undefined;
         await options.chromeDebugger.detach({ tabId: tab.tabId });
         throw error;
       }
-      selectedTabId = tab.tabId;
-      publishedTarget = target;
       options.registerTargetExecutor?.(target, { execute: executeCommand, setSubscriptionDemand });
       return target;
     },
@@ -209,6 +297,9 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       if (tabId === selectedTabId) await revoke('detached');
     },
     executeCommand,
+    detachChildSession(chromeSessionId) {
+      return childSessionRouter.detach(chromeSessionId);
+    },
     publishEvent,
     revoke,
   };

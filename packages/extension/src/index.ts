@@ -1,3 +1,4 @@
+export { type ChildSessionRouter, createChildSessionRouter, type PublicChildSession } from './child-session-router.js';
 export {
   createIndexedDbPairingStore,
   type CreateIndexedDbPairingStoreOptions,

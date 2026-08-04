@@ -30,6 +30,10 @@ declare const chrome: {
       addListener: (listener: (source: { readonly tabId?: number }) => void) => void;
       removeListener: (listener: (source: { readonly tabId?: number }) => void) => void;
     };
+    onEvent: {
+      addListener: (listener: (source: { readonly sessionId?: string; readonly tabId?: number }, method: string, parameters: Record<string, unknown>) => void) => void;
+      removeListener: (listener: (source: { readonly sessionId?: string; readonly tabId?: number }, method: string, parameters: Record<string, unknown>) => void) => void;
+    };
   };
   tabs: {
     onRemoved: {

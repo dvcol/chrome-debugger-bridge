@@ -34,7 +34,7 @@ export interface ReleaseLeaseRequest {
 
 export interface TargetCommandExecutor {
   execute: (command: CdpCommand, abortSignal: AbortSignal, lease: Lease) => Promise<JsonObject>;
-  setSubscriptionDemand?: (methodPrefix: string, active: boolean) => Promise<void>;
+  setSubscriptionDemand?: (methodPrefix: string, active: boolean, sessionId?: string) => Promise<void>;
 }
 
 export interface CdpSubscription extends AsyncIterable<CdpEvent> {
@@ -158,7 +158,8 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     if (count !== 0) return;
     const executor = executorsByTargetKey.get(getTargetKey(target.id, target.generation));
     try {
-      await executor?.setSubscriptionDemand?.(getSubscriptionDemand(request), true);
+      if (request.sessionId === undefined) await executor?.setSubscriptionDemand?.(getSubscriptionDemand(request), true);
+      else await executor?.setSubscriptionDemand?.(getSubscriptionDemand(request), true, request.sessionId);
     } catch {
       subscriptionDemandCountsByKey.delete(demandKey);
       throw new TargetBrokerError('CDP_COMMAND_FAILED');
@@ -171,7 +172,10 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     if (count <= 1) {
       subscriptionDemandCountsByKey.delete(demandKey);
       const executor = executorsByTargetKey.get(getTargetKey(target.id, target.generation));
-      void executor?.setSubscriptionDemand?.(getSubscriptionDemand(request), false).catch(() => {});
+      const setup = request.sessionId === undefined
+        ? executor?.setSubscriptionDemand?.(getSubscriptionDemand(request), false)
+        : executor?.setSubscriptionDemand?.(getSubscriptionDemand(request), false, request.sessionId);
+      void setup?.catch(() => {});
     } else subscriptionDemandCountsByKey.set(demandKey, count - 1);
   }
 

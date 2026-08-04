@@ -1,4 +1,6 @@
-import type { SelectedTab, SelectedTabPublisher } from './selected-tab-publisher.js';
+import type { JsonObject } from '@dvcol/chrome-debugger-bridge/protocol';
+
+import type { ChromeDebuggerEventSource, SelectedTab, SelectedTabPublisher } from './selected-tab-publisher.js';
 
 interface ChromeEvent<Listener> {
   addListener: (listener: Listener) => void;
@@ -8,6 +10,7 @@ interface ChromeEvent<Listener> {
 export interface ChromeSelectedTabLifecyclePort {
   readonly debugger: {
     readonly onDetach: ChromeEvent<(source: { readonly tabId?: number }) => void>;
+    readonly onEvent: ChromeEvent<(source: ChromeDebuggerEventSource, method: string, parameters: JsonObject) => void>;
   };
   readonly tabs: {
     readonly onRemoved: ChromeEvent<(tabId: number) => void>;
@@ -46,6 +49,10 @@ export function createSelectedTabLifecycle(options: SelectedTabLifecycleOptions)
     if (source.tabId !== undefined) reportFailure(options.publisher.debuggerDetached(source.tabId));
   }
 
+  function onEvent(source: ChromeDebuggerEventSource, method: string, parameters: JsonObject): void {
+    options.publisher.debuggerEvent(source, method, parameters);
+  }
+
   return {
     start() {
       if (started) return;
@@ -53,6 +60,7 @@ export function createSelectedTabLifecycle(options: SelectedTabLifecycleOptions)
       options.chrome.tabs.onUpdated.addListener(onUpdated);
       options.chrome.tabs.onRemoved.addListener(onRemoved);
       options.chrome.debugger.onDetach.addListener(onDetach);
+      options.chrome.debugger.onEvent.addListener(onEvent);
     },
     stop() {
       if (!started) return;
@@ -60,6 +68,7 @@ export function createSelectedTabLifecycle(options: SelectedTabLifecycleOptions)
       options.chrome.tabs.onUpdated.removeListener(onUpdated);
       options.chrome.tabs.onRemoved.removeListener(onRemoved);
       options.chrome.debugger.onDetach.removeListener(onDetach);
+      options.chrome.debugger.onEvent.removeListener(onEvent);
     },
   };
 }

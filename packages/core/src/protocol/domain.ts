@@ -79,6 +79,7 @@ export const cdpCommandSchemaDefinition = z.strictObject({
   method: nonEmptyStringSchemaDefinition,
   operationId: operationIdSchemaDefinition,
   parameters: z.optional(jsonObjectSchemaDefinition),
+  sessionId: z.optional(sessionIdSchemaDefinition),
   targetGeneration: positiveIntegerSchemaDefinition,
   targetId: targetIdSchemaDefinition,
 });

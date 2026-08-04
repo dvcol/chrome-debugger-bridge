@@ -377,6 +377,24 @@ it('returns subscription demand to the extension executor when the client closes
   expect(setSubscriptionDemand).toHaveBeenNthCalledWith(2, 'Runtime.consoleAPICalled', false);
 });
 
+it('routes subscription demand through an opaque child session', async () => {
+  expect.assertions(2);
+  const broker = createTargetBroker();
+  const setSubscriptionDemand = vi.fn(async () => {});
+  broker.publishTarget(target);
+  broker.registerTargetExecutor(target, { async execute() {
+    return {};
+  }, setSubscriptionDemand });
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
+  const sessionId = '80000000-0000-4000-8000-000000000001';
+  const subscription = await broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'disconnect' }, leaseId: lease.id, match: { method: 'Runtime.consoleAPICalled' }, sessionId, targetGeneration: target.generation, targetId: target.id });
+  subscription.close();
+  await Promise.resolve();
+
+  expect(setSubscriptionDemand).toHaveBeenNthCalledWith(1, 'Runtime.consoleAPICalled', true, sessionId);
+  expect(setSubscriptionDemand).toHaveBeenNthCalledWith(2, 'Runtime.consoleAPICalled', false, sessionId);
+});
+
 it('reference-counts domain demand and reconciles activation failures and revocation', async () => {
   expect.assertions(7);
   const broker = createTargetBroker();

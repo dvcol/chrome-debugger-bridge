@@ -1,3 +1,5 @@
+import type { JsonObject } from '@dvcol/chrome-debugger-bridge/protocol';
+
 import { expect, it, vi } from 'vitest';
 
 import { createSelectedTabLifecycle } from '../src/selected-tab-lifecycle.js';
@@ -17,17 +19,19 @@ function createChromeEvent<Listener>(): { readonly addListener: (listener: Liste
 }
 
 it('forwards Chrome tab and debugger lifecycle events to the selected target publisher', async () => {
-  expect.assertions(8);
+  expect.assertions(11);
   const onDetach = createChromeEvent<(source: { readonly tabId?: number }) => void>();
+  const onEvent = createChromeEvent<(source: { readonly sessionId?: string; readonly tabId?: number }, method: string, parameters: JsonObject) => void>();
   const onRemoved = createChromeEvent<(tabId: number) => void>();
   const onUpdated = createChromeEvent<(tabId: number, changeInfo: unknown, tab: { readonly incognito: boolean; readonly tabId: number; readonly title?: string; readonly url?: string }) => void>();
   const publisher = {
     debuggerDetached: vi.fn(async () => {}),
+    debuggerEvent: vi.fn(),
     refresh: vi.fn(async () => {}),
     tabClosed: vi.fn(async () => {}),
   };
   const lifecycle = createSelectedTabLifecycle({
-    chrome: { debugger: { onDetach }, tabs: { onRemoved, onUpdated } },
+    chrome: { debugger: { onDetach, onEvent }, tabs: { onRemoved, onUpdated } },
     publisher: publisher as never,
   });
 
@@ -37,6 +41,7 @@ it('forwards Chrome tab and debugger lifecycle events to the selected target pub
   onRemoved.listeners[0]?.(42);
   onDetach.listeners[0]?.({ tabId: 42 });
   onDetach.listeners[0]?.({});
+  onEvent.listeners[0]?.({ sessionId: 'private-session', tabId: 42 }, 'Runtime.consoleAPICalled', { type: 'log' });
   await Promise.resolve();
   lifecycle.stop();
   lifecycle.stop();
@@ -44,9 +49,12 @@ it('forwards Chrome tab and debugger lifecycle events to the selected target pub
   expect(onUpdated.listeners).toEqual([]);
   expect(onRemoved.listeners).toEqual([]);
   expect(onDetach.listeners).toEqual([]);
+  expect(onEvent.listeners).toEqual([]);
   expect(publisher.refresh).toHaveBeenCalledWith({ incognito: false, tabId: 42, title: 'Changed', url: 'https://example.com/' });
   expect(publisher.tabClosed).toHaveBeenCalledWith(42);
   expect(publisher.debuggerDetached).toHaveBeenCalledWith(42);
   expect(publisher.debuggerDetached).toHaveBeenCalledOnce();
   expect(publisher.refresh).toHaveBeenCalledOnce();
+  expect(publisher.debuggerEvent).toHaveBeenCalledWith({ sessionId: 'private-session', tabId: 42 }, 'Runtime.consoleAPICalled', { type: 'log' });
+  expect(publisher.debuggerEvent).toHaveBeenCalledOnce();
 });
