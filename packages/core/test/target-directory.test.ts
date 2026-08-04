@@ -1,4 +1,4 @@
-import type { AgentToBrokerMessage, BrokerToClientMessage, CdpCommand, PublishedTarget } from '../src/protocol.js';
+import type { AgentToBrokerMessage, BrokerToClientMessage, CdpCommand, ClientToBrokerMessage, PublishedTarget } from '../src/protocol.js';
 
 import { expect, it, vi } from 'vitest';
 
@@ -94,6 +94,54 @@ it('streams a fresh target snapshot followed by ordered lifecycle notifications 
   expect(messages[1]).toMatchObject({ method: 'targets.published', parameters: { target } });
   expect(messages[2]).toMatchObject({ method: 'targets.updated', parameters: { target: { title: 'Updated title' } } });
   expect(messages[3]).toEqual({ kind: 'notification', method: 'targets.revoked', parameters: { reason: 'closed', targetGeneration: 1, targetId: target.id }, protocolVersion: 1 });
+});
+
+it('serves independent subscription responses and event streams over the client-plane connection', async () => {
+  expect.assertions(4);
+  const broker = createTargetBroker();
+  const messages: BrokerToClientMessage[] = [];
+  let listener: ((message: ClientToBrokerMessage) => void) | undefined;
+  let resolveSubscribed: (() => void) | undefined;
+  let resolveEvent: (() => void) | undefined;
+  let resolveUnsubscribed: (() => void) | undefined;
+  const subscribed = new Promise<void>(resolve => resolveSubscribed = resolve);
+  const eventDelivered = new Promise<void>(resolve => resolveEvent = resolve);
+  const unsubscribed = new Promise<void>(resolve => resolveUnsubscribed = resolve);
+  const disconnect = connectClientTargetBroker({
+    onMessage(receivedListener) {
+      listener = receivedListener;
+      return () => listener = undefined;
+    },
+    async send(message) {
+      messages.push(message);
+      if (message.kind === 'response' && message.method === 'cdp.subscribe') resolveSubscribed?.();
+      if (message.kind === 'response' && message.method === 'cdp.unsubscribe') resolveUnsubscribed?.();
+      if (message.kind === 'notification' && message.method === 'cdp.event') resolveEvent?.();
+    },
+  }, broker);
+  broker.publishTarget(target);
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
+  listener?.({
+    kind: 'request',
+    method: 'cdp.subscribe',
+    parameters: { buffer: { capacity: 1, overflowStrategy: 'disconnect' }, leaseId: lease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id },
+    protocolVersion: 1,
+    requestId: '70000000-0000-4000-8000-000000000001',
+  });
+  await subscribed;
+  broker.publishEvent(target, 'Runtime.consoleAPICalled', { type: 'log' });
+  await eventDelivered;
+  const response = messages.find(message => message.kind === 'response' && message.method === 'cdp.subscribe');
+  const event = messages.find(message => message.kind === 'notification' && message.method === 'cdp.event');
+  const subscriptionId = response?.kind === 'response' && response.method === 'cdp.subscribe' ? response.result.subscriptionId : undefined;
+  listener?.({ kind: 'request', method: 'cdp.unsubscribe', parameters: { subscriptionId: subscriptionId! }, protocolVersion: 1, requestId: '70000000-0000-4000-8000-000000000002' });
+  await unsubscribed;
+  disconnect();
+
+  expect(subscriptionId).toMatch(/^[0-9a-f-]{36}$/u);
+  expect(event).toMatchObject({ parameters: { method: 'Runtime.consoleAPICalled', parameters: { type: 'log' } } });
+  expect(messages.some(message => message.kind === 'response' && message.method === 'cdp.unsubscribe')).toBe(true);
+  expect(listener).toBeUndefined();
 });
 
 it('executes only a non-expired lease grant through the registered opaque target executor', async () => {
@@ -259,6 +307,58 @@ it('reports overflow and retains the newest event for a drop-oldest subscription
   expect(subscription.overflowed).toBe(true);
   expect(event).toMatchObject({ done: false, value: { method: 'Runtime.consoleAPICalled', sequence: 2 } });
   expect(Object.keys(event.done ? {} : event.value)).not.toContain('sessionId');
+});
+
+it('filters event payloads, flushes independent batches, and records drop-newest overflow', async () => {
+  expect.assertions(6);
+  vi.useFakeTimers();
+  try {
+    const broker = createTargetBroker();
+    broker.publishTarget(target);
+    const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
+    const sessionId = '80000000-0000-4000-8000-000000000001';
+    const subscription = await broker.subscribe({
+      batch: { flushMilliseconds: 10, maximumEvents: 2 },
+      buffer: { capacity: 1, overflowStrategy: 'drop-newest' },
+      leaseId: lease.id,
+      match: { domain: 'Runtime' },
+      predicate: { equals: 'log', path: ['type'] },
+      sessionId,
+      targetGeneration: target.generation,
+      targetId: target.id,
+    });
+    broker.publishEvent(target, 'Runtime.consoleAPICalled', { type: 'warning' }, sessionId);
+    broker.publishEvent(target, 'Runtime.consoleAPICalled', { type: 'log' }, '80000000-0000-4000-8000-000000000002');
+    broker.publishEvent(target, 'Runtime.consoleAPICalled', { type: 'log' }, sessionId);
+    const event = subscription[Symbol.asyncIterator]().next();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(await event).toMatchObject({ done: false, value: { parameters: { type: 'log' }, sequence: 1 } });
+    expect(subscription.droppedCount).toBe(0);
+    broker.publishEvent(target, 'Runtime.consoleAPICalled', { type: 'log' }, sessionId);
+    broker.publishEvent(target, 'Runtime.consoleAPICalled', { type: 'log' }, sessionId);
+    expect(subscription.overflowed).toBe(true);
+    expect(subscription.droppedCount).toBe(1);
+    expect(subscription.lastDeliveredSequence).toBe(1);
+    expect((await subscription[Symbol.asyncIterator]().next()).value).toMatchObject({ sequence: 2 });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('disconnects a saturated subscriber without affecting independent subscribers', async () => {
+  expect.assertions(3);
+  const broker = createTargetBroker();
+  broker.publishTarget(target);
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
+  const disconnected = await broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'disconnect' }, leaseId: lease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });
+  const healthy = await broker.subscribe({ buffer: { capacity: 2, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });
+  broker.publishEvent(target, 'Runtime.consoleAPICalled', {});
+  broker.publishEvent(target, 'Runtime.consoleAPICalled', {});
+
+  expect(disconnected.droppedCount).toBe(1);
+  expect(await disconnected[Symbol.asyncIterator]().next()).toEqual({ done: true, value: undefined });
+  expect((await healthy[Symbol.asyncIterator]().next()).value).toMatchObject({ sequence: 1 });
 });
 
 it('returns subscription demand to the extension executor when the client closes', async () => {

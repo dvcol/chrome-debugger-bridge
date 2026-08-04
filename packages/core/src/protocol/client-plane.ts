@@ -7,6 +7,7 @@ import {
   cdpCommandResultSchemaDefinition,
   cdpCommandSchemaDefinition,
   cdpEventSchemaDefinition,
+  cdpSubscriptionOverflowSchemaDefinition,
   cdpSubscriptionRequestSchemaDefinition,
   connectionLimitsSchemaDefinition,
   implementationInfoSchemaDefinition,
@@ -161,6 +162,13 @@ const cdpEventNotificationSchemaDefinition = z.strictObject({
   protocolVersion: protocolVersionSchemaDefinition,
 });
 
+const subscriptionOverflowNotificationSchemaDefinition = z.strictObject({
+  kind: z.literal('notification'),
+  method: z.literal('subscriptions.overflow'),
+  parameters: cdpSubscriptionOverflowSchemaDefinition,
+  protocolVersion: protocolVersionSchemaDefinition,
+});
+
 const targetPublishedNotificationSchemaDefinition = z.strictObject({
   kind: z.literal('notification'),
   method: z.literal('targets.published'),
@@ -217,6 +225,7 @@ export const brokerToClientMessageSchemaDefinition = z.union([
   clientErrorResponseSchemaDefinition,
   z.discriminatedUnion('method', [
     cdpEventNotificationSchemaDefinition,
+    subscriptionOverflowNotificationSchemaDefinition,
     targetPublishedNotificationSchemaDefinition,
     targetSnapshotNotificationSchemaDefinition,
     targetUpdatedNotificationSchemaDefinition,

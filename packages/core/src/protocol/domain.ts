@@ -6,6 +6,7 @@ import {
   exposeProtocolSchema,
   instanceIdSchemaDefinition,
   jsonObjectSchemaDefinition,
+  jsonValueSchemaDefinition,
   leaseIdSchemaDefinition,
   nonEmptyStringSchemaDefinition,
   operationIdSchemaDefinition,
@@ -13,6 +14,7 @@ import {
 
   protocolVersionSchemaDefinition,
   scopeIdSchemaDefinition,
+  sessionIdSchemaDefinition,
   shortTextSchemaDefinition,
   subscriptionIdSchemaDefinition,
   targetIdSchemaDefinition,
@@ -93,6 +95,7 @@ export const cdpCancellationSchemaDefinition = z.strictObject({
 });
 
 export const cdpSubscriptionMatchSchemaDefinition = z.union([
+  z.strictObject({ domain: nonEmptyStringSchemaDefinition }),
   z.strictObject({ method: nonEmptyStringSchemaDefinition }),
   z.strictObject({ methodPrefix: nonEmptyStringSchemaDefinition }),
 ]);
@@ -102,10 +105,23 @@ export const cdpSubscriptionBufferSchemaDefinition = z.strictObject({
   overflowStrategy: z.enum(['disconnect', 'drop-newest', 'drop-oldest']),
 });
 
+export const cdpSubscriptionBatchSchemaDefinition = z.strictObject({
+  flushMilliseconds: positiveIntegerSchemaDefinition,
+  maximumEvents: positiveIntegerSchemaDefinition,
+});
+
+export const cdpSubscriptionPredicateSchemaDefinition = z.strictObject({
+  equals: jsonValueSchemaDefinition,
+  path: z.array(nonEmptyStringSchemaDefinition).check(z.maxLength(8)),
+});
+
 export const cdpSubscriptionRequestSchemaDefinition = z.strictObject({
+  batch: z.optional(cdpSubscriptionBatchSchemaDefinition),
   buffer: cdpSubscriptionBufferSchemaDefinition,
   leaseId: leaseIdSchemaDefinition,
   match: cdpSubscriptionMatchSchemaDefinition,
+  predicate: z.optional(cdpSubscriptionPredicateSchemaDefinition),
+  sessionId: z.optional(sessionIdSchemaDefinition),
   targetGeneration: positiveIntegerSchemaDefinition,
   targetId: targetIdSchemaDefinition,
 });
@@ -114,6 +130,15 @@ export const cdpEventSchemaDefinition = z.strictObject({
   method: nonEmptyStringSchemaDefinition,
   parameters: jsonObjectSchemaDefinition,
   sequence: positiveIntegerSchemaDefinition,
+  sessionId: z.optional(sessionIdSchemaDefinition),
+  subscriptionId: subscriptionIdSchemaDefinition,
+  targetGeneration: positiveIntegerSchemaDefinition,
+  targetId: targetIdSchemaDefinition,
+});
+
+export const cdpSubscriptionOverflowSchemaDefinition = z.strictObject({
+  droppedCount: positiveIntegerSchemaDefinition,
+  lastDeliveredSequence: z.int().check(z.gte(0)),
   subscriptionId: subscriptionIdSchemaDefinition,
   targetGeneration: positiveIntegerSchemaDefinition,
   targetId: targetIdSchemaDefinition,
@@ -165,7 +190,10 @@ export const cdpCommandSchema = exposeProtocolSchema(cdpCommandSchemaDefinition)
 export const cdpCommandResultSchema = exposeProtocolSchema(cdpCommandResultSchemaDefinition);
 export const cdpCancellationSchema = exposeProtocolSchema(cdpCancellationSchemaDefinition);
 export const cdpSubscriptionRequestSchema = exposeProtocolSchema(cdpSubscriptionRequestSchemaDefinition);
+export const cdpSubscriptionBatchSchema = exposeProtocolSchema(cdpSubscriptionBatchSchemaDefinition);
+export const cdpSubscriptionPredicateSchema = exposeProtocolSchema(cdpSubscriptionPredicateSchemaDefinition);
 export const cdpEventSchema = exposeProtocolSchema(cdpEventSchemaDefinition);
+export const cdpSubscriptionOverflowSchema = exposeProtocolSchema(cdpSubscriptionOverflowSchemaDefinition);
 export const bridgeErrorCodeSchema = exposeProtocolSchema(bridgeErrorCodeSchemaDefinition);
 export const bridgeErrorSchema = exposeProtocolSchema(bridgeErrorSchemaDefinition);
 
@@ -182,6 +210,9 @@ export type CdpCommand = ProtocolSchemaOutput<typeof cdpCommandSchema>;
 export type CdpCommandResult = ProtocolSchemaOutput<typeof cdpCommandResultSchema>;
 export type CdpCancellation = ProtocolSchemaOutput<typeof cdpCancellationSchema>;
 export type CdpSubscriptionRequest = ProtocolSchemaOutput<typeof cdpSubscriptionRequestSchema>;
+export type CdpSubscriptionBatch = ProtocolSchemaOutput<typeof cdpSubscriptionBatchSchema>;
+export type CdpSubscriptionPredicate = ProtocolSchemaOutput<typeof cdpSubscriptionPredicateSchema>;
 export type CdpEvent = ProtocolSchemaOutput<typeof cdpEventSchema>;
+export type CdpSubscriptionOverflow = ProtocolSchemaOutput<typeof cdpSubscriptionOverflowSchema>;
 export type BridgeErrorCode = ProtocolSchemaOutput<typeof bridgeErrorCodeSchema>;
 export type BridgeError = ProtocolSchemaOutput<typeof bridgeErrorSchema>;

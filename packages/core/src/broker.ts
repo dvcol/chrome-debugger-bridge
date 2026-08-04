@@ -1,5 +1,5 @@
 import type { TargetChange, TargetRevocationReason } from './client.js';
-import type { CdpCommand, CdpEvent, CdpSubscriptionRequest, JsonObject, Lease, PublishedTarget } from './protocol.js';
+import type { CdpCommand, CdpEvent, CdpSubscriptionRequest, JsonObject, JsonValue, Lease, PublishedTarget } from './protocol.js';
 
 import { isCdpNameAllowed, requiredLeaseMode } from './cdp-authorization.js';
 
@@ -36,9 +36,20 @@ export interface TargetCommandExecutor {
 }
 
 export interface CdpSubscription extends AsyncIterable<CdpEvent> {
+  readonly droppedCount: number;
   readonly id: string;
+  readonly lastDeliveredSequence: number;
   readonly overflowed: boolean;
+  readonly targetGeneration: number;
+  readonly targetId: string;
   close: () => void;
+}
+
+interface SubscriptionState {
+  close: () => void;
+  offer: (method: string, parameters: JsonObject, sessionId?: string) => void;
+  request: CdpSubscriptionRequest;
+  sequence: number;
 }
 
 export class TargetBrokerError extends Error {
@@ -64,7 +75,7 @@ export interface TargetBroker {
   revokeTarget: (targetId: string, generation: number, reason?: TargetRevocationReason) => void;
   updateTarget: (target: PublishedTarget) => void;
   watchTargets: () => AsyncIterable<TargetChange>;
-  publishEvent: (target: Pick<PublishedTarget, 'generation' | 'id'>, method: string, parameters: JsonObject) => void;
+  publishEvent: (target: Pick<PublishedTarget, 'generation' | 'id'>, method: string, parameters: JsonObject, sessionId?: string) => void;
   releaseLease: (request: ReleaseLeaseRequest) => void;
   renewLease: (request: RenewLeaseRequest) => Lease;
   subscribe: (request: CdpSubscriptionRequest) => Promise<CdpSubscription>;
@@ -81,7 +92,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   const executorsByTargetKey = new Map<string, TargetCommandExecutor>();
   const cancellationsByOperationId = new Map<string, AbortController>();
   const commandOperationIdsByTargetKey = new Map<string, Set<string>>();
-  const subscriptions = new Map<string, { close: () => void; offer: (method: string, parameters: JsonObject) => void; request: CdpSubscriptionRequest; sequence: number }>();
+  const subscriptions = new Map<string, SubscriptionState>();
   const targetWatchers = new Set<{ offer: (change: TargetChange) => void }>();
   let targetChangeSequence = 0;
 
@@ -103,6 +114,30 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       throw new TargetBrokerError('TARGET_GENERATION_STALE');
     }
     return target;
+  }
+
+  function eventMatchesSubscription(request: CdpSubscriptionRequest, method: string, parameters: JsonObject, sessionId: string | undefined): boolean {
+    const matches = 'domain' in request.match
+      ? method.startsWith(`${request.match.domain}.`)
+      : 'method' in request.match
+        ? method === request.match.method
+        : method.startsWith(request.match.methodPrefix);
+    if (!matches || (request.sessionId !== undefined && request.sessionId !== sessionId)) return false;
+    if (request.predicate === undefined) return true;
+    let value: JsonValue | undefined = parameters;
+    for (const segment of request.predicate.path) {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+      value = value[segment];
+    }
+    return JSON.stringify(value) === JSON.stringify(request.predicate.equals);
+  }
+
+  function getSubscriptionDemand(request: CdpSubscriptionRequest): string {
+    return 'domain' in request.match
+      ? `${request.match.domain}.`
+      : 'method' in request.match
+        ? request.match.method
+        : request.match.methodPrefix;
   }
 
   function removeExpiredLeases(): void {
@@ -289,10 +324,10 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         },
       };
     },
-    publishEvent(target, method, parameters) {
+    publishEvent(target, method, parameters, sessionId) {
       const publishedTarget = getCurrentTarget(target.id, target.generation);
       if (!isCdpNameAllowed(publishedTarget.capabilities, method, 'event')) return;
-      for (const subscription of subscriptions.values()) if (subscription.request.targetId === target.id && subscription.request.targetGeneration === target.generation) subscription.offer(method, parameters);
+      for (const subscription of subscriptions.values()) if (subscription.request.targetId === target.id && subscription.request.targetGeneration === target.generation) subscription.offer(method, parameters, sessionId);
     },
     releaseLease(request) {
       getCurrentTarget(request.targetId, request.targetGeneration);
@@ -315,51 +350,79 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       if (requestedName !== undefined && (!lease.methods.includes(requestedName) || !isCdpNameAllowed(target.capabilities, requestedName, 'event') || (lease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [requestedName]) === 'exclusive-control'))) throw new TargetBrokerError('CAPABILITY_DENIED');
       const id = globalThis.crypto.randomUUID();
       const buffer: CdpEvent[] = [];
+      const batch = request.batch ?? { flushMilliseconds: 1, maximumEvents: 1 };
       let closed = false;
+      let droppedCount = 0;
+      let flushTimeout: ReturnType<typeof setTimeout> | undefined;
+      let lastDeliveredSequence = 0;
       let overflowed = false;
       let resolver: ((result: IteratorResult<CdpEvent>) => void) | undefined;
+      const flush = (): void => {
+        flushTimeout = undefined;
+        if (resolver === undefined) return;
+        const event = buffer.shift();
+        if (event === undefined) return;
+        const resolve = resolver;
+        resolver = undefined;
+        lastDeliveredSequence = event.sequence;
+        resolve({ done: false, value: event });
+      };
+      const scheduleFlush = (): void => {
+        if (flushTimeout === undefined && buffer.length > 0) flushTimeout = setTimeout(flush, batch.flushMilliseconds);
+      };
       const close = (): void => {
         closed = true;
+        if (flushTimeout !== undefined) clearTimeout(flushTimeout);
+        buffer.length = 0;
         subscriptions.delete(id);
         resolver?.({ done: true, value: undefined });
         const executor = executorsByTargetKey.get(getTargetKey(target.id, target.generation));
         if (executor?.setSubscriptionDemand !== undefined) {
-          const methodPrefix = 'method' in request.match ? request.match.method : request.match.methodPrefix;
-          void executor.setSubscriptionDemand(methodPrefix, false);
+          void executor.setSubscriptionDemand(getSubscriptionDemand(request), false);
         }
       };
-      const subscription: CdpSubscription = { close, id, get overflowed() {
+      const subscription: CdpSubscription = { close, get droppedCount() {
+        return droppedCount;
+      }, id, get lastDeliveredSequence() {
+        return lastDeliveredSequence;
+      }, get overflowed() {
         return overflowed;
-      }, [Symbol.asyncIterator]: () => ({ next: async () => {
+      }, targetGeneration: target.generation, targetId: target.id, [Symbol.asyncIterator]: () => ({ next: async () => {
         const event = buffer.shift();
-        if (event !== undefined) return Promise.resolve({ done: false, value: event });
+        if (event !== undefined) {
+          lastDeliveredSequence = event.sequence;
+          return Promise.resolve({ done: false, value: event });
+        }
         if (closed) return Promise.resolve({ done: true, value: undefined });
-        return new Promise(resolve => resolver = resolve);
+        return new Promise((resolve) => {
+          resolver = resolve;
+          scheduleFlush();
+        });
       } }) };
-      subscriptions.set(id, { close, offer(method, parameters) {
-        const matches = 'method' in request.match ? method === request.match.method : method.startsWith(request.match.methodPrefix);
+      subscriptions.set(id, { close, offer(method, parameters, sessionId) {
+        const matches = eventMatchesSubscription(request, method, parameters, sessionId);
         if (!matches || closed || !lease.methods.includes(method) || !isCdpNameAllowed(target.capabilities, method, 'event') || (lease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [method]) === 'exclusive-control')) return;
         const current = subscriptions.get(id);
         if (current === undefined) return;
-        const event: CdpEvent = { method, parameters, sequence: current.sequence++, subscriptionId: id, targetGeneration: target.generation, targetId: target.id };
-        if (resolver !== undefined) {
-          const resolve = resolver;
-          resolver = undefined;
-          resolve({ done: false, value: event });
-        } else if (buffer.length < request.buffer.capacity) buffer.push(event);
-        else {
+        const event: CdpEvent = { method, parameters, sequence: current.sequence++, subscriptionId: id, targetGeneration: target.generation, targetId: target.id, ...(sessionId === undefined ? {} : { sessionId }) };
+        if (buffer.length < request.buffer.capacity) {
+          buffer.push(event);
+          if (buffer.length >= batch.maximumEvents) flush();
+          else scheduleFlush();
+        } else {
           overflowed = true;
+          droppedCount += 1;
           if (request.buffer.overflowStrategy === 'disconnect') close();
           else if (request.buffer.overflowStrategy === 'drop-oldest') {
             buffer.shift();
             buffer.push(event);
+            if (buffer.length >= batch.maximumEvents) flush();
           }
         }
       }, request, sequence: 1 });
       const executor = executorsByTargetKey.get(getTargetKey(target.id, target.generation));
       if (executor?.setSubscriptionDemand !== undefined) {
-        const methodPrefix = 'method' in request.match ? request.match.method : request.match.methodPrefix;
-        await executor.setSubscriptionDemand(methodPrefix, true);
+        await executor.setSubscriptionDemand(getSubscriptionDemand(request), true);
       }
       return subscription;
     },
