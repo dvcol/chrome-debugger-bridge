@@ -1,4 +1,5 @@
 export { type AgentRecovery, type AgentRecoveryState, createAgentRecovery, type CreateAgentRecoveryOptions, type RecoverableAgentConnection } from './agent-recovery.js';
+export { type BrokerTabAssignment, type BrokerTabPublisher, createBrokerTabAssignment } from './broker-tab-assignment.js';
 export { type ChildSessionRouter, createChildSessionRouter, type PublicChildSession } from './child-session-router.js';
 export {
   createIndexedDbPairingStore,
