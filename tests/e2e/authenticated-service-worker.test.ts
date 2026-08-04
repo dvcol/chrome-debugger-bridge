@@ -24,7 +24,7 @@ afterEach(async () => {
 });
 
 it('runs the authenticated browser transport inside an MV3 service worker', async () => {
-  expect.assertions(4);
+  expect.assertions(6);
   const brokerId = crypto.randomUUID();
   const pairingCode = '047204';
   const bridge = await createStandaloneAuthenticatedWebSocketBridge({
@@ -122,6 +122,7 @@ it('runs the authenticated browser transport inside an MV3 service worker', asyn
       }) => Promise<{
         readonly brokerId: string;
         readonly connectionId: string;
+        readonly resumedConnectionId: string;
         readonly responseKind: string;
         readonly responseMethod: string;
       }>;
@@ -134,6 +135,8 @@ it('runs the authenticated browser transport inside an MV3 service worker', asyn
 
   expect(result.brokerId).toBe(brokerId);
   expect(result.connectionId).toMatch(/^[\da-f-]{36}$/u);
+  expect(result.resumedConnectionId).toMatch(/^[\da-f-]{36}$/u);
+  expect(result.resumedConnectionId).not.toBe(result.connectionId);
   expect(result.responseKind).toBe('response');
   expect(result.responseMethod).toBe('agent.hello');
 }, 20_000);

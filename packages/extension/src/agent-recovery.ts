@@ -62,7 +62,7 @@ export function createAgentRecovery<Connection extends RecoverableAgentConnectio
       void options.heartbeat?.(connection, generation).then(() => {
         scheduleHeartbeat(connection, generation);
       }).catch(() => {
-        connection.close(1001, 'Agent heartbeat failed');
+        connection.close(3001, 'Agent heartbeat failed');
       });
     }, heartbeatIntervalMilliseconds);
   }

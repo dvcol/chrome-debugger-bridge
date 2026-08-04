@@ -105,6 +105,6 @@ it('closes a live connection when its scheduled heartbeat fails', async () => {
   await Promise.resolve();
   await Promise.resolve();
 
-  expect((await connection.closed).code).toBe(1001);
+  expect((await connection.closed).code).toBe(3001);
   expect(recovery.state).toBe('reconnecting');
 });

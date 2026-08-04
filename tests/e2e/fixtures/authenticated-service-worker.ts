@@ -12,6 +12,7 @@ interface ServiceWorkerTestInput {
 interface ServiceWorkerTestResult {
   readonly brokerId: string;
   readonly connectionId: string;
+  readonly resumedConnectionId: string;
   readonly responseKind: BrokerToAgentMessage['kind'];
   readonly responseMethod: BrokerToAgentMessage['method'];
 }
@@ -106,11 +107,38 @@ bridgeTestGlobal.runAuthenticatedBridgeTest = async (input) => {
   };
   await activeConnection.send(hello);
   const message = await response;
-  recovery.stop();
+  activeConnection.close(3001, 'MV3 recovery test interruption');
   await activeConnection.closed;
+  const resumedConnection = await new Promise<BrowserAgentConnection>((resolve, reject) => {
+    const deadline = globalThis.setTimeout(() => reject(new Error('The recovering agent did not reconnect.')), 5_000);
+    const waitForReconnect = (): void => {
+      if (connection !== undefined && connection !== activeConnection) {
+        globalThis.clearTimeout(deadline);
+        resolve(connection);
+        return;
+      }
+      globalThis.setTimeout(waitForReconnect, 10);
+    };
+    waitForReconnect();
+  });
+  const resumedResponse = new Promise<BrokerToAgentMessage>((resolve) => {
+    const removeListener = resumedConnection.onMessage((receivedMessage) => {
+      removeListener();
+      resolve(receivedMessage);
+    });
+  });
+  await resumedConnection.send({
+    ...hello,
+    parameters: { ...hello.parameters, connectionGeneration: 2 },
+    requestId: crypto.randomUUID(),
+  });
+  await resumedResponse;
+  recovery.stop();
+  await resumedConnection.closed;
   return {
     brokerId: activeConnection.brokerId,
     connectionId: activeConnection.connectionId,
+    resumedConnectionId: resumedConnection.connectionId,
     responseKind: message.kind,
     responseMethod: message.method,
   };
