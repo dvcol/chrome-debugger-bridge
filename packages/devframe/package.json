@@ -20,7 +20,9 @@
       "import": "./dist/node.mjs"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsdown",
     "lint": "eslint src test tsdown.config.ts vitest.config.ts --cache",
@@ -31,7 +33,8 @@
   },
   "dependencies": {
     "@dvcol/chrome-debugger-bridge": "workspace:^",
-    "@dvcol/chrome-debugger-bridge-websocket": "workspace:^"
+    "@dvcol/chrome-debugger-bridge-websocket": "workspace:^",
+    "birpc": "catalog:"
   },
   "publishConfig": {
     "access": "public"
