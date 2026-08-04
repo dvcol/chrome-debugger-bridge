@@ -1,6 +1,7 @@
 import type { AgentToBrokerMessage, BrokerToAgentMessage } from '../../../packages/core/src/protocol.js';
+import type { BrowserAgentConnection } from '../../../packages/websocket/src/browser.js';
 
-import { createIndexedDbPairingStore, createSelectedTabLifecycle, createSelectedTabPublisher } from '../../../packages/extension/src/index.js';
+import { createAgentRecovery, createIndexedDbPairingStore, createSelectedTabLifecycle, createSelectedTabPublisher } from '../../../packages/extension/src/index.js';
 import { connectAgentWebSocket } from '../../../packages/websocket/src/browser.js';
 
 interface ServiceWorkerTestInput {
@@ -52,15 +53,30 @@ declare const chrome: {
 const bridgeTestGlobal = globalThis as typeof globalThis & BridgeTestGlobal;
 
 bridgeTestGlobal.runAuthenticatedBridgeTest = async (input) => {
-  const connection = await connectAgentWebSocket({
-    credentialStore: createIndexedDbPairingStore({ databaseName: 'mv3-service-worker-test' }),
-    endpoint: input.endpoint,
-    async requestPairingCode() {
-      return input.pairingCode;
+  let connection: BrowserAgentConnection | undefined;
+  let resolveReady: (() => void) | undefined;
+  const ready = new Promise<void>(resolve => resolveReady = resolve);
+  const recovery = createAgentRecovery({
+    async connect() {
+      return connectAgentWebSocket({
+        credentialStore: createIndexedDbPairingStore({ databaseName: 'mv3-service-worker-test' }),
+        endpoint: input.endpoint,
+        async requestPairingCode() {
+          return input.pairingCode;
+        },
+      });
+    },
+    async reconcile(connectedAgent) {
+      connection = connectedAgent;
+      resolveReady?.();
     },
   });
+  recovery.start();
+  await ready;
+  if (connection === undefined) throw new Error('The recovering agent did not establish a connection.');
+  const activeConnection = connection;
   const response = new Promise<BrokerToAgentMessage>((resolve) => {
-    const removeListener = connection.onMessage((message) => {
+    const removeListener = activeConnection.onMessage((message) => {
       removeListener();
       resolve(message);
     });
@@ -88,13 +104,13 @@ bridgeTestGlobal.runAuthenticatedBridgeTest = async (input) => {
     protocolVersion: 1,
     requestId: crypto.randomUUID(),
   };
-  await connection.send(hello);
+  await activeConnection.send(hello);
   const message = await response;
-  connection.close(1000, 'MV3 test complete');
-  await connection.closed;
+  recovery.stop();
+  await activeConnection.closed;
   return {
-    brokerId: connection.brokerId,
-    connectionId: connection.connectionId,
+    brokerId: activeConnection.brokerId,
+    connectionId: activeConnection.connectionId,
     responseKind: message.kind,
     responseMethod: message.method,
   };

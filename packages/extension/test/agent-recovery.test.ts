@@ -78,3 +78,33 @@ it('does not reconnect after revoked authority', async () => {
   expect((await connection.closed).code).toBe(4001);
   expect(recovery.connection).toBeUndefined();
 });
+
+it('closes a live connection when its scheduled heartbeat fails', async () => {
+  expect.assertions(3);
+  const connection = createConnection();
+  const scheduledTasks: Array<() => void> = [];
+  const recovery = createAgentRecovery({
+    async connect() {
+      return connection;
+    },
+    async heartbeat() {
+      throw new Error('network loss');
+    },
+    async reconcile() {},
+    schedule(task) {
+      scheduledTasks.push(task);
+      return 0 as never;
+    },
+  });
+
+  recovery.start();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(recovery.state).toBe('ready');
+  scheduledTasks.shift()?.();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect((await connection.closed).code).toBe(1001);
+  expect(recovery.state).toBe('reconnecting');
+});

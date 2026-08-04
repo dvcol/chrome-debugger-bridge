@@ -7,6 +7,8 @@ export interface RecoverableAgentConnection {
 
 export interface CreateAgentRecoveryOptions<Connection extends RecoverableAgentConnection> {
   readonly connect: (connectionGeneration: number) => Promise<Connection>;
+  readonly heartbeat?: (connection: Connection, connectionGeneration: number) => Promise<void>;
+  readonly heartbeatIntervalMilliseconds?: number;
   readonly maximumBackoffMilliseconds?: number;
   readonly minimumBackoffMilliseconds?: number;
   readonly onStateChange?: (state: AgentRecoveryState) => void;
@@ -27,6 +29,7 @@ export interface AgentRecovery<Connection extends RecoverableAgentConnection> {
 export function createAgentRecovery<Connection extends RecoverableAgentConnection>(options: CreateAgentRecoveryOptions<Connection>): AgentRecovery<Connection> {
   const minimumBackoffMilliseconds = options.minimumBackoffMilliseconds ?? 250;
   const maximumBackoffMilliseconds = options.maximumBackoffMilliseconds ?? 30_000;
+  const heartbeatIntervalMilliseconds = options.heartbeatIntervalMilliseconds ?? 20_000;
   const schedule = options.schedule ?? globalThis.setTimeout;
   const cancelScheduled = options.cancelScheduled ?? globalThis.clearTimeout;
   let activeConnection: Connection | undefined;
@@ -34,6 +37,7 @@ export function createAgentRecovery<Connection extends RecoverableAgentConnectio
   let connectionGeneration = 0;
   let currentState: AgentRecoveryState = 'stopped';
   let scheduledReconnect: number | ReturnType<typeof globalThis.setTimeout> | undefined;
+  let scheduledHeartbeat: number | ReturnType<typeof globalThis.setTimeout> | undefined;
   let stopped = true;
 
   function setState(state: AgentRecoveryState): void {
@@ -49,6 +53,18 @@ export function createAgentRecovery<Connection extends RecoverableAgentConnectio
       scheduledReconnect = undefined;
       void connect();
     }, delayMilliseconds);
+  }
+
+  function scheduleHeartbeat(connection: Connection, generation: number): void {
+    if (options.heartbeat === undefined || stopped || activeConnection !== connection) return;
+    scheduledHeartbeat = schedule(() => {
+      scheduledHeartbeat = undefined;
+      void options.heartbeat?.(connection, generation).then(() => {
+        scheduleHeartbeat(connection, generation);
+      }).catch(() => {
+        connection.close(1001, 'Agent heartbeat failed');
+      });
+    }, heartbeatIntervalMilliseconds);
   }
 
   async function connect(): Promise<void> {
@@ -70,9 +86,12 @@ export function createAgentRecovery<Connection extends RecoverableAgentConnectio
       activeConnection = candidateConnection;
       attempt = 0;
       setState('ready');
+      scheduleHeartbeat(candidateConnection, connectionGeneration);
       const closure = await candidateConnection.closed;
       if (activeConnection !== candidateConnection) return;
       activeConnection = undefined;
+      if (scheduledHeartbeat !== undefined) cancelScheduled(scheduledHeartbeat as ReturnType<typeof globalThis.setTimeout>);
+      scheduledHeartbeat = undefined;
       if (closure.code === 4001 || closure.code === 4003) {
         setState('revoked');
         return;
@@ -95,6 +114,8 @@ export function createAgentRecovery<Connection extends RecoverableAgentConnectio
       stopped = true;
       if (scheduledReconnect !== undefined) cancelScheduled(scheduledReconnect as ReturnType<typeof globalThis.setTimeout>);
       scheduledReconnect = undefined;
+      if (scheduledHeartbeat !== undefined) cancelScheduled(scheduledHeartbeat as ReturnType<typeof globalThis.setTimeout>);
+      scheduledHeartbeat = undefined;
       activeConnection?.close(4001, 'Agent authority revoked');
       activeConnection = undefined;
       setState('revoked');
@@ -108,6 +129,8 @@ export function createAgentRecovery<Connection extends RecoverableAgentConnectio
       stopped = true;
       if (scheduledReconnect !== undefined) cancelScheduled(scheduledReconnect as ReturnType<typeof globalThis.setTimeout>);
       scheduledReconnect = undefined;
+      if (scheduledHeartbeat !== undefined) cancelScheduled(scheduledHeartbeat as ReturnType<typeof globalThis.setTimeout>);
+      scheduledHeartbeat = undefined;
       activeConnection?.close(1000, 'Agent recovery stopped');
       activeConnection = undefined;
       setState('stopped');
