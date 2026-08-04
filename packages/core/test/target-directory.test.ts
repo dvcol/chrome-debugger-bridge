@@ -117,7 +117,7 @@ it('delivers bounded matching events with opaque sequence numbers and closes on 
   const broker = createTargetBroker();
   broker.publishTarget(target);
   const lease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: [], targetGeneration: target.generation, targetId: target.id });
-  const subscription = broker.subscribe({
+  const subscription = await broker.subscribe({
     buffer: { capacity: 1, overflowStrategy: 'drop-oldest' },
     leaseId: lease.id,
     match: { methodPrefix: 'Runtime.' },
@@ -142,7 +142,7 @@ it('reports overflow and retains the newest event for a drop-oldest subscription
   const broker = createTargetBroker();
   broker.publishTarget(target);
   const lease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: [], targetGeneration: target.generation, targetId: target.id });
-  const subscription = broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { methodPrefix: 'Runtime.' }, targetGeneration: target.generation, targetId: target.id });
+  const subscription = await broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { methodPrefix: 'Runtime.' }, targetGeneration: target.generation, targetId: target.id });
   broker.publishEvent(target, 'Runtime.first', {});
   broker.publishEvent(target, 'Runtime.second', {});
   const event = await subscription[Symbol.asyncIterator]().next();
@@ -150,4 +150,20 @@ it('reports overflow and retains the newest event for a drop-oldest subscription
   expect(subscription.overflowed).toBe(true);
   expect(event).toMatchObject({ done: false, value: { method: 'Runtime.second', sequence: 2 } });
   expect(Object.keys(event.done ? {} : event.value)).not.toContain('sessionId');
+});
+
+it('returns subscription demand to the extension executor when the client closes', async () => {
+  expect.assertions(2);
+  const broker = createTargetBroker();
+  broker.publishTarget(target);
+  const setSubscriptionDemand = vi.fn(async () => {});
+  broker.registerTargetExecutor(target, { async execute() {
+    return {};
+  }, setSubscriptionDemand });
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: [], targetGeneration: target.generation, targetId: target.id });
+  const subscription = await broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'disconnect' }, leaseId: lease.id, match: { methodPrefix: 'Runtime.' }, targetGeneration: target.generation, targetId: target.id });
+  subscription.close();
+
+  expect(setSubscriptionDemand).toHaveBeenNthCalledWith(1, 'Runtime.', true);
+  expect(setSubscriptionDemand).toHaveBeenNthCalledWith(2, 'Runtime.', false);
 });

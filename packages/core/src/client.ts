@@ -5,7 +5,7 @@ export interface TargetDirectory {
   acquireLease?: (request: AcquireLeaseRequest) => Lease | Promise<Lease>;
   executeCommand?: (command: CdpCommand) => Promise<{ readonly operationId: string; readonly value: JsonObject }>;
   listTargets: () => readonly PublishedTarget[] | Promise<readonly PublishedTarget[]>;
-  subscribe?: (request: CdpSubscriptionRequest) => CdpSubscription;
+  subscribe?: (request: CdpSubscriptionRequest) => CdpSubscription | Promise<CdpSubscription>;
 }
 
 export interface ChromeDebuggerBridgeClient {

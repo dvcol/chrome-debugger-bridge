@@ -19,7 +19,10 @@ export interface SelectedTabPublisherOptions {
   readonly metadataPolicy?: (tab: Omit<SelectedTab, 'tabId'>) => Pick<PublishedTarget, 'title' | 'url'>;
   readonly publishTarget: (target: PublishedTarget) => Promise<void> | void;
   readonly publishEvent?: (target: Pick<PublishedTarget, 'generation' | 'id'>, method: string, parameters: JsonObject) => void;
-  readonly registerTargetExecutor?: (target: PublishedTarget, executor: { execute: (command: CdpCommand, abortSignal: AbortSignal) => Promise<JsonObject> }) => void;
+  readonly registerTargetExecutor?: (target: PublishedTarget, executor: {
+    execute: (command: CdpCommand, abortSignal: AbortSignal) => Promise<JsonObject>;
+    setSubscriptionDemand: (methodPrefix: string, active: boolean) => Promise<void>;
+  }) => void;
   readonly revokeTarget: (target: Pick<PublishedTarget, 'generation' | 'id'>) => Promise<void> | void;
   readonly scopeId: string;
 }
@@ -30,6 +33,8 @@ export interface SelectedTabPublisher {
   publish: (tab: SelectedTab) => Promise<PublishedTarget>;
   revoke: () => Promise<void>;
 }
+
+const domainNamePattern = /^[A-Za-z]+$/u;
 
 function isSupportedPage(url: string | undefined): boolean {
   if (url === undefined) {
@@ -90,6 +95,19 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     options.publishEvent?.(publishedTarget, method, parameters);
   }
 
+  async function setSubscriptionDemand(methodPrefix: string, active: boolean): Promise<void> {
+    if (selectedTabId === undefined) throw new Error('The requested target is not available.');
+    const domain = methodPrefix.split('.', 1)[0];
+    if (domain === undefined || !domainNamePattern.test(domain)) throw new Error('The subscription method is invalid.');
+    const command = `${domain}.${active ? 'enable' : 'disable'}`;
+    if (!options.capabilities.methods.includes(command)) return;
+    try {
+      await options.chromeDebugger.sendCommand({ tabId: selectedTabId }, command);
+    } catch {
+      throw new Error('The debugger subscription setup failed.');
+    }
+  }
+
   return {
     async publish(tab) {
       if (!Number.isSafeInteger(tab.tabId) || tab.tabId < 0) {
@@ -129,7 +147,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       }
       selectedTabId = tab.tabId;
       publishedTarget = target;
-      options.registerTargetExecutor?.(target, { execute: executeCommand });
+      options.registerTargetExecutor?.(target, { execute: executeCommand, setSubscriptionDemand });
       return target;
     },
     executeCommand,

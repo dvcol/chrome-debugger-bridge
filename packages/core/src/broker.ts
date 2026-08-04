@@ -9,6 +9,7 @@ export interface AcquireLeaseRequest {
 
 export interface TargetCommandExecutor {
   execute: (command: CdpCommand, abortSignal: AbortSignal) => Promise<JsonObject>;
+  setSubscriptionDemand?: (methodPrefix: string, active: boolean) => Promise<void>;
 }
 
 export interface CdpSubscription extends AsyncIterable<CdpEvent> {
@@ -38,7 +39,7 @@ export interface TargetBroker {
   registerTargetExecutor: (target: Pick<PublishedTarget, 'generation' | 'id'>, executor: TargetCommandExecutor) => void;
   revokeTarget: (targetId: string, generation: number) => void;
   publishEvent: (target: Pick<PublishedTarget, 'generation' | 'id'>, method: string, parameters: JsonObject) => void;
-  subscribe: (request: CdpSubscriptionRequest) => CdpSubscription;
+  subscribe: (request: CdpSubscriptionRequest) => Promise<CdpSubscription>;
 }
 
 /** Stores only opaque target records received from an authenticated extension agent. */
@@ -158,7 +159,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     publishEvent(target, method, parameters) {
       for (const subscription of subscriptions.values()) if (subscription.request.targetId === target.id && subscription.request.targetGeneration === target.generation) subscription.offer(method, parameters);
     },
-    subscribe(request) {
+    async subscribe(request) {
       const target = getCurrentTarget(request.targetId, request.targetGeneration);
       const lease = leasesById.get(request.leaseId);
       if (lease === undefined || lease.targetId !== target.id || lease.targetGeneration !== target.generation || Date.parse(lease.expiresAt) <= now()) throw new TargetBrokerError('LEASE_REQUIRED');
@@ -171,6 +172,11 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         closed = true;
         subscriptions.delete(id);
         resolver?.({ done: true, value: undefined });
+        const executor = executorsByTargetKey.get(getTargetKey(target.id, target.generation));
+        if (executor?.setSubscriptionDemand !== undefined) {
+          const methodPrefix = 'method' in request.match ? request.match.method : request.match.methodPrefix;
+          void executor.setSubscriptionDemand(methodPrefix, false);
+        }
       };
       const subscription: CdpSubscription = { close, id, get overflowed() {
         return overflowed;
@@ -200,6 +206,11 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
           }
         }
       }, request, sequence: 1 });
+      const executor = executorsByTargetKey.get(getTargetKey(target.id, target.generation));
+      if (executor?.setSubscriptionDemand !== undefined) {
+        const methodPrefix = 'method' in request.match ? request.match.method : request.match.methodPrefix;
+        await executor.setSubscriptionDemand(methodPrefix, true);
+      }
       return subscription;
     },
   };
