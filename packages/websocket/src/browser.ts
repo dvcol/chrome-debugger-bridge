@@ -25,6 +25,16 @@ import {
 } from './authentication.js';
 import { agentWebSocketProtocol, validateWebSocketEndpointSecurity } from './protocols.js';
 
+export { createHttpArtifactReader } from './artifact-reader.js';
+export {
+  type ArtifactTransferControl,
+  type ArtifactTransferSocket,
+  createArtifactTransferReceiver,
+  decodeArtifactChunk,
+  encodeArtifactChunk,
+  streamArtifact,
+} from './artifacts.js';
+
 export const defaultAgentWebSocketPath = '/__chrome_debugger_bridge/agent';
 export { agentWebSocketProtocol } from './protocols.js';
 const maximumPendingAuthenticatedMessages = 32;

@@ -26,6 +26,30 @@ export interface ArtifactWriter {
   write: (bytes: Uint8Array) => void;
 }
 
+/** Reads an artifact without exposing its backing-store location or credentials. */
+export interface ArtifactReader {
+  readonly descriptor: ArtifactDescriptor;
+  read: (signal?: AbortSignal) => Promise<Uint8Array>;
+}
+
+/** Creates a reusable artifact reader around an authorized byte source. */
+export function createArtifactReader(
+  descriptor: ArtifactDescriptor,
+  read: (signal?: AbortSignal) => Uint8Array | Promise<Uint8Array>,
+): ArtifactReader {
+  return {
+    descriptor,
+    async read(signal) {
+      if (signal?.aborted) throw new Error('The artifact read was cancelled.');
+      const bytes = await read(signal);
+      if (signal?.aborted) throw new Error('The artifact read was cancelled.');
+      if (descriptor.length !== undefined && bytes.byteLength !== descriptor.length) throw new Error('The artifact length does not match its descriptor.');
+      if (descriptor.digest !== undefined && await digest(bytes) !== descriptor.digest) throw new Error('The artifact digest does not match its descriptor.');
+      return bytes;
+    },
+  };
+}
+
 export type InlineOrArtifactResult<Value> = Value | { readonly artifact: ArtifactDescriptor };
 
 interface StoredArtifact extends ArtifactAuthority {

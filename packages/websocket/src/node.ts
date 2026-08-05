@@ -38,6 +38,17 @@ import {
   validateWebSocketEndpointSecurity,
 } from './protocols.js';
 
+export { defaultArtifactHttpPath, mountAuthenticatedArtifactHttpEndpoint, type MountedAuthenticatedArtifactHttpEndpoint } from './artifact-http.js';
+export { createHttpArtifactReader } from './artifact-reader.js';
+export {
+  type ArtifactTransferControl,
+  type ArtifactTransferSocket,
+  createArtifactTransferReceiver,
+  decodeArtifactChunk,
+  encodeArtifactChunk,
+  streamArtifact,
+} from './artifacts.js';
+
 export const defaultAgentWebSocketPath = '/__chrome_debugger_bridge/agent';
 export const defaultClientWebSocketPath = '/__chrome_debugger_bridge/client';
 export { agentWebSocketProtocol, clientWebSocketProtocol } from './protocols.js';

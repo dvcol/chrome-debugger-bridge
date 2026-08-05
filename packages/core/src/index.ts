@@ -2,7 +2,9 @@ export { type AgentTargetConnection, connectAgentTargetBroker } from './agent-ta
 export {
   type ArtifactAuthority,
   type ArtifactDescriptor,
+  type ArtifactReader,
   type ArtifactWriter,
+  createArtifactReader,
   createMemoryArtifactStore,
   externalizeJsonResult,
   type InlineOrArtifactResult,
