@@ -13,6 +13,8 @@ export {
 } from './artifact-store.js';
 export {
   type AcquireLeaseRequest,
+  type ArtifactAccessRequest,
+  type CdpSubscription,
   createTargetBroker,
   type ReleaseLeaseRequest,
   type RenewLeaseRequest,
@@ -22,6 +24,7 @@ export { type ClientTargetConnection, connectClientTargetBroker } from './client
 export {
   type ChromeDebuggerBridgeClient,
   createChromeDebuggerBridgeClient,
+  type TargetChange,
   type TargetDirectory,
 } from './client.js';
 export {

@@ -62,9 +62,18 @@ export function connectClientTargetBroker(connection: ClientTargetConnection, br
         } else if (message.method === 'leases.acquire') {
           const lease = broker.acquireLease(message.parameters);
           await connection.send({ kind: 'response', method: 'leases.acquire', protocolVersion: 1, requestId: message.requestId, result: { lease } });
+        } else if (message.method === 'leases.renew') {
+          const lease = broker.renewLease(message.parameters);
+          await connection.send({ kind: 'response', method: 'leases.renew', protocolVersion: 1, requestId: message.requestId, result: { lease } });
+        } else if (message.method === 'leases.release') {
+          broker.releaseLease(message.parameters);
+          await connection.send({ kind: 'response', method: 'leases.release', protocolVersion: 1, requestId: message.requestId, result: {} });
         } else if (message.method === 'cdp.send') {
           const result = await broker.executeCommand(message.parameters);
           await connection.send({ kind: 'response', method: 'cdp.send', protocolVersion: 1, requestId: message.requestId, result });
+        } else if (message.method === 'cdp.cancel') {
+          broker.cancelCommand(message.parameters.operationId);
+          await connection.send({ kind: 'response', method: 'cdp.cancel', protocolVersion: 1, requestId: message.requestId, result: {} });
         } else {
           await sendError(message, new Error('Unsupported request'));
         }

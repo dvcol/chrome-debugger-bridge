@@ -30,6 +30,14 @@ function send(response: ServerResponse, statusCode: number): void {
   response.end();
 }
 
+function setCorsHeaders(response: ServerResponse, origin: string | undefined): void {
+  if (origin === undefined) return;
+  response.setHeader('access-control-allow-headers', 'authorization, range');
+  response.setHeader('access-control-allow-methods', 'GET, HEAD, OPTIONS');
+  response.setHeader('access-control-allow-origin', origin);
+  response.setHeader('vary', 'origin');
+}
+
 function parseRange(value: string | undefined, length: number): { readonly end: number; readonly start: number } | undefined {
   if (value === undefined) return undefined;
   const match = rangePattern.exec(value);
@@ -55,7 +63,7 @@ export function mountAuthenticatedArtifactHttpEndpoint<Principal extends Authent
       const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
       if (!url.pathname.startsWith(path)) return;
       if (url.search || url.hash) return send(response, 400);
-      if (request.method !== 'GET' && request.method !== 'HEAD') return send(response, 405);
+      if (request.method !== 'GET' && request.method !== 'HEAD' && request.method !== 'OPTIONS') return send(response, 405);
       const encodedArtifactId = url.pathname.slice(path.length);
       if (encodedArtifactId.length === 0 || encodedArtifactId.includes('/')) return send(response, 404);
       let artifactId: string;
@@ -68,6 +76,8 @@ export function mountAuthenticatedArtifactHttpEndpoint<Principal extends Authent
       request.once('aborted', () => abortController.abort());
       const claims = getClaims(request, path);
       if (!await input.originPolicy(claims, abortController.signal)) return send(response, 403);
+      setCorsHeaders(response, claims.origin);
+      if (request.method === 'OPTIONS') return send(response, 204);
       const authorization = request.headers.authorization;
       const principal = await input.authenticate.authenticate({
         abortSignal: abortController.signal,

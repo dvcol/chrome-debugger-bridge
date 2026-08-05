@@ -5,12 +5,12 @@ import type {
   BrokerToClientMessage,
   ClientToBrokerMessage,
 } from '@dvcol/chrome-debugger-bridge/protocol';
-import type { Buffer } from 'node:buffer';
 import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 
 import type { AgentAuthenticationTranscript, AuthenticatedFrame } from './authentication.js';
 
+import { Buffer } from 'node:buffer';
 import { createServer } from 'node:http';
 
 import {
@@ -182,6 +182,7 @@ const defaultLimits = {
 } as const;
 const maximumPendingAuthenticatedMessages = 32;
 const base64PaddingPattern = /=+$/u;
+const base64UrlPattern = /^[\w-]+$/u;
 
 async function createClosedPromise(webSocket: WebSocket): Promise<{ readonly code: number; readonly reason: string }> {
   return new Promise(resolve => webSocket.once('close', (code, reason) => resolve({ code, reason: reason.toString() })));
@@ -307,7 +308,24 @@ function getExpectedWebSocketProtocol(role: TransportClaims['role']): string {
 
 function hasExpectedWebSocketProtocol(request: IncomingMessage, role: TransportClaims['role']): boolean {
   const protocolHeader = request.headers['sec-websocket-protocol'];
-  return typeof protocolHeader === 'string' && protocolHeader === getExpectedWebSocketProtocol(role);
+  return typeof protocolHeader === 'string'
+    && protocolHeader.split(',').map(protocol => protocol.trim()).includes(getExpectedWebSocketProtocol(role));
+}
+
+function getBrowserClientAuthorization(request: IncomingMessage): string | undefined {
+  const protocolHeader = request.headers['sec-websocket-protocol'];
+  if (typeof protocolHeader !== 'string') return undefined;
+  const encodedAuthorization = protocolHeader.split(',')
+    .map(protocol => protocol.trim())
+    .find(protocol => protocol.startsWith('chrome-debugger-bridge.authorization.'))
+    ?.slice('chrome-debugger-bridge.authorization.'.length);
+  if (encodedAuthorization === undefined || !base64UrlPattern.test(encodedAuthorization)) return undefined;
+  try {
+    const authorization = Buffer.from(encodedAuthorization, 'base64url').toString('utf8');
+    return authorization.length === 0 ? undefined : authorization;
+  } catch {
+    return undefined;
+  }
 }
 
 function createBrokerClientConnection(
@@ -1033,7 +1051,7 @@ export function mountAuthenticatedWebSocketBridge<
           const authorizationHeader = request.headers.authorization;
           clientPrincipal = await raceWithAbort(options.clientAuthentication.authenticate({
             abortSignal: upgradeAbortController.signal,
-            authorization: typeof authorizationHeader === 'string' ? authorizationHeader : undefined,
+            authorization: typeof authorizationHeader === 'string' ? authorizationHeader : getBrowserClientAuthorization(request),
             endpointPath,
             origin: claims.origin,
             remoteAddress: claims.remoteAddress,

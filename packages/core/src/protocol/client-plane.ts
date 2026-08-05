@@ -4,6 +4,7 @@ import * as z from 'zod/mini';
 
 import {
   bridgeErrorSchemaDefinition,
+  cdpCancellationSchemaDefinition,
   cdpCommandResultSchemaDefinition,
   cdpCommandSchemaDefinition,
   cdpEventSchemaDefinition,
@@ -18,6 +19,7 @@ import {
 } from './domain.js';
 import {
   exposeProtocolSchema,
+  leaseIdSchemaDefinition,
   nonEmptyStringSchemaDefinition,
   positiveIntegerSchemaDefinition,
   protocolVersionSchemaDefinition,
@@ -61,10 +63,34 @@ const leaseAcquireRequestSchemaDefinition = z.strictObject({
   requestId: requestIdSchemaDefinition,
 });
 
+const leaseRenewRequestSchemaDefinition = z.strictObject({
+  kind: z.literal('request'),
+  method: z.literal('leases.renew'),
+  parameters: z.strictObject({ durationMilliseconds: positiveIntegerSchemaDefinition, leaseId: leaseIdSchemaDefinition, targetGeneration: positiveIntegerSchemaDefinition, targetId: targetIdSchemaDefinition }),
+  protocolVersion: protocolVersionSchemaDefinition,
+  requestId: requestIdSchemaDefinition,
+});
+
+const leaseReleaseRequestSchemaDefinition = z.strictObject({
+  kind: z.literal('request'),
+  method: z.literal('leases.release'),
+  parameters: z.strictObject({ leaseId: leaseIdSchemaDefinition, targetGeneration: positiveIntegerSchemaDefinition, targetId: targetIdSchemaDefinition }),
+  protocolVersion: protocolVersionSchemaDefinition,
+  requestId: requestIdSchemaDefinition,
+});
+
 const cdpSendRequestSchemaDefinition = z.strictObject({
   kind: z.literal('request'),
   method: z.literal('cdp.send'),
   parameters: cdpCommandSchemaDefinition,
+  protocolVersion: protocolVersionSchemaDefinition,
+  requestId: requestIdSchemaDefinition,
+});
+
+const cdpCancelRequestSchemaDefinition = z.strictObject({
+  kind: z.literal('request'),
+  method: z.literal('cdp.cancel'),
+  parameters: cdpCancellationSchemaDefinition,
   protocolVersion: protocolVersionSchemaDefinition,
   requestId: requestIdSchemaDefinition,
 });
@@ -116,12 +142,36 @@ const leaseAcquireResponseSchemaDefinition = z.strictObject({
   result: z.strictObject({ lease: leaseSchemaDefinition }),
 });
 
+const leaseRenewResponseSchemaDefinition = z.strictObject({
+  kind: z.literal('response'),
+  method: z.literal('leases.renew'),
+  protocolVersion: protocolVersionSchemaDefinition,
+  requestId: requestIdSchemaDefinition,
+  result: z.strictObject({ lease: leaseSchemaDefinition }),
+});
+
+const leaseReleaseResponseSchemaDefinition = z.strictObject({
+  kind: z.literal('response'),
+  method: z.literal('leases.release'),
+  protocolVersion: protocolVersionSchemaDefinition,
+  requestId: requestIdSchemaDefinition,
+  result: z.strictObject({}),
+});
+
 const cdpSendResponseSchemaDefinition = z.strictObject({
   kind: z.literal('response'),
   method: z.literal('cdp.send'),
   protocolVersion: protocolVersionSchemaDefinition,
   requestId: requestIdSchemaDefinition,
   result: cdpCommandResultSchemaDefinition,
+});
+
+const cdpCancelResponseSchemaDefinition = z.strictObject({
+  kind: z.literal('response'),
+  method: z.literal('cdp.cancel'),
+  protocolVersion: protocolVersionSchemaDefinition,
+  requestId: requestIdSchemaDefinition,
+  result: z.strictObject({}),
 });
 
 const cdpSubscribeResponseSchemaDefinition = z.strictObject({
@@ -145,10 +195,13 @@ const clientErrorResponseSchemaDefinition = z.strictObject({
   kind: z.literal('error'),
   method: z.enum([
     'broker.info',
+    'cdp.cancel',
     'cdp.send',
     'cdp.subscribe',
     'cdp.unsubscribe',
     'leases.acquire',
+    'leases.release',
+    'leases.renew',
     'targets.list',
   ]),
   protocolVersion: protocolVersionSchemaDefinition,
@@ -208,7 +261,10 @@ export const clientToBrokerMessageSchemaDefinition = z.discriminatedUnion('metho
   brokerInfoRequestSchemaDefinition,
   targetsListRequestSchemaDefinition,
   leaseAcquireRequestSchemaDefinition,
+  leaseRenewRequestSchemaDefinition,
+  leaseReleaseRequestSchemaDefinition,
   cdpSendRequestSchemaDefinition,
+  cdpCancelRequestSchemaDefinition,
   cdpSubscribeRequestEnvelopeSchemaDefinition,
   cdpUnsubscribeRequestSchemaDefinition,
 ]);
@@ -218,7 +274,10 @@ export const brokerToClientMessageSchemaDefinition = z.union([
     brokerInfoResponseSchemaDefinition,
     targetsListResponseSchemaDefinition,
     leaseAcquireResponseSchemaDefinition,
+    leaseRenewResponseSchemaDefinition,
+    leaseReleaseResponseSchemaDefinition,
     cdpSendResponseSchemaDefinition,
+    cdpCancelResponseSchemaDefinition,
     cdpSubscribeResponseSchemaDefinition,
     cdpUnsubscribeResponseSchemaDefinition,
   ]),
