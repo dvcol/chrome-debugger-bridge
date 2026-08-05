@@ -48,6 +48,7 @@ export {
   encodeArtifactChunk,
   streamArtifact,
 } from './artifacts.js';
+export { createFileArtifactStore, type FileArtifactStore, type FileArtifactStoreOptions } from './file-artifact-store.js';
 
 export const defaultAgentWebSocketPath = '/__chrome_debugger_bridge/agent';
 export const defaultClientWebSocketPath = '/__chrome_debugger_bridge/client';

@@ -3,6 +3,7 @@ export {
   type ArtifactAuthority,
   type ArtifactDescriptor,
   type ArtifactReader,
+  type ArtifactStore,
   type ArtifactWriter,
   createArtifactReader,
   createMemoryArtifactStore,

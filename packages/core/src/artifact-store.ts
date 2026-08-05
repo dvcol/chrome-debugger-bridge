@@ -12,13 +12,17 @@ export interface ArtifactAuthority {
   readonly targetId: string;
 }
 
-export interface MemoryArtifactStore {
+/** Retains opaque, target-authorized artifacts behind the broker boundary. */
+export interface ArtifactStore {
   create: (input: ArtifactAuthority & { readonly bytes: Uint8Array; readonly expiresAt: string; readonly mediaType: string; readonly signal?: AbortSignal }) => Promise<ArtifactDescriptor>;
   createWriter: (input: ArtifactAuthority & { readonly expiresAt: string; readonly mediaType: string; readonly signal?: AbortSignal }) => ArtifactWriter;
   read: (id: string, authority: ArtifactAuthority) => Uint8Array;
   release: (id: string, authority: ArtifactAuthority) => void;
   revokeTarget: (targetId: string, targetGeneration: number) => void;
 }
+
+/** A bounded in-process implementation of the artifact store contract. */
+export type MemoryArtifactStore = ArtifactStore;
 
 export interface ArtifactWriter {
   abort: () => void;
@@ -178,7 +182,7 @@ export function createMemoryArtifactStore(maximumBytes: number, now: () => numbe
 /** Keeps small JSON values inline and externalizes values above the negotiated limit. */
 export async function externalizeJsonResult<Value>(
   value: Value,
-  options: ArtifactAuthority & { readonly expiresAt: string; readonly forceArtifact?: boolean; readonly maximumInlineBytes: number; readonly signal?: AbortSignal; readonly store: MemoryArtifactStore },
+  options: ArtifactAuthority & { readonly expiresAt: string; readonly forceArtifact?: boolean; readonly maximumInlineBytes: number; readonly signal?: AbortSignal; readonly store: ArtifactStore },
 ): Promise<InlineOrArtifactResult<Value>> {
   if (!Number.isSafeInteger(options.maximumInlineBytes) || options.maximumInlineBytes < 0) throw new Error('The inline result byte limit is invalid.');
   const json = JSON.stringify(value);
