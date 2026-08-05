@@ -1,3 +1,9 @@
+import type { ArtifactDescriptor } from '@dvcol/chrome-debugger-bridge';
+import type {
+  ArtifactAccessRequest,
+  CreateTargetBrokerOptions,
+  TargetBroker,
+} from '@dvcol/chrome-debugger-bridge/broker';
 import type {
   AgentAuthenticationMessage,
   AgentToBrokerMessage,
@@ -11,8 +17,11 @@ import type { Duplex } from 'node:stream';
 import type { AgentAuthenticationTranscript, AuthenticatedFrame } from './authentication.js';
 
 import { Buffer } from 'node:buffer';
+import { randomInt, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
+import { styleText } from 'node:util';
 
+import { connectAgentTargetBroker, connectClientTargetBroker, createTargetBroker } from '@dvcol/chrome-debugger-bridge';
 import {
   agentAuthenticationMessageSchema,
   agentToBrokerMessageSchema,
@@ -22,6 +31,7 @@ import {
 } from '@dvcol/chrome-debugger-bridge/protocol';
 import { WebSocket, WebSocketServer } from 'ws';
 
+import { defaultArtifactHttpPath, mountAuthenticatedArtifactHttpEndpoint } from './artifact-http.js';
 import {
   createAuthenticatedFrame,
   createBrokerAuthenticationProof,
@@ -1206,4 +1216,241 @@ export async function connectNodeClientWebSocket(options: {
     throw new Error('The broker selected an invalid WebSocket subprotocol');
   }
   return createNodeClientConnection(webSocket);
+}
+
+/** A short-lived pairing code is intentionally presented only through the host callback. */
+export interface StandalonePairingPresentation {
+  readonly agentEndpoint: string;
+  readonly brokerId: string;
+  readonly code: string;
+  readonly expiresAt: string;
+}
+
+export interface CreateStandaloneChromeDebuggerBridgeHostOptions extends CreateTargetBrokerOptions {
+  /** Authenticates the separately exposed client and artifact-read endpoints. */
+  readonly clientAuthentication: ClientAuthenticationAdapter<{ readonly id: string; readonly role: 'client' }>;
+  readonly host?: '127.0.0.1' | '::1';
+  readonly onPairingPresentation?: (presentation: StandalonePairingPresentation) => void;
+  /** Applies the same local transport policy to agent, client, and artifact endpoints. */
+  readonly originPolicy?: (claims: TransportClaims, abortSignal: AbortSignal) => boolean | Promise<boolean>;
+  readonly pairingLifetimeMilliseconds?: number;
+  readonly port?: number;
+  readonly webSocketLimits?: WebSocketBridgeLimits;
+}
+
+export interface StandaloneChromeDebuggerBridgeHost {
+  readonly agentEndpoint: string;
+  readonly artifactEndpoint: string;
+  readonly broker: TargetBroker;
+  readonly brokerId: string;
+  readonly clientEndpoint: string;
+  dispose: () => Promise<void>;
+}
+
+interface ArtifactGrant {
+  readonly access: ArtifactAccessRequest;
+  readonly descriptor: ArtifactDescriptor;
+  readonly principalId: string;
+}
+
+function defaultStandaloneOriginPolicy(claims: TransportClaims): boolean {
+  return isLoopbackAddress(claims.remoteAddress);
+}
+
+function getEndpointOrigin(host: '127.0.0.1' | '::1', port: number): string {
+  return `http://${host === '::1' ? '[::1]' : host}:${port}`;
+}
+
+function getArtifactDescriptor(message: BrokerToClientMessage): ArtifactDescriptor | undefined {
+  if (message.kind !== 'response' || message.method !== 'cdp.send') return undefined;
+  const value = message.result.value;
+  if (!('artifact' in value)) return undefined;
+  const descriptor: unknown = value.artifact;
+  const descriptorRecord = descriptor as Record<string, unknown>;
+  if (
+    typeof descriptor !== 'object'
+    || descriptor === null
+    || typeof descriptorRecord.id !== 'string'
+    || typeof descriptorRecord.expiresAt !== 'string'
+    || typeof descriptorRecord.mediaType !== 'string'
+  ) return undefined;
+  return {
+    id: descriptorRecord.id,
+    expiresAt: descriptorRecord.expiresAt,
+    mediaType: descriptorRecord.mediaType,
+    ...(typeof descriptorRecord.digest === 'string' ? { digest: descriptorRecord.digest } : {}),
+    ...(typeof descriptorRecord.length === 'number' ? { length: descriptorRecord.length } : {}),
+  };
+}
+
+/**
+ * Starts a loopback-only Node composition. It deliberately has no import-time
+ * startup and keeps pairing material in memory for this process only.
+ */
+export async function createStandaloneChromeDebuggerBridgeHost(
+  options: CreateStandaloneChromeDebuggerBridgeHostOptions,
+): Promise<StandaloneChromeDebuggerBridgeHost> {
+  const host = options.host ?? '127.0.0.1';
+  const brokerId = randomUUID();
+  const pairingLifetimeMilliseconds = options.pairingLifetimeMilliseconds ?? 5 * 60_000;
+  if (!Number.isSafeInteger(pairingLifetimeMilliseconds) || pairingLifetimeMilliseconds < 1) {
+    throw new Error('The pairing lifetime must be a positive integer.');
+  }
+  const pairingCode = String(randomInt(0, 1_000_000)).padStart(6, '0');
+  const pairingExpiresAt = Date.now() + pairingLifetimeMilliseconds;
+  let pairingConsumed = false;
+  let disposed = false;
+  const records = new Map<string, BrokerAgentCredentialRecord>();
+  const artifactGrants = new Map<string, ArtifactGrant>();
+  const broker = createTargetBroker(options);
+  const originPolicy = options.originPolicy ?? defaultStandaloneOriginPolicy;
+
+  const agentAuthentication: AgentAuthenticationAdapter<{ readonly id: string; readonly role: 'agent' }> = {
+    async activate(record, abortSignal) {
+      if (abortSignal.aborted || records.get(record.credentialId)?.status !== 'pending') return undefined;
+      const activeRecord = { ...record, status: 'active' as const };
+      records.set(activeRecord.credentialId, activeRecord);
+      return activeRecord;
+    },
+    async authenticate(identity, abortSignal) {
+      const record = records.get(identity.credentialId);
+      if (
+        abortSignal.aborted
+        || record?.status !== 'active'
+        || record.agentId !== identity.agentId
+        || record.brokerId !== identity.brokerId
+        || record.principalId !== identity.principalId
+      ) return undefined;
+      return { id: record.principalId, role: 'agent' };
+    },
+    async load(credentialId, abortSignal) {
+      return abortSignal.aborted ? undefined : records.get(credentialId);
+    },
+    async pair(input) {
+      if (
+        input.abortSignal.aborted
+        || pairingConsumed
+        || Date.now() > pairingExpiresAt
+        || input.brokerId !== brokerId
+        || input.pairingCode !== pairingCode
+      ) return undefined;
+      pairingConsumed = true;
+      const record: BrokerAgentCredentialRecord = {
+        agentId: input.agentId,
+        brokerId,
+        credential: Uint8Array.from(input.credential),
+        credentialId: input.credentialId,
+        principalId: input.agentId,
+        status: 'pending',
+      };
+      records.set(record.credentialId, record);
+      return record;
+    },
+    async revoke(credentialId) {
+      records.delete(credentialId);
+    },
+  };
+
+  const server = createServer();
+  const mountedArtifactEndpoint = mountAuthenticatedArtifactHttpEndpoint({
+    authenticate: options.clientAuthentication,
+    originPolicy,
+    async readArtifact(artifactId, principal) {
+      const grant = artifactGrants.get(artifactId);
+      if (grant === undefined || grant.principalId !== principal.id) return undefined;
+      try {
+        return { bytes: broker.readArtifact(grant.access), descriptor: grant.descriptor };
+      } catch {
+        artifactGrants.delete(artifactId);
+        return undefined;
+      }
+    },
+    server,
+  });
+  const mountedBridge = mountAuthenticatedWebSocketBridge({
+    agentAuthentication,
+    brokerId,
+    clientAuthentication: options.clientAuthentication,
+    ...(options.webSocketLimits === undefined ? {} : { limits: options.webSocketLimits }),
+    onAgentConnection(connection) {
+      connectAgentTargetBroker(connection.connection, broker);
+    },
+    onClientConnection({ connection, principal }) {
+      const pendingArtifactAccesses = new Map<string, ArtifactAccessRequest>();
+      const originalOnMessage = connection.onMessage;
+      const originalSend = connection.send;
+      const mediatedConnection: AuthenticatedConnection<ClientToBrokerMessage, BrokerToClientMessage> = {
+        ...connection,
+        onMessage(listener) {
+          return originalOnMessage((message) => {
+            if (message.kind === 'request' && message.method === 'cdp.send') {
+              pendingArtifactAccesses.set(message.requestId, {
+                artifactId: '',
+                leaseId: message.parameters.leaseId,
+                targetGeneration: message.parameters.targetGeneration,
+                targetId: message.parameters.targetId,
+              });
+            }
+            listener(message);
+          });
+        },
+        async send(message) {
+          const descriptor = getArtifactDescriptor(message);
+          if (descriptor !== undefined && message.kind === 'response') {
+            const access = pendingArtifactAccesses.get(message.requestId);
+            if (access !== undefined) artifactGrants.set(descriptor.id, { access: { ...access, artifactId: descriptor.id }, descriptor, principalId: principal.id });
+          }
+          if (message.kind === 'response' || message.kind === 'error') pendingArtifactAccesses.delete(message.requestId);
+          await originalSend(message);
+        },
+      };
+      const disconnect = connectClientTargetBroker(mediatedConnection, broker);
+      void connection.closed.then(disconnect, disconnect);
+    },
+    originPolicy,
+    server,
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(options.port ?? 0, host, () => {
+        server.off('error', reject);
+        resolve();
+      });
+    });
+  } catch (error) {
+    mountedArtifactEndpoint.close();
+    await mountedBridge.close();
+    broker.dispose();
+    throw error;
+  }
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('Standalone host did not expose a TCP address.');
+  const endpointOrigin = getEndpointOrigin(host, address.port);
+  const agentEndpoint = `ws${endpointOrigin.slice('http'.length)}${defaultAgentWebSocketPath}`;
+  options.onPairingPresentation?.({
+    agentEndpoint,
+    brokerId,
+    code: pairingCode,
+    expiresAt: new Date(pairingExpiresAt).toISOString(),
+  });
+  console.info(styleText('cyan', '🚀 [standalone-host]'), 'started loopback-only bridge', { brokerId, port: address.port });
+  return {
+    agentEndpoint,
+    artifactEndpoint: `${endpointOrigin}${defaultArtifactHttpPath}`,
+    broker,
+    brokerId,
+    clientEndpoint: `ws${endpointOrigin.slice('http'.length)}${defaultClientWebSocketPath}`,
+    async dispose() {
+      if (disposed) return;
+      disposed = true;
+      artifactGrants.clear();
+      records.clear();
+      mountedArtifactEndpoint.close();
+      await mountedBridge.close();
+      await new Promise<void>((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error)));
+      broker.dispose();
+      console.info(styleText('cyan', '🚀 [standalone-host]'), 'disposed loopback-only bridge', { brokerId });
+    },
+  };
 }
