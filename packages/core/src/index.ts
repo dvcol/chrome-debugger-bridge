@@ -33,4 +33,11 @@ export {
   type DiagnosticTraceEntry,
   type DiagnosticTraceStore,
 } from './diagnostic-trace.js';
+export {
+  createEmbeddedChromeDebuggerBridge,
+  type CreateEmbeddedChromeDebuggerBridgeOptions,
+  type EmbeddedAuthorizationAdapter,
+  type EmbeddedChromeDebuggerBridge,
+  type EmbeddedChromeDebuggerBridgeClient,
+} from './embedded.js';
 export * from './protocol.js';

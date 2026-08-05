@@ -78,12 +78,16 @@ export interface CreateTargetBrokerOptions {
   readonly maximumArtifactBytes?: number;
   readonly maximumInlineResultBytes?: number;
   readonly maximumLeaseMilliseconds?: number;
+  /** Generates opaque protocol identifiers; hosts may supply their own secure identifier adapter. */
+  readonly generateId?: () => string;
   readonly now?: () => number;
 }
 
 export interface TargetBroker {
   acquireLease: (request: AcquireLeaseRequest) => Lease;
   cancelCommand: (operationId: string) => void;
+  /** Stops all broker work and releases broker-owned resources. */
+  dispose: () => void;
   executeCommand: (command: CdpCommand) => Promise<{ readonly operationId: string; readonly value: InlineOrArtifactResult<JsonObject> }>;
   listTargets: () => readonly PublishedTarget[];
   publishTarget: (target: PublishedTarget) => void;
@@ -107,6 +111,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   const maximumArtifactBytes = options.maximumArtifactBytes ?? 16_777_216;
   const maximumInlineResultBytes = options.maximumInlineResultBytes ?? 65_536;
   const maximumLeaseMilliseconds = options.maximumLeaseMilliseconds ?? 60_000;
+  const generateId = options.generateId ?? (() => globalThis.crypto.randomUUID());
   const now = options.now ?? Date.now;
   const artifactStore = options.artifactStore ?? createMemoryArtifactStore(maximumArtifactBytes, now);
   const targetsById = new Map<string, PublishedTarget>();
@@ -117,8 +122,13 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   const commandOperationIdsByTargetKey = new Map<string, Set<string>>();
   const subscriptionDemandCountsByKey = new Map<string, number>();
   const subscriptions = new Map<string, SubscriptionState>();
-  const targetWatchers = new Set<{ offer: (change: TargetChange) => void }>();
+  const targetWatchers = new Set<{ close: () => void; offer: (change: TargetChange) => void }>();
+  let disposed = false;
   let targetChangeSequence = 0;
+
+  function ensureActive(): void {
+    if (disposed) throw new Error('The target broker is disposed.');
+  }
 
   function recordDiagnostic(code: DiagnosticCode): void {
     options.diagnostics?.record(code);
@@ -229,6 +239,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   let targetBroker: TargetBroker;
   return targetBroker = {
     acquireLease(request) {
+      ensureActive();
       const target = getCurrentTarget(request.targetId, request.targetGeneration);
       const mode = request.mode ?? 'shared-read';
       if (
@@ -252,7 +263,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       const issuedAt = new Date(now()).toISOString();
       const lease: Lease = {
         expiresAt: new Date(now() + request.durationMilliseconds).toISOString(),
-        id: globalThis.crypto.randomUUID(),
+        id: generateId(),
         issuedAt,
         methods: [...request.requestedMethods],
         mode,
@@ -263,9 +274,27 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       return lease;
     },
     cancelCommand(operationId) {
+      if (disposed) return;
       cancellationsByOperationId.get(operationId)?.abort();
     },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const cancellation of cancellationsByOperationId.values()) cancellation.abort();
+      cancellationsByOperationId.clear();
+      commandOperationIdsByTargetKey.clear();
+      for (const subscription of subscriptions.values()) subscription.close();
+      subscriptions.clear();
+      for (const target of targetsById.values()) artifactStore.revokeTarget(target.id, target.generation);
+      targetsById.clear();
+      executorsByTargetKey.clear();
+      leasesById.clear();
+      subscriptionDemandCountsByKey.clear();
+      for (const watcher of targetWatchers) watcher.close();
+      targetWatchers.clear();
+    },
     async executeCommand(command) {
+      ensureActive();
       const target = getCurrentTarget(command.targetId, command.targetGeneration);
       const lease = leasesById.get(command.leaseId);
       if (lease === undefined || lease.targetId !== target.id || lease.targetGeneration !== target.generation) {
@@ -327,9 +356,11 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       }
     },
     listTargets() {
+      ensureActive();
       return [...targetsById.values()];
     },
     publishTarget(target) {
+      ensureActive();
       const highestGeneration = highestGenerationByTargetId.get(target.id);
       if (highestGeneration !== undefined && target.generation <= highestGeneration) {
         throw new TargetBrokerError('TARGET_GENERATION_STALE');
@@ -339,9 +370,11 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       publishTargetChange({ kind: 'published', target });
     },
     registerTargetExecutor(target, executor) {
+      ensureActive();
       executorsByTargetKey.set(getTargetKey(target.id, target.generation), executor);
     },
     reconcileTargets(targets) {
+      ensureActive();
       const targetIds = new Set(targets.map(target => target.id));
       for (const target of [...targetsById.values()]) {
         if (!targetIds.has(target.id)) targetBroker.revokeTarget(target.id, target.generation, 'detached');
@@ -357,6 +390,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       }
     },
     revokeTarget(targetId, generation, reason = 'explicit') {
+      ensureActive();
       const target = targetsById.get(targetId);
       if (target?.generation === generation) {
         recordDiagnostic('TARGET_REVOKED');
@@ -375,6 +409,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       }
     },
     updateTarget(target) {
+      ensureActive();
       const currentTarget = getCurrentTarget(target.id, target.generation);
       targetsById.set(target.id, target);
       highestGenerationByTargetId.set(target.id, currentTarget.generation);
@@ -384,10 +419,18 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       publishTargetChange({ kind: 'updated', target });
     },
     watchTargets() {
+      ensureActive();
       const changes: TargetChange[] = [{ kind: 'snapshot', sequence: targetChangeSequence, targets: [...targetsById.values()] }];
       let resolver: ((result: IteratorResult<TargetChange>) => void) | undefined;
       let closed = false;
       const watcher = {
+        close() {
+          if (closed) return;
+          closed = true;
+          targetWatchers.delete(watcher);
+          resolver?.({ done: true, value: undefined });
+          resolver = undefined;
+        },
         offer(change: TargetChange) {
           if (closed) return;
           if (resolver !== undefined) {
@@ -408,10 +451,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
               return new Promise(resolve => resolver = resolve);
             },
             async return(): Promise<IteratorResult<TargetChange>> {
-              closed = true;
-              targetWatchers.delete(watcher);
-              resolver?.({ done: true, value: undefined });
-              resolver = undefined;
+              watcher.close();
               return { done: true, value: undefined };
             },
           };
@@ -419,22 +459,27 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       };
     },
     publishEvent(target, method, parameters, sessionId) {
+      ensureActive();
       const publishedTarget = getCurrentTarget(target.id, target.generation);
       if (!isCdpNameAllowed(publishedTarget.capabilities, method, 'event')) return;
       for (const subscription of subscriptions.values()) if (subscription.request.targetId === target.id && subscription.request.targetGeneration === target.generation) subscription.offer(method, parameters, sessionId);
     },
     releaseLease(request) {
+      ensureActive();
       getCurrentTarget(request.targetId, request.targetGeneration);
       const lease = getActiveLease(request);
       leasesById.delete(lease.id);
     },
     readArtifact(request) {
+      ensureActive();
       return artifactStore.read(request.artifactId, getArtifactAuthority(request));
     },
     releaseArtifact(request) {
+      ensureActive();
       artifactStore.release(request.artifactId, getArtifactAuthority(request));
     },
     renewLease(request) {
+      ensureActive();
       getCurrentTarget(request.targetId, request.targetGeneration);
       if (!Number.isSafeInteger(request.durationMilliseconds) || request.durationMilliseconds < 1 || request.durationMilliseconds > maximumLeaseMilliseconds) throw new TargetBrokerError('CAPABILITY_DENIED');
       const lease = getActiveLease(request);
@@ -443,13 +488,14 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       return renewedLease;
     },
     async subscribe(request) {
+      ensureActive();
       const target = getCurrentTarget(request.targetId, request.targetGeneration);
       const lease = leasesById.get(request.leaseId);
       if (lease === undefined || lease.targetId !== target.id || lease.targetGeneration !== target.generation || Date.parse(lease.expiresAt) <= now()) throw new TargetBrokerError('LEASE_REQUIRED');
       const requestedName = 'method' in request.match ? request.match.method : undefined;
       if (requestedName !== undefined && (!lease.methods.includes(requestedName) || !isCdpNameAllowed(target.capabilities, requestedName, 'event') || (lease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [requestedName]) === 'exclusive-control'))) throw new TargetBrokerError('CAPABILITY_DENIED');
       if ((request.batch !== undefined && request.batch.maximumEvents > request.buffer.capacity) || (hasStatefulSubscriptionDemand(request) && request.buffer.capacity > 16)) throw new TargetBrokerError('CAPABILITY_DENIED');
-      const id = globalThis.crypto.randomUUID();
+      const id = generateId();
       const buffer: CdpEvent[] = [];
       const batch = request.batch ?? { flushMilliseconds: 1, maximumEvents: 1 };
       let closed = false;
