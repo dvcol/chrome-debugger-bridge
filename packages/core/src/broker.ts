@@ -1,7 +1,9 @@
+import type { ArtifactAuthority, InlineOrArtifactResult, MemoryArtifactStore } from './artifact-store.js';
 import type { TargetChange, TargetRevocationReason } from './client.js';
 import type { DiagnosticCode, DiagnosticTraceStore } from './diagnostic-trace.js';
 import type { CdpCommand, CdpEvent, CdpSubscriptionRequest, JsonObject, JsonValue, Lease, PublishedTarget } from './protocol.js';
 
+import { createMemoryArtifactStore, externalizeJsonResult } from './artifact-store.js';
 import { isCdpNameAllowed, requiredLeaseMode } from './cdp-authorization.js';
 
 type TargetChangeInput
@@ -28,6 +30,13 @@ export interface RenewLeaseRequest {
 }
 
 export interface ReleaseLeaseRequest {
+  readonly leaseId: string;
+  readonly targetGeneration: number;
+  readonly targetId: string;
+}
+
+export interface ArtifactAccessRequest {
+  readonly artifactId: string;
   readonly leaseId: string;
   readonly targetGeneration: number;
   readonly targetId: string;
@@ -62,8 +71,12 @@ export class TargetBrokerError extends Error {
 }
 
 export interface CreateTargetBrokerOptions {
+  readonly artifactLifetimeMilliseconds?: number;
+  readonly artifactStore?: MemoryArtifactStore;
   readonly commandTimeoutMilliseconds?: number;
   readonly diagnostics?: DiagnosticTraceStore;
+  readonly maximumArtifactBytes?: number;
+  readonly maximumInlineResultBytes?: number;
   readonly maximumLeaseMilliseconds?: number;
   readonly now?: () => number;
 }
@@ -71,7 +84,7 @@ export interface CreateTargetBrokerOptions {
 export interface TargetBroker {
   acquireLease: (request: AcquireLeaseRequest) => Lease;
   cancelCommand: (operationId: string) => void;
-  executeCommand: (command: CdpCommand) => Promise<{ readonly operationId: string; readonly value: JsonObject }>;
+  executeCommand: (command: CdpCommand) => Promise<{ readonly operationId: string; readonly value: InlineOrArtifactResult<JsonObject> }>;
   listTargets: () => readonly PublishedTarget[];
   publishTarget: (target: PublishedTarget) => void;
   registerTargetExecutor: (target: Pick<PublishedTarget, 'generation' | 'id'>, executor: TargetCommandExecutor) => void;
@@ -81,15 +94,21 @@ export interface TargetBroker {
   watchTargets: () => AsyncIterable<TargetChange>;
   publishEvent: (target: Pick<PublishedTarget, 'generation' | 'id'>, method: string, parameters: JsonObject, sessionId?: string) => void;
   releaseLease: (request: ReleaseLeaseRequest) => void;
+  readArtifact: (request: ArtifactAccessRequest) => Uint8Array;
+  releaseArtifact: (request: ArtifactAccessRequest) => void;
   renewLease: (request: RenewLeaseRequest) => Lease;
   subscribe: (request: CdpSubscriptionRequest) => Promise<CdpSubscription>;
 }
 
 /** Stores only opaque target records received from an authenticated extension agent. */
 export function createTargetBroker(options: CreateTargetBrokerOptions = {}): TargetBroker {
+  const artifactLifetimeMilliseconds = options.artifactLifetimeMilliseconds ?? 60_000;
   const commandTimeoutMilliseconds = options.commandTimeoutMilliseconds ?? 30_000;
+  const maximumArtifactBytes = options.maximumArtifactBytes ?? 16_777_216;
+  const maximumInlineResultBytes = options.maximumInlineResultBytes ?? 65_536;
   const maximumLeaseMilliseconds = options.maximumLeaseMilliseconds ?? 60_000;
   const now = options.now ?? Date.now;
+  const artifactStore = options.artifactStore ?? createMemoryArtifactStore(maximumArtifactBytes, now);
   const targetsById = new Map<string, PublishedTarget>();
   const highestGenerationByTargetId = new Map<string, number>();
   const leasesById = new Map<string, Lease>();
@@ -201,6 +220,12 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     return lease;
   }
 
+  function getArtifactAuthority(request: ArtifactAccessRequest): ArtifactAuthority {
+    getCurrentTarget(request.targetId, request.targetGeneration);
+    const lease = getActiveLease(request);
+    return { ownerId: lease.id, targetGeneration: request.targetGeneration, targetId: request.targetId };
+  }
+
   let targetBroker: TargetBroker;
   return targetBroker = {
     acquireLease(request) {
@@ -274,7 +299,16 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
           recordDiagnostic('REQUEST_CANCELLED');
           throw new TargetBrokerError('REQUEST_CANCELLED');
         }
-        return { operationId: command.operationId, value };
+        const externalizedValue = await externalizeJsonResult(value, {
+          expiresAt: new Date(now() + artifactLifetimeMilliseconds).toISOString(),
+          maximumInlineBytes: maximumInlineResultBytes,
+          ownerId: lease.id,
+          signal: abortController.signal,
+          store: artifactStore,
+          targetGeneration: target.generation,
+          targetId: target.id,
+        });
+        return { operationId: command.operationId, value: externalizedValue };
       } catch (error) {
         if (error instanceof TargetBrokerError) {
           throw error;
@@ -335,6 +369,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         }
         for (const subscription of subscriptions.values()) if (subscription.request.targetId === targetId && subscription.request.targetGeneration === generation) subscription.close();
         executorsByTargetKey.delete(getTargetKey(targetId, generation));
+        artifactStore.revokeTarget(targetId, generation);
         for (const demandKey of subscriptionDemandCountsByKey.keys()) if (demandKey.startsWith(`${getTargetKey(targetId, generation)}:`)) subscriptionDemandCountsByKey.delete(demandKey);
         publishTargetChange({ kind: 'revoked', reason, targetGeneration: generation, targetId });
       }
@@ -392,6 +427,12 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       getCurrentTarget(request.targetId, request.targetGeneration);
       const lease = getActiveLease(request);
       leasesById.delete(lease.id);
+    },
+    readArtifact(request) {
+      return artifactStore.read(request.artifactId, getArtifactAuthority(request));
+    },
+    releaseArtifact(request) {
+      artifactStore.release(request.artifactId, getArtifactAuthority(request));
     },
     renewLease(request) {
       getCurrentTarget(request.targetId, request.targetGeneration);

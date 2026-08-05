@@ -5,7 +5,6 @@ import * as z from 'zod/mini';
 import {
   bridgeErrorSchemaDefinition,
   cdpCancellationSchemaDefinition,
-  cdpCommandResultSchemaDefinition,
   cdpCommandSchemaDefinition,
   connectionLimitsSchemaDefinition,
   heartbeatParametersSchemaDefinition,
@@ -19,6 +18,7 @@ import {
   exposeProtocolSchema,
   jsonObjectSchemaDefinition,
   nonEmptyStringSchemaDefinition,
+  operationIdSchemaDefinition,
   positiveIntegerSchemaDefinition,
 
   protocolVersionSchemaDefinition,
@@ -80,7 +80,10 @@ const cdpExecuteResponseSchemaDefinition = z.strictObject({
   method: z.literal('cdp.execute'),
   protocolVersion: protocolVersionSchemaDefinition,
   requestId: requestIdSchemaDefinition,
-  result: cdpCommandResultSchemaDefinition,
+  result: z.strictObject({
+    operationId: operationIdSchemaDefinition,
+    value: jsonObjectSchemaDefinition,
+  }),
 });
 
 const agentHelloErrorResponseSchemaDefinition = z.strictObject({

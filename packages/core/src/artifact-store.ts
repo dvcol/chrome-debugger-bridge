@@ -14,9 +14,16 @@ export interface ArtifactAuthority {
 
 export interface MemoryArtifactStore {
   create: (input: ArtifactAuthority & { readonly bytes: Uint8Array; readonly expiresAt: string; readonly mediaType: string; readonly signal?: AbortSignal }) => Promise<ArtifactDescriptor>;
+  createWriter: (input: ArtifactAuthority & { readonly expiresAt: string; readonly mediaType: string; readonly signal?: AbortSignal }) => ArtifactWriter;
   read: (id: string, authority: ArtifactAuthority) => Uint8Array;
   release: (id: string, authority: ArtifactAuthority) => void;
   revokeTarget: (targetId: string, targetGeneration: number) => void;
+}
+
+export interface ArtifactWriter {
+  abort: () => void;
+  close: () => Promise<ArtifactDescriptor>;
+  write: (bytes: Uint8Array) => void;
 }
 
 export type InlineOrArtifactResult<Value> = Value | { readonly artifact: ArtifactDescriptor };
@@ -36,6 +43,16 @@ export function createMemoryArtifactStore(maximumBytes: number, now: () => numbe
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) throw new Error('The artifact byte limit is invalid.');
   const artifacts = new Map<string, StoredArtifact>();
   let usedBytes = 0;
+  let reservedBytes = 0;
+
+  function removeExpiredArtifacts(): void {
+    for (const [id, artifact] of artifacts) {
+      if (Date.parse(artifact.descriptor.expiresAt) <= now()) {
+        artifacts.delete(id);
+        usedBytes -= artifact.bytes.byteLength;
+      }
+    }
+  }
 
   function access(id: string, authority: ArtifactAuthority): StoredArtifact {
     const artifact = artifacts.get(id);
@@ -48,18 +65,73 @@ export function createMemoryArtifactStore(maximumBytes: number, now: () => numbe
     return artifact;
   }
 
+  function createWriter(input: ArtifactAuthority & { readonly expiresAt: string; readonly mediaType: string; readonly signal?: AbortSignal }): ArtifactWriter {
+    const expiry = Date.parse(input.expiresAt);
+    if (!Number.isFinite(expiry) || expiry <= now()) throw new Error('The artifact expiry is invalid.');
+    if (input.mediaType.length === 0) throw new Error('The artifact media type is invalid.');
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    let aborted = false;
+    let closed = false;
+    let closing = false;
+    let reservationReleased = false;
+
+    function releaseReservation(): void {
+      if (reservationReleased) return;
+      reservedBytes -= length;
+      reservationReleased = true;
+    }
+
+    function ensureWritable(): void {
+      if (closed || aborted || input.signal?.aborted) throw new Error('The artifact write was cancelled.');
+    }
+
+    return {
+      abort() {
+        aborted = true;
+        closed = true;
+        chunks.length = 0;
+        if (!closing) releaseReservation();
+      },
+      async close() {
+        ensureWritable();
+        closed = true;
+        closing = true;
+        const bytes = new Uint8Array(length);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        try {
+          const id = crypto.randomUUID();
+          const descriptor: ArtifactDescriptor = { digest: await digest(bytes), expiresAt: input.expiresAt, id, length: bytes.byteLength, mediaType: input.mediaType };
+          if (aborted || input.signal?.aborted) throw new Error('The artifact write was cancelled.');
+          artifacts.set(id, { ...input, bytes, descriptor });
+          usedBytes += bytes.byteLength;
+          return descriptor;
+        } finally {
+          releaseReservation();
+        }
+      },
+      write(bytes) {
+        ensureWritable();
+        removeExpiredArtifacts();
+        if (bytes.byteLength > maximumBytes - usedBytes - reservedBytes) throw new Error('The artifact exceeds the memory limit.');
+        chunks.push(bytes.slice());
+        length += bytes.byteLength;
+        reservedBytes += bytes.byteLength;
+      },
+    };
+  }
+
   return {
     async create(input) {
-      if (input.signal?.aborted) throw new Error('The artifact write was cancelled.');
-      if (input.bytes.byteLength > maximumBytes - usedBytes) throw new Error('The artifact exceeds the memory limit.');
-      if (!Number.isFinite(Date.parse(input.expiresAt)) || Date.parse(input.expiresAt) <= now()) throw new Error('The artifact expiry is invalid.');
-      const id = crypto.randomUUID();
-      const descriptor: ArtifactDescriptor = { digest: await digest(input.bytes), expiresAt: input.expiresAt, id, length: input.bytes.byteLength, mediaType: input.mediaType };
-      if (input.signal?.aborted) throw new Error('The artifact write was cancelled.');
-      artifacts.set(id, { ...input, bytes: input.bytes.slice(), descriptor });
-      usedBytes += input.bytes.byteLength;
-      return descriptor;
+      const writer = createWriter(input);
+      writer.write(input.bytes);
+      return writer.close();
     },
+    createWriter,
     read(id, authority) {
       return access(id, authority).bytes.slice();
     },
@@ -82,16 +154,20 @@ export function createMemoryArtifactStore(maximumBytes: number, now: () => numbe
 /** Keeps small JSON values inline and externalizes values above the negotiated limit. */
 export async function externalizeJsonResult<Value>(
   value: Value,
-  options: ArtifactAuthority & { readonly expiresAt: string; readonly maximumInlineBytes: number; readonly store: MemoryArtifactStore },
+  options: ArtifactAuthority & { readonly expiresAt: string; readonly forceArtifact?: boolean; readonly maximumInlineBytes: number; readonly signal?: AbortSignal; readonly store: MemoryArtifactStore },
 ): Promise<InlineOrArtifactResult<Value>> {
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  if (bytes.byteLength <= options.maximumInlineBytes) return value;
+  if (!Number.isSafeInteger(options.maximumInlineBytes) || options.maximumInlineBytes < 0) throw new Error('The inline result byte limit is invalid.');
+  const json = JSON.stringify(value);
+  if (json === undefined) throw new Error('The command result is not JSON-safe.');
+  const bytes = new TextEncoder().encode(json);
+  if (!options.forceArtifact && bytes.byteLength <= options.maximumInlineBytes) return value;
   return {
     artifact: await options.store.create({
       bytes,
       expiresAt: options.expiresAt,
       mediaType: 'application/json',
       ownerId: options.ownerId,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
       targetGeneration: options.targetGeneration,
       targetId: options.targetId,
     }),

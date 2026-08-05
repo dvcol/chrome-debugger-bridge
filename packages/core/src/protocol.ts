@@ -19,6 +19,10 @@ export {
   clientToBrokerMessageSchema,
 } from './protocol/client-plane.js';
 export {
+  type ArtifactDescriptor,
+  artifactDescriptorSchema,
+  type ArtifactResult,
+  artifactResultSchema,
   type BridgeError,
   type BridgeErrorCode,
   bridgeErrorCodeSchema,

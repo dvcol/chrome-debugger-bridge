@@ -84,9 +84,19 @@ export const cdpCommandSchemaDefinition = z.strictObject({
   targetId: targetIdSchemaDefinition,
 });
 
+export const artifactDescriptorSchemaDefinition = z.strictObject({
+  digest: z.optional(nonEmptyStringSchemaDefinition),
+  expiresAt: timestampSchemaDefinition,
+  id: nonEmptyStringSchemaDefinition,
+  length: z.optional(z.int().check(z.gte(0))),
+  mediaType: nonEmptyStringSchemaDefinition,
+});
+
+export const artifactResultSchemaDefinition = z.strictObject({ artifact: artifactDescriptorSchemaDefinition });
+
 export const cdpCommandResultSchemaDefinition = z.strictObject({
   operationId: operationIdSchemaDefinition,
-  value: jsonObjectSchemaDefinition,
+  value: z.union([jsonObjectSchemaDefinition, artifactResultSchemaDefinition]),
 });
 
 export const cdpCancellationSchemaDefinition = z.strictObject({
@@ -188,6 +198,8 @@ export const publishedTargetSchema = exposeProtocolSchema(publishedTargetSchemaD
 export const targetRevocationReasonSchema = exposeProtocolSchema(targetRevocationReasonSchemaDefinition);
 export const leaseSchema = exposeProtocolSchema(leaseSchemaDefinition);
 export const cdpCommandSchema = exposeProtocolSchema(cdpCommandSchemaDefinition);
+export const artifactDescriptorSchema = exposeProtocolSchema(artifactDescriptorSchemaDefinition);
+export const artifactResultSchema = exposeProtocolSchema(artifactResultSchemaDefinition);
 export const cdpCommandResultSchema = exposeProtocolSchema(cdpCommandResultSchemaDefinition);
 export const cdpCancellationSchema = exposeProtocolSchema(cdpCancellationSchemaDefinition);
 export const cdpSubscriptionRequestSchema = exposeProtocolSchema(cdpSubscriptionRequestSchemaDefinition);
@@ -208,6 +220,8 @@ export type PublishedTarget = ProtocolSchemaOutput<typeof publishedTargetSchema>
 export type TargetRevocationReason = ProtocolSchemaOutput<typeof targetRevocationReasonSchema>;
 export type Lease = ProtocolSchemaOutput<typeof leaseSchema>;
 export type CdpCommand = ProtocolSchemaOutput<typeof cdpCommandSchema>;
+export type ArtifactDescriptor = ProtocolSchemaOutput<typeof artifactDescriptorSchema>;
+export type ArtifactResult = ProtocolSchemaOutput<typeof artifactResultSchema>;
 export type CdpCommandResult = ProtocolSchemaOutput<typeof cdpCommandResultSchema>;
 export type CdpCancellation = ProtocolSchemaOutput<typeof cdpCancellationSchema>;
 export type CdpSubscriptionRequest = ProtocolSchemaOutput<typeof cdpSubscriptionRequestSchema>;

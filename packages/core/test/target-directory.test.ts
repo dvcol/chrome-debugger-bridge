@@ -5,6 +5,7 @@ import { expect, it, vi } from 'vitest';
 import { createTargetBroker } from '../src/broker.js';
 import { createChromeDebuggerBridgeClient } from '../src/client.js';
 import { connectAgentTargetBroker, connectClientTargetBroker } from '../src/index.js';
+import { artifactResultSchema } from '../src/protocol.js';
 
 const target = {
   availability: 'available',
@@ -16,6 +17,12 @@ const target = {
   type: 'page',
   url: 'https://example.com/',
 } satisfies PublishedTarget;
+
+async function artifactId(value: unknown): Promise<string> {
+  const result = await artifactResultSchema['~standard'].validate(value);
+  if ('issues' in result) throw new Error('Expected an artifact result.');
+  return result.value.artifact.id;
+}
 
 it('lists only opaque targets published by the agent', async () => {
   expect.assertions(3);
@@ -295,6 +302,28 @@ it('executes only a non-expired lease grant through the registered opaque target
     targetId: target.id,
   })).rejects.toMatchObject({ code: 'LEASE_REQUIRED' });
   expect(Object.keys(result.value)).not.toContain('tabId');
+});
+
+it('externalizes large command results and invalidates their access with the target grant', async () => {
+  expect.assertions(5);
+  const broker = createTargetBroker({ artifactLifetimeMilliseconds: 1_000, maximumArtifactBytes: 100, maximumInlineResultBytes: 4 });
+  const client = createChromeDebuggerBridgeClient(broker);
+  broker.publishTarget(target);
+  broker.registerTargetExecutor(target, { async execute() {
+    return { value: 'large result' };
+  } });
+  const lease = await client.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
+  const result = await client.executeCommand({ leaseId: lease.id, method: 'Runtime.evaluate', operationId: '30000000-0000-4000-8000-000000000007', targetGeneration: target.generation, targetId: target.id });
+
+  expect(result.value).toHaveProperty('artifact.mediaType', 'application/json');
+  expect(result.value).not.toHaveProperty('artifact.path');
+  const request = { artifactId: await artifactId(result.value), leaseId: lease.id, targetGeneration: target.generation, targetId: target.id };
+  expect(await client.readArtifact(request)).toEqual(new TextEncoder().encode(JSON.stringify({ value: 'large result' })));
+  await client.releaseArtifact(request);
+  await expect(client.readArtifact(request)).rejects.toThrow('not available');
+  const secondResult = await client.executeCommand({ leaseId: lease.id, method: 'Runtime.evaluate', operationId: '30000000-0000-4000-8000-000000000008', targetGeneration: target.generation, targetId: target.id });
+  broker.revokeTarget(target.id, target.generation);
+  await expect(client.readArtifact({ ...request, artifactId: await artifactId(secondResult.value) })).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' });
 });
 
 it('arbitrates shared reads and exclusive control, with renewal, release, expiry, and policy-reduction cleanup', () => {
