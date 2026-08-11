@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod/v4';
 
 export const supportedMcpProtocolVersions = ['2026-07-28'] as const;
@@ -24,6 +25,7 @@ class McpToolError extends Error {
 
 export interface MountMcpStreamableHttpOptions {
   readonly client: McpChromeDebuggerBridgeClient;
+  readonly enableRawCdp?: boolean;
   readonly path?: string;
   readonly server: HttpServer;
 }
@@ -33,6 +35,10 @@ export interface McpChromeDebuggerBridgeClient extends ChromeDebuggerBridgeClien
 }
 
 export interface MountedMcpStreamableHttp {
+  close: () => Promise<void>;
+}
+
+export interface MountedMcpStdio {
   close: () => Promise<void>;
 }
 
@@ -131,7 +137,7 @@ async function waitForEvent(
   });
 }
 
-function createMcpServer(client: McpChromeDebuggerBridgeClient): McpServer {
+function createMcpServer(client: McpChromeDebuggerBridgeClient, enableRawCdp = false): McpServer {
   const server = new McpServer({ name: 'chrome-debugger-bridge', version: '0.0.0' });
   server.registerTool('browser.list_targets', { description: 'List opaque published Chrome targets.', inputSchema: z.object({}) }, async () => {
     try {
@@ -189,6 +195,20 @@ function createMcpServer(client: McpChromeDebuggerBridgeClient): McpServer {
     ctx.mcpReq.signal.addEventListener('abort', abort, { once: true });
     try {
       return jsonContent(await client.executeCommand({ leaseId: input.leaseId, method: 'Runtime.evaluate', operationId, parameters: { expression: input.expression, returnByValue: true }, targetGeneration: input.targetGeneration, targetId: input.targetId }));
+    } catch (error) {
+      return toolError(error);
+    } finally {
+      ctx.mcpReq.signal.removeEventListener('abort', abort);
+    }
+  });
+  if (enableRawCdp) server.registerTool('browser.raw_cdp', { description: 'Execute a trusted raw CDP command through an explicitly authorized lease.', inputSchema: z.object({ leaseId: z.string().uuid(), method: z.string().regex(cdpMethodPattern), parameters: z.record(z.string(), z.json()), targetGeneration: z.number().int().nonnegative(), targetId: z.string().uuid() }) }, async (input, ctx) => {
+    const operationId = randomUUID();
+    const abort = (): void => {
+      void client.cancelCommand({ operationId, targetGeneration: input.targetGeneration, targetId: input.targetId }).catch(() => {});
+    };
+    ctx.mcpReq.signal.addEventListener('abort', abort, { once: true });
+    try {
+      return jsonContent(await client.executeCommand({ leaseId: input.leaseId, method: input.method, operationId, parameters: input.parameters, targetGeneration: input.targetGeneration, targetId: input.targetId }));
     } catch (error) {
       return toolError(error);
     } finally {
@@ -286,7 +306,7 @@ function createMcpServer(client: McpChromeDebuggerBridgeClient): McpServer {
 /** Mounts the official MCP SDK Streamable HTTP transport without taking ownership of the broker or HTTP server. */
 export function mountMcpStreamableHttp(options: MountMcpStreamableHttpOptions): MountedMcpStreamableHttp {
   const path = options.path ?? '/mcp';
-  const handler = createMcpHandler(() => createMcpServer(options.client), { legacy: 'reject', responseMode: 'sse' });
+  const handler = createMcpHandler(() => createMcpServer(options.client, options.enableRawCdp), { legacy: 'reject', responseMode: 'sse' });
   const nodeHandler = toNodeHandler(handler);
   let closed = false;
   const listener = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
@@ -302,4 +322,9 @@ export function mountMcpStreamableHttp(options: MountMcpStreamableHttpOptions): 
       await handler.close();
     },
   };
+}
+
+/** Starts an optional stdio adapter around the same MCP tool surface without owning broker lifecycle. */
+export function mountMcpStdio(options: Pick<MountMcpStreamableHttpOptions, 'client' | 'enableRawCdp'>): MountedMcpStdio {
+  return serveStdio(() => createMcpServer(options.client, options.enableRawCdp), { legacy: 'reject' });
 }
