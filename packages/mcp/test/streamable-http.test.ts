@@ -176,3 +176,29 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     await new Promise<void>((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error)));
   }
 });
+
+it('registers raw CDP only when a trusted host explicitly enables it', async () => {
+  expect.assertions(1);
+  const server = createServer();
+  const mounted = mountMcpStreamableHttp({ client: {} as McpChromeDebuggerBridgeClient, enableRawCdp: true, path: '/bridge-mcp', server });
+  await new Promise<void>((resolve, reject) => {
+    server.listen(0, '127.0.0.1', resolve);
+    server.once('error', reject);
+  });
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('Expected a TCP address.');
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/bridge-mcp`));
+  const client = new Client(
+    { name: 'mcp-test-client', version: '0.0.0' },
+    { versionNegotiation: { mode: { pin: '2026-07-28' } } },
+  );
+
+  try {
+    await client.connect(transport);
+    expect((await client.listTools()).tools.map(tool => tool.name)).toContain('browser.raw_cdp');
+  } finally {
+    await transport.terminateSession();
+    await mounted.close();
+    await new Promise<void>((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error)));
+  }
+});
