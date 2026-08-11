@@ -207,14 +207,14 @@ function createMcpServer(client: McpChromeDebuggerBridgeClient, enableRawCdp = f
       ctx.mcpReq.signal.removeEventListener('abort', abort);
     }
   });
-  if (enableRawCdp) server.registerTool('browser.raw_cdp', { description: 'Execute a trusted raw CDP command through an explicitly authorized lease.', inputSchema: z.object({ leaseId: z.string().uuid(), method: z.string().regex(cdpMethodPattern), parameters: z.record(z.string(), z.json()), targetGeneration: z.number().int().nonnegative(), targetId: z.string().uuid() }) }, async (input, ctx) => {
+  if (enableRawCdp) server.registerTool('browser.raw_cdp', { description: 'Execute a trusted raw CDP command through an explicitly authorized lease.', inputSchema: z.object({ leaseId: z.string().uuid(), method: z.string().regex(cdpMethodPattern), parameters: z.record(z.string(), z.json()), sessionId: z.string().min(1).optional(), targetGeneration: z.number().int().nonnegative(), targetId: z.string().uuid() }) }, async (input, ctx) => {
     const operationId = randomUUID();
     const abort = (): void => {
       void client.cancelCommand({ operationId, targetGeneration: input.targetGeneration, targetId: input.targetId }).catch(() => {});
     };
     ctx.mcpReq.signal.addEventListener('abort', abort, { once: true });
     try {
-      return jsonContent(await client.executeCommand({ leaseId: input.leaseId, method: input.method, operationId, parameters: input.parameters, targetGeneration: input.targetGeneration, targetId: input.targetId }));
+      return jsonContent(await client.executeCommand({ leaseId: input.leaseId, method: input.method, operationId, parameters: input.parameters, ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }), targetGeneration: input.targetGeneration, targetId: input.targetId }));
     } catch (error) {
       return toolError(error);
     } finally {
