@@ -2,8 +2,7 @@ import type { McpChromeDebuggerBridgeClient } from '../src/index.js';
 
 import { createServer } from 'node:http';
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { expect, it } from 'vitest';
 
 import { mountMcpStreamableHttp, supportedMcpProtocolVersions, supportedMcpSdkVersion } from '../src/index.js';
@@ -37,14 +36,14 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
   const client = new Client({ name: 'mcp-test-client', version: '0.0.0' });
 
   try {
-    await client.connect(transport as never);
+    await client.connect(transport, { versionNegotiation: { mode: 'modern' } });
     const tools = await client.listTools();
-    expect(tools.tools.map(tool => tool.name)).toEqual(['browser.list_targets', 'browser.acquire', 'browser.renew', 'browser.release', 'browser.inspect']);
+    expect(tools.tools.map(tool => tool.name)).toEqual(['browser.list_targets', 'browser.acquire', 'browser.renew', 'browser.release', 'browser.inspect', 'browser.snapshot', 'browser.evaluate', 'browser.navigate', 'browser.click', 'browser.type', 'browser.press', 'browser.console', 'browser.network', 'browser.wait_for']);
     const result = await client.callTool({ arguments: {}, name: 'browser.list_targets' });
     expect(result.isError).toBeUndefined();
     expect(result.content).toEqual([{ text: JSON.stringify([target]), type: 'text' }]);
-    expect(supportedMcpSdkVersion).toBe('1.30.0');
-    expect(supportedMcpProtocolVersions).toEqual(['2025-03-26', '2025-06-18', '2025-11-25']);
+    expect(supportedMcpSdkVersion).toBe('2.0.0');
+    expect(supportedMcpProtocolVersions).toEqual(['2026-07-28']);
   } finally {
     await transport.terminateSession();
     await mounted.close();

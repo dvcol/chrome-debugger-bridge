@@ -32,10 +32,14 @@
   },
   "dependencies": {
     "@dvcol/chrome-debugger-bridge": "workspace:^",
-    "@modelcontextprotocol/sdk": "catalog:",
+    "@modelcontextprotocol/node": "catalog:",
+    "@modelcontextprotocol/server": "catalog:",
     "zod": "catalog:protocol"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "catalog:"
   }
 }
