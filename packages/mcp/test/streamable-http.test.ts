@@ -36,7 +36,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
   const client = new Client({ name: 'mcp-test-client', version: '0.0.0' });
 
   try {
-    await client.connect(transport, { versionNegotiation: { mode: 'modern' } });
+    await client.connect(transport);
     const tools = await client.listTools();
     expect(tools.tools.map(tool => tool.name)).toEqual(['browser.list_targets', 'browser.acquire', 'browser.renew', 'browser.release', 'browser.inspect', 'browser.snapshot', 'browser.evaluate', 'browser.navigate', 'browser.click', 'browser.type', 'browser.press', 'browser.console', 'browser.network', 'browser.wait_for']);
     const result = await client.callTool({ arguments: {}, name: 'browser.list_targets' });
