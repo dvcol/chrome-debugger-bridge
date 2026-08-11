@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { expect, it } from 'vitest';
 
-import { mountMcpStreamableHttp, supportedMcpProtocolVersions, supportedMcpSdkVersion } from '../src/index.js';
+import { mountMcpStdio, mountMcpStreamableHttp, supportedMcpProtocolVersions, supportedMcpSdkVersion } from '../src/index.js';
 
 const target = {
   availability: 'available',
@@ -201,4 +201,23 @@ it('registers raw CDP only when a trusted host explicitly enables it', async () 
     await mounted.close();
     await new Promise<void>((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error)));
   }
+});
+
+it('owns an injected stdio transport independently from the HTTP adapter', async () => {
+  expect.assertions(2);
+  let closed = false;
+  let started = false;
+  const transport = {
+    async close() {
+      closed = true;
+    },
+    async send() {},
+    async start() {
+      started = true;
+    },
+  };
+  const mounted = mountMcpStdio({ client: {} as McpChromeDebuggerBridgeClient, stdio: { transport } });
+  await expect.poll(() => started).toBe(true);
+  await mounted.close();
+  expect(closed).toBe(true);
 });
