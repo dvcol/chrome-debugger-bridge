@@ -40,6 +40,8 @@ export interface DevframeOfferPairingPolicy {
 }
 
 export interface CreateDevframeAgentBootstrapOptions<Connection> {
+  /** Closes a connection that completes after its offer has been cancelled or the bootstrap has disposed. */
+  readonly closeConnection?: (connection: Connection) => void;
   readonly connect: (offer: DevframeConnectionOffer) => Promise<Connection>;
   readonly locator: DevframeOfferLocator;
   readonly now?: () => number;
@@ -134,29 +136,43 @@ export function createDevframeOfferContentRelay(options: CreateDevframeOfferCont
 /** Validates a one-shot runtime offer before allowing the extension agent to open its own direct transport. */
 export function createDevframeAgentBootstrap<Connection>(options: CreateDevframeAgentBootstrapOptions<Connection>): DevframeAgentBootstrap<Connection> {
   const now = options.now ?? Date.now;
+  const cancelledNonces = new Set<string>();
   const consumedNonces = new Set<string>();
+  const connectionsByNonce = new Map<string, Connection>();
   let disposed = false;
   const cancel = (nonce: string): void => {
+    cancelledNonces.add(nonce);
     consumedNonces.add(nonce);
+    const connection = connectionsByNonce.get(nonce);
+    if (connection !== undefined) options.closeConnection?.(connection);
+    connectionsByNonce.delete(nonce);
   };
   return {
     async accept(message) {
       if (disposed || !isRecord(message) || message.kind !== offerMessageKind || typeof message.origin !== 'string') return undefined;
       const offer = parseDevframeConnectionOffer(message.offer);
-      if (offer === undefined || consumedNonces.has(offer.nonce) || Date.parse(offer.expiresAt) <= now()) {
+      if (offer === undefined || cancelledNonces.has(offer.nonce) || consumedNonces.has(offer.nonce) || Date.parse(offer.expiresAt) <= now()) {
         if (offer !== undefined) cancel(offer.nonce);
         return undefined;
       }
       consumedNonces.add(offer.nonce);
       const locatedOffer = await options.locator.locate(offer);
-      if (locatedOffer === undefined || locatedOffer.nonce !== offer.nonce || locatedOffer.brokerId !== offer.brokerId || Date.parse(locatedOffer.expiresAt) <= now()) return undefined;
-      if (!await options.pairingPolicy.approve(locatedOffer, message.origin)) return undefined;
-      return options.connect(locatedOffer);
+      if (disposed || locatedOffer === undefined || locatedOffer.nonce !== offer.nonce || locatedOffer.brokerId !== offer.brokerId || Date.parse(locatedOffer.expiresAt) <= now()) return undefined;
+      if (!await options.pairingPolicy.approve(locatedOffer, message.origin) || disposed) return undefined;
+      const connection = await options.connect(locatedOffer);
+      if (disposed || cancelledNonces.has(offer.nonce)) {
+        options.closeConnection?.(connection);
+        return undefined;
+      }
+      connectionsByNonce.set(offer.nonce, connection);
+      return connection;
     },
     cancel,
     dispose() {
       disposed = true;
-      consumedNonces.clear();
+      cancelledNonces.clear();
+      for (const connection of connectionsByNonce.values()) options.closeConnection?.(connection);
+      connectionsByNonce.clear();
     },
   };
 }

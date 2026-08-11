@@ -43,7 +43,16 @@ export interface MountDevframeChromeDebuggerBridgeOptions<
 
 export interface MountedDevframeChromeDebuggerBridge {
   readonly broker: TargetBroker;
+  diagnostics: () => DevframeBridgeDiagnostics;
   dispose: () => Promise<void>;
+}
+
+/** Reports only Devframe mount lifecycle state, never connection details or broker payloads. */
+export interface DevframeBridgeDiagnostics {
+  readonly disposed: boolean;
+  readonly ownsBroker: boolean;
+  readonly subscriptionCount: number;
+  readonly watchingTargets: boolean;
 }
 
 interface DevframeSubscriptionState {
@@ -199,6 +208,14 @@ export function mountDevframeChromeDebuggerBridge<
 
   return {
     broker,
+    diagnostics() {
+      return {
+        disposed,
+        ownsBroker,
+        subscriptionCount: subscriptions.size,
+        watchingTargets: targetWatch !== undefined,
+      };
+    },
     async dispose() {
       if (disposed) return;
       disposed = true;

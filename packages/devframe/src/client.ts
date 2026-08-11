@@ -56,7 +56,15 @@ export interface DevframeBridgeClientRpc {
 
 export interface DevframeChromeDebuggerBridgeClient extends ChromeDebuggerBridgeClient {
   cancelCommand: (request: Pick<CdpCommand, 'operationId' | 'targetGeneration' | 'targetId'>) => Promise<void>;
+  diagnostics: () => DevframeClientDiagnostics;
   dispose: () => void;
+}
+
+/** Contains only lifecycle counters and flags; it deliberately excludes transport and Chrome data. */
+export interface DevframeClientDiagnostics {
+  readonly disposed: boolean;
+  readonly subscriptionCount: number;
+  readonly watchingTargets: boolean;
 }
 
 interface DevframeSubscriptionState {
@@ -236,6 +244,7 @@ export function createDevframeBridgeClient(channel: DevframeRpcChannel): Devfram
     watchTargets() {
       if (targetWatchStarted === undefined) {
         targetWatchStarted = rpc.startTargetWatch().catch((error: unknown) => {
+          if (disposed) return;
           targetChanges.close(error instanceof Error ? error : new Error('Unable to start target watching.'));
           throw error;
         });
@@ -248,6 +257,13 @@ export function createDevframeBridgeClient(channel: DevframeRpcChannel): Devfram
     ...facade,
     async cancelCommand(request) {
       await rpc.cancelCommand(request);
+    },
+    diagnostics() {
+      return {
+        disposed,
+        subscriptionCount: subscriptions.size,
+        watchingTargets: targetWatchStarted !== undefined,
+      };
     },
     dispose() {
       if (disposed) return;

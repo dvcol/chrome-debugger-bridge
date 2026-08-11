@@ -106,3 +106,47 @@ it('rejects malformed, expired, replayed, and unapproved offers before opening d
   expect(await bootstrap.accept({ kind: 'chrome-debugger-bridge.devframe-offer', offer: { ...offer, nonce: 'b3ebf798-90e3-45e8-9665-3a9939c74883' }, origin: 'https://devframe.example.test' })).toBeUndefined();
   expect(pairingPolicy.approve).toHaveBeenCalledWith(offer, 'https://devframe.example.test');
 });
+
+it('closes interrupted and active bootstrap connections during cancellation and disposal', async () => {
+  expect.assertions(5);
+  let resolveConnection: ((connection: { readonly id: string }) => void) | undefined;
+  let resolveConnectStarted: (() => void) | undefined;
+  let connectStarted = new Promise<void>((resolve) => {
+    resolveConnectStarted = resolve;
+  });
+  const closeConnection = vi.fn();
+  const bootstrap = createDevframeAgentBootstrap({
+    closeConnection,
+    async connect() {
+      resolveConnectStarted?.();
+      return new Promise((resolve) => {
+        resolveConnection = resolve;
+      });
+    },
+    locator: { async locate(candidate) {
+      return candidate;
+    } },
+    pairingPolicy: { async approve() {
+      return true;
+    } },
+  });
+  const accepting = bootstrap.accept({ kind: 'chrome-debugger-bridge.devframe-offer', offer, origin: 'https://devframe.example.test' });
+  await connectStarted;
+  bootstrap.cancel(offer.nonce);
+  resolveConnection?.({ id: 'interrupted' });
+  expect(await accepting).toBeUndefined();
+  expect(closeConnection).toHaveBeenCalledWith({ id: 'interrupted' });
+
+  const activeOffer = { ...offer, nonce: 'b3ebf798-90e3-45e8-9665-3a9939c74883' };
+  connectStarted = new Promise((resolve) => {
+    resolveConnectStarted = resolve;
+  });
+  const activeAccepting = bootstrap.accept({ kind: 'chrome-debugger-bridge.devframe-offer', offer: activeOffer, origin: 'https://devframe.example.test' });
+  await connectStarted;
+  resolveConnection?.({ id: 'active' });
+  expect(await activeAccepting).toEqual({ id: 'active' });
+  bootstrap.cancel(activeOffer.nonce);
+  expect(closeConnection).toHaveBeenCalledWith({ id: 'active' });
+  bootstrap.dispose();
+  expect(closeConnection).toHaveBeenCalledTimes(2);
+});

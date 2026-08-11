@@ -46,7 +46,7 @@ function createChannelPair(): readonly [DevframeRpcChannel, DevframeRpcChannel] 
 }
 
 it('maps the shared client facade through a Devframe birpc channel without owning the HTTP listener', async () => {
-  expect.assertions(12);
+  expect.assertions(15);
   const server = createServer();
   const [hostChannel, clientChannel] = createChannelPair();
   const bridge = mountDevframeChromeDebuggerBridge({
@@ -94,6 +94,8 @@ it('maps the shared client facade through a Devframe birpc channel without ownin
     expect(lease.targetId).toBe(target.id);
     expect((await client.renewLease({ durationMilliseconds: 30_000, leaseId: lease.id, targetGeneration: target.generation, targetId: target.id })).id).toBe(lease.id);
     const subscription = await client.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });
+    expect(client.diagnostics()).toEqual({ disposed: false, subscriptionCount: 1, watchingTargets: true });
+    expect(bridge.diagnostics()).toEqual({ disposed: false, ownsBroker: true, subscriptionCount: 1, watchingTargets: true });
     bridge.broker.publishEvent(target, 'Runtime.consoleAPICalled', { type: 'log' });
     expect(await subscription[Symbol.asyncIterator]().next()).toMatchObject({ done: false, value: { method: 'Runtime.consoleAPICalled', targetId: target.id } });
     const result = await client.executeCommand({ leaseId: lease.id, method: 'Runtime.evaluate', operationId: '2f2d0d0e-fc67-4a55-80ce-c03d708f610f', parameters: { expression: 'artifact' }, targetGeneration: target.generation, targetId: target.id });
@@ -114,4 +116,50 @@ it('maps the shared client facade through a Devframe birpc channel without ownin
 
   expect(server.listening).toBe(false);
   expect(server.listenerCount('upgrade')).toBe(0);
+  expect(bridge.diagnostics()).toEqual({ disposed: true, ownsBroker: true, subscriptionCount: 0, watchingTargets: false });
+});
+
+it('releases Devframe routes and streams across repeated host mount cycles', async () => {
+  expect.assertions(5);
+  const server = createServer();
+  const [firstHostChannel, firstClientChannel] = createChannelPair();
+  const createBridge = (channel: DevframeRpcChannel) => mountDevframeChromeDebuggerBridge({
+    agentAuthentication: createMemoryAgentAuthenticationAdapter({
+      brokerId: 'ad0ea525-155e-47b7-a218-4a4b2c91d1e0',
+      pairingCode: '123456',
+      pairingCodeExpiresAt: Date.now() + 60_000,
+      principal: { id: 'c206d4c0-5650-42bb-a60c-054673446442', role: 'agent' },
+    }),
+    agentPath: '/devframe-agent',
+    brokerId: 'ad0ea525-155e-47b7-a218-4a4b2c91d1e0',
+    channel,
+    clientAuthentication: createStaticClientAuthenticationAdapter('Bearer devframe-client', { id: 'ccc243ef-b45a-4c1b-8877-8da4ca3b4dc4', role: 'client' }),
+    clientPath: '/devframe-client',
+    originPolicy() {
+      return true;
+    },
+    server,
+  });
+  const firstBridge = createBridge(firstHostChannel);
+  const firstClient = createDevframeBridgeClient(firstClientChannel);
+  const targetIterator = firstClient.watchTargets()[Symbol.asyncIterator]();
+
+  try {
+    expect(server.listenerCount('upgrade')).toBe(1);
+    firstClient.dispose();
+    expect(await targetIterator.next()).toEqual({ done: true, value: undefined });
+    await firstBridge.dispose();
+    expect(server.listenerCount('upgrade')).toBe(0);
+
+    const [secondHostChannel, secondClientChannel] = createChannelPair();
+    const secondBridge = createBridge(secondHostChannel);
+    const secondClient = createDevframeBridgeClient(secondClientChannel);
+    expect(server.listenerCount('upgrade')).toBe(1);
+    secondClient.dispose();
+    await secondBridge.dispose();
+    expect(server.listenerCount('upgrade')).toBe(0);
+  } finally {
+    firstClient.dispose();
+    await firstBridge.dispose();
+  }
 });
