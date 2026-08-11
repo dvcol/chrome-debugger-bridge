@@ -32,7 +32,10 @@ function jsonContent(value: unknown): CallToolResult {
 }
 
 function toolError(error: unknown): CallToolResult {
-  return { content: [{ text: JSON.stringify({ code: error instanceof Error ? error.name : 'MCP_TOOL_FAILED' }), type: 'text' }], isError: true };
+  const code = error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : 'MCP_TOOL_FAILED';
+  return { content: [{ text: JSON.stringify({ code }), type: 'text' }], isError: true };
 }
 
 const targetInput = {
