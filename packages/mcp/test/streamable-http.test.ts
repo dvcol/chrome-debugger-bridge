@@ -17,11 +17,12 @@ const target = {
 } as const;
 
 it('serves target discovery through the official SDK Streamable HTTP client', async () => {
-  expect.assertions(25);
+  expect.assertions(30);
   const server = createServer();
   const acquiredLeases: unknown[] = [];
   const cancelledCommands: unknown[] = [];
   const executedMethods: string[] = [];
+  const releasedArtifacts: unknown[] = [];
   const releasedLeases: unknown[] = [];
   let closedSubscriptions = 0;
   let rejectPendingInspection: ((reason?: unknown) => void) | undefined;
@@ -59,6 +60,9 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     },
     async releaseLease(request: unknown) {
       releasedLeases.push(request);
+    },
+    async releaseArtifact(request: unknown) {
+      releasedArtifacts.push(request);
     },
     async subscribe(request: { readonly match: { readonly method: string } }) {
       if (request.match.method === 'Network.loadingFinished') {
@@ -113,12 +117,20 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    expect(tools.tools.map(tool => tool.name)).toEqual(['browser.list_targets', 'browser.acquire', 'browser.renew', 'browser.release', 'browser.inspect', 'browser.snapshot', 'browser.evaluate', 'browser.navigate', 'browser.click', 'browser.type', 'browser.press', 'browser.console', 'browser.network', 'browser.wait_for']);
+    expect(tools.tools.map(tool => tool.name)).toEqual(['browser.list_targets', 'browser.acquire', 'browser.renew', 'browser.release', 'browser.release_artifact', 'browser.inspect', 'browser.snapshot', 'browser.screenshot', 'browser.network_body', 'browser.evaluate', 'browser.navigate', 'browser.click', 'browser.type', 'browser.press', 'browser.console', 'browser.network', 'browser.wait_for']);
     const result = await client.callTool({ arguments: {}, name: 'browser.list_targets' });
     expect(result.isError).toBeUndefined();
     expect(result.content).toEqual([{ text: JSON.stringify([target]), type: 'text' }]);
     const snapshot = await client.callTool({ arguments: { targetGeneration: target.generation, targetId: target.id }, name: 'browser.snapshot' });
     expect(snapshot.isError).toBeUndefined();
+    const screenshot = await client.callTool({ arguments: { targetGeneration: target.generation, targetId: target.id }, name: 'browser.screenshot' });
+    expect(screenshot.isError).toBeUndefined();
+    expect(screenshot.content).toEqual([{ text: JSON.stringify({ result: { type: 'string', value: 'Page.captureScreenshot' } }), type: 'text' }]);
+    const networkBody = await client.callTool({ arguments: { requestId: 'request-1', targetGeneration: target.generation, targetId: target.id }, name: 'browser.network_body' });
+    expect(networkBody.isError).toBeUndefined();
+    const releasedArtifact = await client.callTool({ arguments: { artifactId: '017c10a7-e0af-40ec-879f-cd87dffaf036', leaseId: '017c10a7-e0af-40ec-879f-cd87dffaf036', targetGeneration: target.generation, targetId: target.id }, name: 'browser.release_artifact' });
+    expect(releasedArtifact.isError).toBeUndefined();
+    expect(releasedArtifacts).toEqual([{ artifactId: '017c10a7-e0af-40ec-879f-cd87dffaf036', leaseId: '017c10a7-e0af-40ec-879f-cd87dffaf036', targetGeneration: target.generation, targetId: target.id }]);
     const navigation = await client.callTool({ arguments: { targetGeneration: target.generation, targetId: target.id, url: 'https://example.test/' }, name: 'browser.navigate' });
     expect(navigation.isError).toBeUndefined();
     const click = await client.callTool({ arguments: { targetGeneration: target.generation, targetId: target.id, x: 10, y: 20 }, name: 'browser.click' });
@@ -136,16 +148,16 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     inspectionCancellationController.abort();
     await expect(cancelledInspection).rejects.toThrow();
     await expect.poll(() => cancelledCommands).toMatchObject([{ targetGeneration: target.generation, targetId: target.id }]);
-    expect(acquiredLeases).toMatchObject([{ mode: 'shared-read', requestedMethods: ['DOMSnapshot.captureSnapshot'] }, { mode: 'exclusive-control', requestedMethods: ['Page.navigate'] }, { mode: 'exclusive-control', requestedMethods: ['Input.dispatchMouseEvent'] }, { mode: 'exclusive-control', requestedMethods: ['Input.dispatchKeyEvent'] }, { mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'] }, { mode: 'shared-read', requestedMethods: ['Runtime.evaluate'] }]);
-    expect(executedMethods).toEqual(['DOMSnapshot.captureSnapshot', 'Page.navigate', 'Input.dispatchMouseEvent', 'Input.dispatchMouseEvent', 'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent']);
-    expect(releasedLeases).toHaveLength(6);
+    expect(acquiredLeases).toMatchObject([{ mode: 'shared-read', requestedMethods: ['DOMSnapshot.captureSnapshot'] }, { mode: 'shared-read', requestedMethods: ['Page.captureScreenshot'] }, { mode: 'shared-read', requestedMethods: ['Network.getResponseBody'] }, { mode: 'exclusive-control', requestedMethods: ['Page.navigate'] }, { mode: 'exclusive-control', requestedMethods: ['Input.dispatchMouseEvent'] }, { mode: 'exclusive-control', requestedMethods: ['Input.dispatchKeyEvent'] }, { mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'] }, { mode: 'shared-read', requestedMethods: ['Runtime.evaluate'] }]);
+    expect(executedMethods).toEqual(['DOMSnapshot.captureSnapshot', 'Page.captureScreenshot', 'Network.getResponseBody', 'Page.navigate', 'Input.dispatchMouseEvent', 'Input.dispatchMouseEvent', 'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent']);
+    expect(releasedLeases).toHaveLength(8);
     expect(closedSubscriptions).toBe(1);
     const timedOutWait = await client.callTool({ arguments: { method: 'Network.loadingFinished', targetGeneration: target.generation, targetId: target.id, timeoutMilliseconds: 10 }, name: 'browser.wait_for' });
     await subscriptionStarted;
     expect(timedOutWait.isError).toBe(true);
     expect(timedOutWait.content).toEqual([{ text: JSON.stringify({ code: 'MCP_WAIT_TIMEOUT' }), type: 'text' }]);
     expect(closedSubscriptions).toBe(2);
-    expect(releasedLeases).toHaveLength(7);
+    expect(releasedLeases).toHaveLength(9);
     subscriptionStarted = new Promise<void>((resolve) => {
       resolveSubscriptionStarted = resolve;
     });
@@ -155,7 +167,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     cancellationController.abort();
     await expect(cancelledWait).rejects.toThrow();
     await expect.poll(() => closedSubscriptions).toBe(3);
-    expect(releasedLeases).toHaveLength(8);
+    expect(releasedLeases).toHaveLength(10);
     expect(supportedMcpSdkVersion).toBe('2.0.0');
     expect(supportedMcpProtocolVersions).toEqual(['2026-07-28']);
   } finally {

@@ -173,6 +173,14 @@ function createMcpServer(client: McpChromeDebuggerBridgeClient): McpServer {
       return toolError(error);
     }
   });
+  server.registerTool('browser.release_artifact', { description: 'Release an authorized artifact through its owning lease.', inputSchema: z.object({ artifactId: z.string().uuid(), targetGeneration: z.number().int().nonnegative(), targetId: z.string().uuid(), leaseId: z.string().uuid() }) }, async (input) => {
+    try {
+      await client.releaseArtifact(input);
+      return jsonContent({ released: true });
+    } catch (error) {
+      return toolError(error);
+    }
+  });
   server.registerTool('browser.inspect', { description: 'Evaluate a read-only inspection expression through an authorized lease.', inputSchema: z.object({ expression: z.string().min(1), leaseId: z.string().uuid(), targetGeneration: z.number().int().nonnegative(), targetId: z.string().uuid() }) }, async (input, ctx) => {
     const operationId = randomUUID();
     const abort = (): void => {
@@ -190,6 +198,22 @@ function createMcpServer(client: McpChromeDebuggerBridgeClient): McpServer {
   server.registerTool('browser.snapshot', { description: 'Capture a structural DOM snapshot through a read lease.', inputSchema: z.object(targetInput) }, async (input) => {
     try {
       return jsonContent(await executeSemanticCommand(client, input, 'shared-read', 'DOMSnapshot.captureSnapshot', { computedStyles: [], includeDOMRects: true, includePaintOrder: true }));
+    } catch (error) {
+      return toolError(error);
+    }
+  });
+  server.registerTool('browser.screenshot', { description: 'Capture a screenshot, returning the bridge inline-or-artifact result without base64 expansion.', inputSchema: z.object({ ...targetInput, format: z.enum(['jpeg', 'png', 'webp']).default('png') }) }, async (input) => {
+    try {
+      const result = await executeSemanticCommand(client, input, 'shared-read', 'Page.captureScreenshot', { format: input.format });
+      return jsonContent((result as { readonly value: unknown }).value);
+    } catch (error) {
+      return toolError(error);
+    }
+  });
+  server.registerTool('browser.network_body', { description: 'Read a network response body, returning the bridge inline-or-artifact result without base64 expansion.', inputSchema: z.object({ ...targetInput, requestId: z.string().min(1) }) }, async (input) => {
+    try {
+      const result = await executeSemanticCommand(client, input, 'shared-read', 'Network.getResponseBody', { requestId: input.requestId });
+      return jsonContent((result as { readonly value: unknown }).value);
     } catch (error) {
       return toolError(error);
     }
