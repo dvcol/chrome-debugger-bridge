@@ -1,6 +1,7 @@
 import type { CdpEvent, ChromeDebuggerBridgeClient, Lease } from '@dvcol/chrome-debugger-bridge';
 import type { JsonObject } from '@dvcol/chrome-debugger-bridge/protocol';
 import type { CallToolResult } from '@modelcontextprotocol/server';
+import type { ServeStdioOptions } from '@modelcontextprotocol/server/stdio';
 import type { Server as HttpServer, IncomingMessage, ServerResponse } from 'node:http';
 
 import { randomUUID } from 'node:crypto';
@@ -40,6 +41,11 @@ export interface MountedMcpStreamableHttp {
 
 export interface MountedMcpStdio {
   close: () => Promise<void>;
+}
+
+export interface MountMcpStdioOptions extends Pick<MountMcpStreamableHttpOptions, 'client' | 'enableRawCdp'> {
+  /** Allows hosts to provide an isolated stdio-compatible transport without coupling it to HTTP lifecycle. */
+  readonly stdio?: Omit<ServeStdioOptions, 'legacy'>;
 }
 
 function jsonContent(value: unknown): CallToolResult {
@@ -325,6 +331,6 @@ export function mountMcpStreamableHttp(options: MountMcpStreamableHttpOptions): 
 }
 
 /** Starts an optional stdio adapter around the same MCP tool surface without owning broker lifecycle. */
-export function mountMcpStdio(options: Pick<MountMcpStreamableHttpOptions, 'client' | 'enableRawCdp'>): MountedMcpStdio {
-  return serveStdio(() => createMcpServer(options.client, options.enableRawCdp), { legacy: 'reject' });
+export function mountMcpStdio(options: MountMcpStdioOptions): MountedMcpStdio {
+  return serveStdio(() => createMcpServer(options.client, options.enableRawCdp), { ...options.stdio, legacy: 'reject' });
 }
