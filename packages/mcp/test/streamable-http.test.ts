@@ -1,0 +1,53 @@
+import type { McpChromeDebuggerBridgeClient } from '../src/index.js';
+
+import { createServer } from 'node:http';
+
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { expect, it } from 'vitest';
+
+import { mountMcpStreamableHttp, supportedMcpProtocolVersions, supportedMcpSdkVersion } from '../src/index.js';
+
+const target = {
+  availability: 'available',
+  capabilities: { level: 'observe' },
+  generation: 1,
+  id: 'e5f7a25e-810e-41a7-97d0-ae4636c5e4e5',
+  scopeId: '76f667f1-cf48-4664-9c41-ffab0ed11b55',
+  type: 'page',
+} as const;
+
+it('serves target discovery through the official SDK Streamable HTTP client', async () => {
+  expect.assertions(5);
+  const server = createServer();
+  const bridgeClient = {
+    async cancelCommand() {},
+    async listTargets() {
+      return [target];
+    },
+  } as unknown as McpChromeDebuggerBridgeClient;
+  const mounted = mountMcpStreamableHttp({ client: bridgeClient, path: '/bridge-mcp', server });
+  await new Promise<void>((resolve, reject) => {
+    server.listen(0, '127.0.0.1', resolve);
+    server.once('error', reject);
+  });
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('Expected a TCP address.');
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/bridge-mcp`));
+  const client = new Client({ name: 'mcp-test-client', version: '0.0.0' });
+
+  try {
+    await client.connect(transport as never);
+    const tools = await client.listTools();
+    expect(tools.tools.map(tool => tool.name)).toEqual(['browser.list_targets', 'browser.acquire', 'browser.renew', 'browser.release', 'browser.inspect']);
+    const result = await client.callTool({ arguments: {}, name: 'browser.list_targets' });
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toEqual([{ text: JSON.stringify([target]), type: 'text' }]);
+    expect(supportedMcpSdkVersion).toBe('1.30.0');
+    expect(supportedMcpProtocolVersions).toEqual(['2025-03-26', '2025-06-18', '2025-11-25']);
+  } finally {
+    await transport.terminateSession();
+    await mounted.close();
+    await new Promise<void>((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error)));
+  }
+});

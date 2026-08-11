@@ -16,7 +16,9 @@
       "import": "./dist/index.mjs"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "engines": {
     "node": ">=24.0.0"
   },
@@ -29,7 +31,9 @@
     "verify:pack": "publint"
   },
   "dependencies": {
-    "@dvcol/chrome-debugger-bridge": "workspace:^"
+    "@dvcol/chrome-debugger-bridge": "workspace:^",
+    "@modelcontextprotocol/sdk": "catalog:",
+    "zod": "catalog:protocol"
   },
   "publishConfig": {
     "access": "public"

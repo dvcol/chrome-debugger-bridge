@@ -11,6 +11,7 @@ packages:
   - examples/*
   - tests/fixtures/*
 catalog:
+  '@modelcontextprotocol/sdk': 1.30.0
   birpc: ^4.0.0
 catalogs:
   build:
