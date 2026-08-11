@@ -17,24 +17,39 @@ const target = {
 } as const;
 
 it('serves target discovery through the official SDK Streamable HTTP client', async () => {
-  expect.assertions(18);
+  expect.assertions(25);
   const server = createServer();
   const acquiredLeases: unknown[] = [];
+  const cancelledCommands: unknown[] = [];
   const executedMethods: string[] = [];
   const releasedLeases: unknown[] = [];
   let closedSubscriptions = 0;
+  let rejectPendingInspection: ((reason?: unknown) => void) | undefined;
   let resolvePendingEvent: ((result: IteratorResult<never>) => void) | undefined;
+  let resolveInspectionStarted: (() => void) | undefined;
   let resolveSubscriptionStarted: (() => void) | undefined;
-  const subscriptionStarted = new Promise<void>((resolve) => {
+  const inspectionStarted = new Promise<void>((resolve) => {
+    resolveInspectionStarted = resolve;
+  });
+  let subscriptionStarted = new Promise<void>((resolve) => {
     resolveSubscriptionStarted = resolve;
   });
   const bridgeClient = {
-    async cancelCommand() {},
+    async cancelCommand(request: unknown) {
+      cancelledCommands.push(request);
+      rejectPendingInspection?.(Object.assign(new Error('Cancelled.'), { code: 'MCP_WAIT_CANCELLED' }));
+    },
     async acquireLease(request: unknown) {
       acquiredLeases.push(request);
       return { expiresAt: '2030-01-01T00:00:00.000Z', id: '017c10a7-e0af-40ec-879f-cd87dffaf036', mode: 'shared-read' as const, targetGeneration: target.generation, targetId: target.id };
     },
-    async executeCommand(command: { readonly method: string }) {
+    async executeCommand(command: { readonly method: string; readonly parameters?: { readonly expression?: unknown } }) {
+      if (command.method === 'Runtime.evaluate' && command.parameters?.expression === 'await-cancellation') {
+        resolveInspectionStarted?.();
+        return new Promise<never>((_resolve, reject) => {
+          rejectPendingInspection = reject;
+        });
+      }
       if (command.method === 'Runtime.evaluate') throw Object.assign(new Error('Denied.'), { code: 'CAPABILITY_DENIED' });
       executedMethods.push(command.method);
       return { operationId: '017c10a7-e0af-40ec-879f-cd87dffaf036', value: { result: { type: 'string', value: command.method } } };
@@ -90,7 +105,10 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
   const address = server.address();
   if (address === null || typeof address === 'string') throw new Error('Expected a TCP address.');
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/bridge-mcp`));
-  const client = new Client({ name: 'mcp-test-client', version: '0.0.0' });
+  const client = new Client(
+    { name: 'mcp-test-client', version: '0.0.0' },
+    { versionNegotiation: { mode: { pin: '2026-07-28' } } },
+  );
 
   try {
     await client.connect(transport);
@@ -103,21 +121,41 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     expect(snapshot.isError).toBeUndefined();
     const navigation = await client.callTool({ arguments: { targetGeneration: target.generation, targetId: target.id, url: 'https://example.test/' }, name: 'browser.navigate' });
     expect(navigation.isError).toBeUndefined();
+    const click = await client.callTool({ arguments: { targetGeneration: target.generation, targetId: target.id, x: 10, y: 20 }, name: 'browser.click' });
+    expect(click.isError).toBeUndefined();
+    const press = await client.callTool({ arguments: { key: 'A', targetGeneration: target.generation, targetId: target.id }, name: 'browser.press' });
+    expect(press.isError).toBeUndefined();
     const consoleEvent = await client.callTool({ arguments: { targetGeneration: target.generation, targetId: target.id, timeoutMilliseconds: 100 }, name: 'browser.console' });
     expect(consoleEvent.isError).toBeUndefined();
     const deniedEvaluation = await client.callTool({ arguments: { expression: 'document.title', targetGeneration: target.generation, targetId: target.id }, name: 'browser.evaluate' });
     expect(deniedEvaluation.isError).toBe(true);
     expect(deniedEvaluation.content).toEqual([{ text: JSON.stringify({ code: 'CAPABILITY_DENIED' }), type: 'text' }]);
-    expect(acquiredLeases).toMatchObject([{ mode: 'shared-read', requestedMethods: ['DOMSnapshot.captureSnapshot'] }, { mode: 'exclusive-control', requestedMethods: ['Page.navigate'] }, { mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'] }, { mode: 'shared-read', requestedMethods: ['Runtime.evaluate'] }]);
-    expect(executedMethods).toEqual(['DOMSnapshot.captureSnapshot', 'Page.navigate']);
-    expect(releasedLeases).toHaveLength(4);
+    const inspectionCancellationController = new AbortController();
+    const cancelledInspection = client.callTool({ arguments: { expression: 'await-cancellation', leaseId: '017c10a7-e0af-40ec-879f-cd87dffaf036', targetGeneration: target.generation, targetId: target.id }, name: 'browser.inspect' }, { signal: inspectionCancellationController.signal });
+    await inspectionStarted;
+    inspectionCancellationController.abort();
+    await expect(cancelledInspection).rejects.toThrow();
+    await expect.poll(() => cancelledCommands).toMatchObject([{ targetGeneration: target.generation, targetId: target.id }]);
+    expect(acquiredLeases).toMatchObject([{ mode: 'shared-read', requestedMethods: ['DOMSnapshot.captureSnapshot'] }, { mode: 'exclusive-control', requestedMethods: ['Page.navigate'] }, { mode: 'exclusive-control', requestedMethods: ['Input.dispatchMouseEvent'] }, { mode: 'exclusive-control', requestedMethods: ['Input.dispatchKeyEvent'] }, { mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'] }, { mode: 'shared-read', requestedMethods: ['Runtime.evaluate'] }]);
+    expect(executedMethods).toEqual(['DOMSnapshot.captureSnapshot', 'Page.navigate', 'Input.dispatchMouseEvent', 'Input.dispatchMouseEvent', 'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent']);
+    expect(releasedLeases).toHaveLength(6);
     expect(closedSubscriptions).toBe(1);
     const timedOutWait = await client.callTool({ arguments: { method: 'Network.loadingFinished', targetGeneration: target.generation, targetId: target.id, timeoutMilliseconds: 10 }, name: 'browser.wait_for' });
     await subscriptionStarted;
     expect(timedOutWait.isError).toBe(true);
-    expect(timedOutWait.content).toEqual([{ text: JSON.stringify({ code: 'MCP_TOOL_FAILED' }), type: 'text' }]);
+    expect(timedOutWait.content).toEqual([{ text: JSON.stringify({ code: 'MCP_WAIT_TIMEOUT' }), type: 'text' }]);
     expect(closedSubscriptions).toBe(2);
-    expect(releasedLeases).toHaveLength(5);
+    expect(releasedLeases).toHaveLength(7);
+    subscriptionStarted = new Promise<void>((resolve) => {
+      resolveSubscriptionStarted = resolve;
+    });
+    const cancellationController = new AbortController();
+    const cancelledWait = client.callTool({ arguments: { method: 'Network.loadingFinished', targetGeneration: target.generation, targetId: target.id, timeoutMilliseconds: 5_000 }, name: 'browser.wait_for' }, { signal: cancellationController.signal });
+    await subscriptionStarted;
+    cancellationController.abort();
+    await expect(cancelledWait).rejects.toThrow();
+    await expect.poll(() => closedSubscriptions).toBe(3);
+    expect(releasedLeases).toHaveLength(8);
     expect(supportedMcpSdkVersion).toBe('2.0.0');
     expect(supportedMcpProtocolVersions).toEqual(['2026-07-28']);
   } finally {

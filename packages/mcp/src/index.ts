@@ -13,6 +13,15 @@ export const supportedMcpProtocolVersions = ['2026-07-28'] as const;
 export const supportedMcpSdkVersion = '2.0.0';
 const cdpMethodPattern = /^[A-Za-z]+\.[A-Za-z]+$/u;
 
+class McpToolError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export interface MountMcpStreamableHttpOptions {
   readonly client: McpChromeDebuggerBridgeClient;
   readonly path?: string;
@@ -68,6 +77,28 @@ async function executeSemanticCommand(
   return withLease(client, input, mode, [method], async lease => client.executeCommand({ leaseId: lease.id, method, operationId: randomUUID(), parameters, targetGeneration: input.targetGeneration, targetId: input.targetId }));
 }
 
+async function executeSemanticCommands(
+  client: McpChromeDebuggerBridgeClient,
+  input: { readonly targetGeneration: number; readonly targetId: string },
+  mode: Lease['mode'],
+  commands: readonly { readonly method: string; readonly parameters: JsonObject }[],
+): Promise<unknown[]> {
+  return withLease(client, input, mode, [...new Set(commands.map(command => command.method))], async (lease) => {
+    const results: unknown[] = [];
+    for (const command of commands) {
+      results.push(await client.executeCommand({
+        leaseId: lease.id,
+        method: command.method,
+        operationId: randomUUID(),
+        parameters: command.parameters,
+        targetGeneration: input.targetGeneration,
+        targetId: input.targetId,
+      }));
+    }
+    return results;
+  });
+}
+
 async function waitForEvent(
   client: McpChromeDebuggerBridgeClient,
   input: { readonly method: string; readonly targetGeneration: number; readonly targetId: string; readonly timeoutMilliseconds: number },
@@ -76,20 +107,26 @@ async function waitForEvent(
   return withLease(client, input, 'shared-read', [input.method], async (lease) => {
     const subscription = await client.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { method: input.method }, targetGeneration: input.targetGeneration, targetId: input.targetId });
     let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
-    const abort = (): void => subscription.close();
+    let subscriptionClosed = false;
+    const closeSubscription = (): void => {
+      if (subscriptionClosed) return;
+      subscriptionClosed = true;
+      subscription.close();
+    };
+    const abort = (): void => closeSubscription();
     signal.addEventListener('abort', abort, { once: true });
     try {
       const nextEvent = subscription[Symbol.asyncIterator]().next();
       const expiry = new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error('MCP wait timed out.')), input.timeoutMilliseconds);
+        timeout = setTimeout(() => reject(new McpToolError('MCP_WAIT_TIMEOUT', 'MCP wait timed out.')), input.timeoutMilliseconds);
       });
       const result = await Promise.race([nextEvent, expiry]);
-      if (result.done) throw new Error('MCP wait was cancelled.');
+      if (result.done) throw new McpToolError('MCP_WAIT_CANCELLED', 'MCP wait was cancelled.');
       return result.value;
     } finally {
       signal.removeEventListener('abort', abort);
       if (timeout !== undefined) clearTimeout(timeout);
-      subscription.close();
+      closeSubscription();
     }
   });
 }
@@ -173,7 +210,10 @@ function createMcpServer(client: McpChromeDebuggerBridgeClient): McpServer {
   });
   server.registerTool('browser.click', { description: 'Dispatch an explicit click through an exclusive lease.', inputSchema: z.object({ ...targetInput, x: z.number().nonnegative(), y: z.number().nonnegative() }) }, async (input) => {
     try {
-      return jsonContent(await executeSemanticCommand(client, input, 'exclusive-control', 'Input.dispatchMouseEvent', { button: 'left', clickCount: 1, type: 'mousePressed', x: input.x, y: input.y }));
+      return jsonContent(await executeSemanticCommands(client, input, 'exclusive-control', [
+        { method: 'Input.dispatchMouseEvent', parameters: { button: 'left', clickCount: 1, type: 'mousePressed', x: input.x, y: input.y } },
+        { method: 'Input.dispatchMouseEvent', parameters: { button: 'left', clickCount: 1, type: 'mouseReleased', x: input.x, y: input.y } },
+      ]));
     } catch (error) {
       return toolError(error);
     }
@@ -187,7 +227,10 @@ function createMcpServer(client: McpChromeDebuggerBridgeClient): McpServer {
   });
   server.registerTool('browser.press', { description: 'Dispatch a key through an exclusive lease.', inputSchema: z.object({ ...targetInput, key: z.string().min(1) }) }, async (input) => {
     try {
-      return jsonContent(await executeSemanticCommand(client, input, 'exclusive-control', 'Input.dispatchKeyEvent', { key: input.key, text: input.key, type: 'keyDown' }));
+      return jsonContent(await executeSemanticCommands(client, input, 'exclusive-control', [
+        { method: 'Input.dispatchKeyEvent', parameters: { key: input.key, text: input.key, type: 'keyDown' } },
+        { method: 'Input.dispatchKeyEvent', parameters: { key: input.key, type: 'keyUp' } },
+      ]));
     } catch (error) {
       return toolError(error);
     }
@@ -219,7 +262,7 @@ function createMcpServer(client: McpChromeDebuggerBridgeClient): McpServer {
 /** Mounts the official MCP SDK Streamable HTTP transport without taking ownership of the broker or HTTP server. */
 export function mountMcpStreamableHttp(options: MountMcpStreamableHttpOptions): MountedMcpStreamableHttp {
   const path = options.path ?? '/mcp';
-  const handler = createMcpHandler(() => createMcpServer(options.client));
+  const handler = createMcpHandler(() => createMcpServer(options.client), { legacy: 'reject', responseMode: 'sse' });
   const nodeHandler = toNodeHandler(handler);
   let closed = false;
   const listener = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
