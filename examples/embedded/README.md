@@ -1,6 +1,6 @@
 # Embedded bridge
 
-This private package is a network-free application composition. It uses the public packed-package entry point only:
+This private package is a network-free application composition. The embedding application owns the in-process listener, authorization adapter, diagnostics, identifier, clock, and artifact store. It deliberately exposes no HTTP or WebSocket client endpoint. It uses the public packed-package entry point only:
 
 ```ts
 import {
@@ -25,3 +25,5 @@ const bridge = createEmbeddedChromeDebuggerBridge({
 // The application publishes opaque targets, supplies its executor, and disposes at shutdown.
 bridge.dispose();
 ```
+
+Run `pnpm --filter @chrome-debugger-bridge-example/embedded smoke` to verify the packed public import.

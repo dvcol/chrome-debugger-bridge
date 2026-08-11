@@ -23,6 +23,7 @@ export default defineTypescriptConfig(
   {
     files: [
       'eslint.config.ts',
+      'examples/**/*.ts',
       'packages/*/scripts/**/*.ts',
       'packages/*/test/**/*.ts',
       'packages/*/tsdown.config.ts',

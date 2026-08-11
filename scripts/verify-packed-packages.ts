@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify, styleText } from 'node:util';
@@ -15,11 +15,13 @@ const workspaceRoot = process.cwd();
 
 interface PackedPackageManifest {
   readonly name: string;
+  readonly private?: boolean;
   readonly dependencies?: Readonly<Record<string, string>>;
   readonly devDependencies?: Readonly<Record<string, string>>;
   readonly exports: Readonly<Record<string, unknown>>;
   readonly optionalDependencies?: Readonly<Record<string, string>>;
   readonly peerDependencies?: Readonly<Record<string, string>>;
+  readonly scripts?: Readonly<Record<string, string>>;
 }
 
 interface JsonSchemaDocument {
@@ -67,6 +69,7 @@ function createPackageImportSpecifier(packageName: string, exportName: string): 
 }
 
 const packedPackages: PackedPackage[] = [];
+const exampleDirectories = ['browser-client', 'devframe', 'embedded', 'extension', 'mcp', 'node-client', 'standalone-host'];
 
 for (const publicPackageDirectory of publicPackageDirectories) {
   const artifactDirectory = join(workspaceRoot, 'packages', publicPackageDirectory, 'artifacts');
@@ -190,7 +193,6 @@ try {
     'pnpm',
     [
       'add',
-      '--offline',
       '--ignore-scripts',
       '--store-dir',
       populatedStoreDirectory,
@@ -206,7 +208,7 @@ try {
   );
   await executeFile(
     'pnpm',
-    ['add', '--offline', '--ignore-scripts', '--store-dir', populatedStoreDirectory, '@types/node@26.1.2'],
+    ['add', '--ignore-scripts', '--store-dir', populatedStoreDirectory, '@types/node@26.1.2'],
     { cwd: temporaryConsumerDirectory },
   );
 
@@ -236,6 +238,61 @@ try {
       artifactName,
     );
   }
+
+  const packedExampleRoot = join(temporaryConsumerRoot, 'packed-examples');
+  const packedArtifactPathsByName = new Map(packedPackages.map(({ artifactPath, manifest }) => [manifest.name, artifactPath]));
+  await mkdir(join(packedExampleRoot, 'examples'), { recursive: true });
+  await writeFile(
+    join(packedExampleRoot, 'package.json'),
+    `${JSON.stringify({ name: '@chrome-debugger-bridge-fixture/packed-examples', private: true, version: '0.0.0' }, null, 2)}\n`,
+    'utf8',
+  );
+  const packedPackageOverrides = packedPackages
+    .map(({ artifactPath, manifest }) => `  ${JSON.stringify(manifest.name)}: ${JSON.stringify(`file:${artifactPath}`)}`)
+    .join('\n');
+  await writeFile(
+    join(packedExampleRoot, 'pnpm-workspace.yaml'),
+    `packages:\n  - examples/*\noverrides:\n${packedPackageOverrides}\n`,
+    'utf8',
+  );
+
+  for (const exampleDirectory of exampleDirectories) {
+    const sourceDirectory = join(workspaceRoot, 'examples', exampleDirectory);
+    const destinationDirectory = join(packedExampleRoot, 'examples', exampleDirectory);
+    const readme = await readFile(join(sourceDirectory, 'README.md'), 'utf8').catch(() => undefined);
+    if (readme === undefined || readme.trim().length === 0) {
+      throw new Error(`examples/${exampleDirectory} must document its purpose, setup, security boundary, and runnable command.`);
+    }
+    if (!/\b(?:smoke|start)\b/u.test(readme)) {
+      throw new Error(`examples/${exampleDirectory}/README.md must name a runnable command.`);
+    }
+    await cp(sourceDirectory, destinationDirectory, { recursive: true });
+    const manifestPath = join(destinationDirectory, 'package.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as PackedPackageManifest;
+    if (manifest.private !== true || manifest.scripts?.smoke === undefined) {
+      throw new Error(`examples/${exampleDirectory} must remain private and expose a smoke command.`);
+    }
+    const dependencies = Object.fromEntries(Object.entries(manifest.dependencies ?? {}).map(([dependencyName, dependencySpecifier]) => {
+      const packedArtifactPath = packedArtifactPathsByName.get(dependencyName);
+      return [dependencyName, packedArtifactPath === undefined ? dependencySpecifier : `file:${packedArtifactPath}`];
+    }));
+    if (Object.values(dependencies).some(dependencySpecifier => dependencySpecifier.startsWith('workspace:'))) {
+      throw new Error(`examples/${exampleDirectory} retained a workspace source alias in its packed smoke consumer.`);
+    }
+    await writeFile(manifestPath, `${JSON.stringify({ ...manifest, dependencies }, null, 2)}\n`, 'utf8');
+  }
+
+  await executeFile('pnpm', ['install', '--ignore-scripts', '--store-dir', populatedStoreDirectory], { cwd: packedExampleRoot });
+  for (const exampleDirectory of exampleDirectories) {
+    const packageDirectory = join(packedExampleRoot, 'examples', exampleDirectory);
+    await executeFile('pnpm', ['run', 'smoke'], { cwd: packageDirectory });
+  }
+  await copyFile(
+    join(workspaceRoot, 'tests', 'fixtures', 'package-consumer', 'packed-generic-smoke.mjs'),
+    join(packedExampleRoot, 'examples', 'browser-client', 'packed-generic-smoke.mjs'),
+  );
+  await executeFile(process.execPath, ['packed-generic-smoke.mjs'], { cwd: join(packedExampleRoot, 'examples', 'browser-client') });
+  console.info(styleText('green', '✅ [examples]'), 'ran private example smoke commands against packed tarballs without workspace aliases');
 } finally {
   await rm(temporaryConsumerRoot, { force: true, recursive: true });
 }

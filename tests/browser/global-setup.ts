@@ -195,7 +195,7 @@ export default async function setup(project: TestProject): Promise<() => Promise
     },
     server: artifactServer,
   });
-  await new Promise<void>((resolve, reject) => artifactServer.listen(0, '127.0.0.1', error => error === undefined ? resolve() : reject(error)));
+  await new Promise<void>(resolve => artifactServer.listen({ host: '127.0.0.1', port: 0 }, resolve));
   const artifactAddress = artifactServer.address();
   if (artifactAddress === null || typeof artifactAddress === 'string') throw new Error('Artifact test server did not expose a TCP address.');
   project.provide('websocketBrowserTest', {
