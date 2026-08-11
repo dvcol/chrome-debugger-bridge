@@ -175,6 +175,59 @@ it('runs the authenticated browser transport inside an MV3 service worker', asyn
   expect(result.responseMethod).toBe('agent.hello');
 }, 20_000);
 
+it('validates a Devframe offer in a real MV3 worker before direct broker traffic', async () => {
+  expect.assertions(5);
+  const brokerId = crypto.randomUUID();
+  const pairingCode = '846201';
+  const bridge = await createStandaloneAuthenticatedWebSocketBridge({
+    agentAuthentication: createMemoryAgentAuthenticationAdapter({ brokerId, pairingCode, pairingCodeExpiresAt: Date.now() + 300_000, principal: { id: crypto.randomUUID(), role: 'agent' as const } }),
+    brokerId,
+    clientAuthentication: createStaticClientAuthenticationAdapter('Bearer devframe-bootstrap-client', { id: crypto.randomUUID(), role: 'client' as const }),
+    onAgentConnection({ connection }) {
+      connection.onMessage((message) => {
+        if (message.kind !== 'request' || message.method !== 'agent.hello') return;
+        void connection.send({
+          kind: 'response',
+          method: 'agent.hello',
+          protocolVersion: 1,
+          requestId: message.requestId,
+          result: {
+            broker: { instanceId: brokerId, name: 'devframe-bootstrap-test', role: 'broker', version: '0.0.0' },
+            connectionGeneration: 1,
+            features: ['bridge.cdp.read'],
+            heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 },
+            limits: { maximumArtifactBytes: 16_777_216, maximumInlineResultBytes: 65_536, maximumMessageBytes: 16_384 },
+            protocolVersion: 1,
+          },
+        });
+      });
+    },
+    onClientConnection() {},
+    originPolicy({ origin }) {
+      return origin?.startsWith('chrome-extension://') === true;
+    },
+  });
+  cleanupTasks.push(async () => bridge.close());
+  const extensionDirectory = await mkdtemp(join(tmpdir(), 'chrome-debugger-bridge-extension-'));
+  const userDataDirectory = await mkdtemp(join(tmpdir(), 'chrome-debugger-bridge-profile-'));
+  cleanupTasks.push(async () => rm(extensionDirectory, { force: true, recursive: true }));
+  cleanupTasks.push(async () => rm(userDataDirectory, { force: true, recursive: true }));
+  await build({ build: { emptyOutDir: true, lib: { entry: resolve('tests/e2e/fixtures/authenticated-service-worker.ts'), fileName: () => 'service-worker.js', formats: ['es'] }, outDir: extensionDirectory }, configFile: false, logLevel: 'silent' });
+  await writeFile(join(extensionDirectory, 'manifest.json'), `${JSON.stringify({ background: { service_worker: 'service-worker.js', type: 'module' }, manifest_version: 3, name: 'Chrome Debugger Bridge Devframe Bootstrap Test', permissions: ['storage'], version: '0.0.0' }, null, 2)}\n`, 'utf8');
+  const context = await chromium.launchPersistentContext(userDataDirectory, { args: [`--disable-extensions-except=${extensionDirectory}`, `--load-extension=${extensionDirectory}`], channel: 'chromium', headless: true });
+  cleanupTasks.push(async () => context.close());
+  const serviceWorker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
+  const result = await serviceWorker.evaluate(async ({ endpoint, pairingCode: code }) => (globalThis as unknown as {
+    runDevframeBootstrapTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<{ readonly brokerId: string; readonly malformedRejected: boolean; readonly responseMethod: string; readonly wrongOriginRejected: boolean }>;
+  }).runDevframeBootstrapTest({ endpoint, pairingCode: code }), { endpoint: `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`, pairingCode });
+
+  expect(result.brokerId).toBe(brokerId);
+  expect(result.malformedRejected).toBe(true);
+  expect(result.wrongOriginRejected).toBe(true);
+  expect(result.responseMethod).toBe('agent.hello');
+  expect(bridge.host).toBe('127.0.0.1');
+}, 20_000);
+
 it('attaches and detaches the real MV3 debugger from an eligible tab', async () => {
   expect.assertions(3);
   const extensionDirectory = await mkdtemp(join(tmpdir(), 'chrome-debugger-bridge-extension-'));

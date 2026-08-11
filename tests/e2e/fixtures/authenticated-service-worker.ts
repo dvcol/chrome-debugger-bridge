@@ -1,7 +1,7 @@
 import type { AgentToBrokerMessage, BrokerToAgentMessage, JsonObject, PublishedTarget } from '../../../packages/core/src/protocol.js';
 import type { BrowserAgentConnection } from '../../../packages/websocket/src/browser.js';
 
-import { createAgentRecovery, createIndexedDbPairingStore, createSelectedTabLifecycle, createSelectedTabPublisher } from '../../../packages/extension/src/index.js';
+import { createAgentRecovery, createDevframeAgentBootstrap, createIndexedDbPairingStore, createSelectedTabLifecycle, createSelectedTabPublisher } from '../../../packages/extension/src/index.js';
 import { connectAgentWebSocket } from '../../../packages/websocket/src/browser.js';
 
 interface ServiceWorkerTestInput {
@@ -17,8 +17,16 @@ interface ServiceWorkerTestResult {
   readonly responseMethod: BrokerToAgentMessage['method'];
 }
 
+interface DevframeBootstrapTestResult {
+  readonly brokerId: string;
+  readonly malformedRejected: boolean;
+  readonly responseMethod: BrokerToAgentMessage['method'];
+  readonly wrongOriginRejected: boolean;
+}
+
 interface BridgeTestGlobal {
   runAuthenticatedBridgeTest: (input: ServiceWorkerTestInput) => Promise<ServiceWorkerTestResult>;
+  runDevframeBootstrapTest: (input: ServiceWorkerTestInput) => Promise<DevframeBootstrapTestResult>;
   runDebuggerLifecycleTest: () => Promise<{ readonly revoked: boolean; readonly value: string }>;
   runPublishedTargetLifecycleTest: (updatedUrl: string) => Promise<readonly { readonly kind: 'published' | 'revoked' | 'updated'; readonly reason?: string }[]>;
   runPublishedTargetAgentTest: (input: ServiceWorkerTestInput) => Promise<Pick<PublishedTarget, 'generation' | 'id'>>;
@@ -152,6 +160,63 @@ bridgeTestGlobal.runAuthenticatedBridgeTest = async (input) => {
     responseKind: message.kind,
     responseMethod: message.method,
   };
+};
+
+bridgeTestGlobal.runDevframeBootstrapTest = async (input) => {
+  const endpoint = input.endpoint;
+  const offer = {
+    brokerId: 'de2d3196-3e05-4f9d-9c93-d6651b9e38a2',
+    endpoint,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    nonce: crypto.randomUUID(),
+    protocolVersions: { maximum: 1, minimum: 1 },
+  };
+  const bootstrap = createDevframeAgentBootstrap({
+    async connect(candidate) {
+      return connectAgentWebSocket({
+        credentialStore: createIndexedDbPairingStore({ databaseName: `mv3-devframe-bootstrap-${candidate.nonce}` }),
+        endpoint: candidate.endpoint,
+        async requestPairingCode() {
+          return input.pairingCode;
+        },
+      });
+    },
+    locator: { async locate(candidate) {
+      return candidate.endpoint === endpoint ? candidate : undefined;
+    } },
+    pairingPolicy: { async approve(_candidate, origin) {
+      return origin === 'https://devframe.example.test';
+    } },
+  });
+  const malformedRejected = await bootstrap.accept({ kind: 'chrome-debugger-bridge.devframe-offer', offer: { invalid: true }, origin: 'https://devframe.example.test' }) === undefined;
+  const wrongOriginRejected = await bootstrap.accept({ kind: 'chrome-debugger-bridge.devframe-offer', offer: { ...offer, nonce: crypto.randomUUID() }, origin: 'https://attacker.example.test' }) === undefined;
+  const connection = await bootstrap.accept({ kind: 'chrome-debugger-bridge.devframe-offer', offer, origin: 'https://devframe.example.test' });
+  if (connection === undefined) throw new Error('The Devframe offer did not open a direct agent connection.');
+  bootstrap.dispose();
+  const response = new Promise<BrokerToAgentMessage>((resolve) => {
+    const removeListener = connection.onMessage((message) => {
+      removeListener();
+      resolve(message);
+    });
+  });
+  await connection.send({
+    kind: 'request',
+    method: 'agent.hello',
+    parameters: {
+      connectionGeneration: 1,
+      features: ['bridge.cdp.read'],
+      heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 },
+      implementation: { instanceId: crypto.randomUUID(), name: 'mv3-devframe-bootstrap-test', role: 'agent', version: '0.0.0' },
+      limits: { maximumArtifactBytes: 16_777_216, maximumInlineResultBytes: 65_536, maximumMessageBytes: 16_384 },
+      protocolVersions: { maximum: 1, minimum: 1 },
+    },
+    protocolVersion: 1,
+    requestId: crypto.randomUUID(),
+  });
+  const message = await response;
+  connection.close(1000, 'Devframe bootstrap test complete');
+  await connection.closed;
+  return { brokerId: connection.brokerId, malformedRejected, responseMethod: message.method, wrongOriginRejected };
 };
 
 bridgeTestGlobal.runDebuggerLifecycleTest = async () => {

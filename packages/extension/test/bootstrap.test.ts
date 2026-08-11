@@ -58,11 +58,15 @@ it('removes the service-worker runtime listener after bootstrap disposal', async
 });
 
 it('relays one valid page offer from its configured origin and source only', async () => {
-  expect.assertions(5);
+  expect.assertions(6);
   const pageWindow = {} as MessageEventSource;
+  const addedListeners: Array<(event: MessageEvent<unknown>) => void> = [];
   const removedListeners: Array<(event: MessageEvent<unknown>) => void> = [];
   const postRuntimeMessage = vi.fn(async () => {});
   const relay = createDevframeOfferContentRelay({
+    addWindowMessageListener(listener) {
+      addedListeners.push(listener);
+    },
     allowedOrigin: 'https://devframe.example.test',
     postRuntimeMessage,
     removeWindowMessageListener(listener) {
@@ -71,6 +75,7 @@ it('relays one valid page offer from its configured origin and source only', asy
     windowSource: pageWindow,
   });
 
+  expect(addedListeners).toEqual([relay.receive]);
   relay.receive({ data: offer, origin: 'https://other.example.test', source: pageWindow } as MessageEvent<unknown>);
   relay.receive({ data: offer, origin: 'https://devframe.example.test', source: {} as MessageEventSource } as MessageEvent<unknown>);
   expect(postRuntimeMessage).not.toHaveBeenCalled();

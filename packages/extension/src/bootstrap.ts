@@ -19,6 +19,7 @@ export interface DevframeOfferMessageSource {
 }
 
 export interface CreateDevframeOfferContentRelayOptions {
+  readonly addWindowMessageListener: (listener: (event: MessageEvent<unknown>) => void) => void;
   readonly allowedOrigin: string;
   readonly postRuntimeMessage: (message: DevframeOfferRuntimeMessage) => Promise<void>;
   readonly removeWindowMessageListener: (listener: (event: MessageEvent<unknown>) => void) => void;
@@ -126,6 +127,7 @@ export function createDevframeOfferContentRelay(options: CreateDevframeOfferCont
     dispose();
     void options.postRuntimeMessage({ kind: offerMessageKind, offer, origin: event.origin }).catch(() => {});
   };
+  options.addWindowMessageListener(receive);
   return { dispose, receive };
 }
 
