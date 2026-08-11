@@ -17,12 +17,17 @@ const target = {
 } as const;
 
 it('serves target discovery through the official SDK Streamable HTTP client', async () => {
-  expect.assertions(14);
+  expect.assertions(18);
   const server = createServer();
   const acquiredLeases: unknown[] = [];
   const executedMethods: string[] = [];
   const releasedLeases: unknown[] = [];
   let closedSubscriptions = 0;
+  let resolvePendingEvent: ((result: IteratorResult<never>) => void) | undefined;
+  let resolveSubscriptionStarted: (() => void) | undefined;
+  const subscriptionStarted = new Promise<void>((resolve) => {
+    resolveSubscriptionStarted = resolve;
+  });
   const bridgeClient = {
     async cancelCommand() {},
     async acquireLease(request: unknown) {
@@ -40,7 +45,27 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     async releaseLease(request: unknown) {
       releasedLeases.push(request);
     },
-    async subscribe() {
+    async subscribe(request: { readonly match: { readonly method: string } }) {
+      if (request.match.method === 'Network.loadingFinished') {
+        return {
+          close() {
+            closedSubscriptions += 1;
+            resolvePendingEvent?.({ done: true, value: undefined });
+          },
+          droppedCount: 0,
+          id: '017c10a7-e0af-40ec-879f-cd87dffaf036',
+          lastDeliveredSequence: 0,
+          overflowed: false,
+          targetGeneration: target.generation,
+          targetId: target.id,
+          [Symbol.asyncIterator]() {
+            resolveSubscriptionStarted?.();
+            return { next: async () => new Promise<IteratorResult<never>>((resolve) => {
+              resolvePendingEvent = resolve;
+            }) };
+          },
+        };
+      }
       return {
         close() {
           closedSubscriptions += 1;
@@ -87,6 +112,12 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     expect(executedMethods).toEqual(['DOMSnapshot.captureSnapshot', 'Page.navigate']);
     expect(releasedLeases).toHaveLength(4);
     expect(closedSubscriptions).toBe(1);
+    const timedOutWait = await client.callTool({ arguments: { method: 'Network.loadingFinished', targetGeneration: target.generation, targetId: target.id, timeoutMilliseconds: 10 }, name: 'browser.wait_for' });
+    await subscriptionStarted;
+    expect(timedOutWait.isError).toBe(true);
+    expect(timedOutWait.content).toEqual([{ text: JSON.stringify({ code: 'MCP_TOOL_FAILED' }), type: 'text' }]);
+    expect(closedSubscriptions).toBe(2);
+    expect(releasedLeases).toHaveLength(5);
     expect(supportedMcpSdkVersion).toBe('2.0.0');
     expect(supportedMcpProtocolVersions).toEqual(['2026-07-28']);
   } finally {
