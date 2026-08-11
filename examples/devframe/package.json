@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "smoke": "node --input-type=module --eval \"await import('@dvcol/chrome-debugger-bridge-devframe/client'); await import('@dvcol/chrome-debugger-bridge-devframe/node')\""
+    "smoke": "node smoke.mjs"
   },
   "dependencies": {
     "@dvcol/chrome-debugger-bridge": "workspace:*",
