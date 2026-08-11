@@ -4,9 +4,9 @@ import * as bootstrapModule from '../src/bootstrap.js';
 import * as indexModule from '../src/index.js';
 import * as testingModule from '../src/testing.js';
 
-it('keeps the extension scaffold importable', () => {
+it('keeps the extension public entries importable', () => {
   expect.assertions(3);
-  expect(Object.keys(indexModule)).toEqual(['createAgentRecovery', 'createBrokerTabAssignment', 'createChildSessionRouter', 'createIndexedDbPairingStore', 'createSelectedTabLifecycle', 'createSelectedTabPublisher', 'matchesTabScope']);
-  expect(Object.keys(bootstrapModule)).toEqual([]);
+  expect(Object.keys(indexModule)).toEqual(['createAgentRecovery', 'createDevframeAgentBootstrap', 'createDevframeOfferContentRelay', 'installDevframeOfferRuntimeHandler', 'parseDevframeConnectionOffer', 'createBrokerTabAssignment', 'createChildSessionRouter', 'createIndexedDbPairingStore', 'createSelectedTabLifecycle', 'createSelectedTabPublisher', 'matchesTabScope']);
+  expect(Object.keys(bootstrapModule)).toEqual(['parseDevframeConnectionOffer', 'createDevframeOfferContentRelay', 'createDevframeAgentBootstrap', 'installDevframeOfferRuntimeHandler']);
   expect(Object.keys(testingModule)).toEqual([]);
 });
