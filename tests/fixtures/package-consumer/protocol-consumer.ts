@@ -2,14 +2,14 @@ import type {
   AgentAuthenticationMessage,
   AgentPlaneMessage,
   ClientPlaneMessage,
-} from '@dvcol/chrome-debugger-bridge/protocol';
+} from '@dvcol/cdb/protocol';
 
 import {
   agentAuthenticationMessageSchema,
   agentPlaneMessageSchema,
   clientPlaneMessageSchema,
-} from '@dvcol/chrome-debugger-bridge/protocol';
-import protocolJsonSchema from '@dvcol/chrome-debugger-bridge/protocol.schema.json' with { type: 'json' };
+} from '@dvcol/cdb/protocol';
+import protocolJsonSchema from '@dvcol/cdb/protocol.schema.json' with { type: 'json' };
 
 type Equal<Left, Right>
   = (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2

@@ -3,12 +3,12 @@ import type {
   AuthenticatedPrincipal,
   ClientAuthenticationAdapter,
   MountedAuthenticatedWebSocketBridge,
-} from '@dvcol/chrome-debugger-bridge-websocket/node';
+} from '@dvcol/cdb-websocket/node';
 
 import {
   connectNodeClientWebSocket,
   mountAuthenticatedWebSocketBridge,
-} from '@dvcol/chrome-debugger-bridge-websocket/node';
+} from '@dvcol/cdb-websocket/node';
 
 type Equal<Left, Right>
   = (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2

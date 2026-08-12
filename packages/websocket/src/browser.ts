@@ -6,7 +6,7 @@ import type {
   ReleaseLeaseRequest,
   RenewLeaseRequest,
   TargetChange,
-} from '@dvcol/chrome-debugger-bridge';
+} from '@dvcol/cdb';
 import type {
   AgentAuthenticationMessage,
   AgentToBrokerMessage,
@@ -20,17 +20,17 @@ import type {
   Lease,
   ProtocolVersionRange,
   PublishedTarget,
-} from '@dvcol/chrome-debugger-bridge/protocol';
+} from '@dvcol/cdb/protocol';
 
 import type { AgentAuthenticationTranscript, AuthenticatedFrame } from './authentication.js';
 
-import { createChromeDebuggerBridgeClient } from '@dvcol/chrome-debugger-bridge';
+import { createChromeDebuggerBridgeClient } from '@dvcol/cdb';
 import {
   agentAuthenticationMessageSchema,
   agentToBrokerMessageSchema,
   brokerToAgentMessageSchema,
   brokerToClientMessageSchema,
-} from '@dvcol/chrome-debugger-bridge/protocol';
+} from '@dvcol/cdb/protocol';
 
 import {
   createAgentAuthenticationProof,

@@ -7,7 +7,7 @@ import {
   createDiagnosticTraceStore,
   createEmbeddedChromeDebuggerBridge,
   createMemoryArtifactStore,
-} from '@dvcol/chrome-debugger-bridge';
+} from '@dvcol/cdb';
 
 const now = () => Date.now();
 const bridge = createEmbeddedChromeDebuggerBridge({

@@ -6,11 +6,11 @@ import type {
   ReleaseLeaseRequest,
   RenewLeaseRequest,
   TargetChange,
-} from '@dvcol/chrome-debugger-bridge';
-import type { CdpCommand, CdpCommandResult, CdpEvent, CdpSubscriptionRequest, Lease, PublishedTarget } from '@dvcol/chrome-debugger-bridge/protocol';
+} from '@dvcol/cdb';
+import type { CdpCommand, CdpCommandResult, CdpEvent, CdpSubscriptionRequest, Lease, PublishedTarget } from '@dvcol/cdb/protocol';
 import type { BirpcOptions } from 'birpc';
 
-import { createChromeDebuggerBridgeClient } from '@dvcol/chrome-debugger-bridge';
+import { createChromeDebuggerBridgeClient } from '@dvcol/cdb';
 import { createBirpc } from 'birpc';
 
 export interface BirpcRpcChannel {

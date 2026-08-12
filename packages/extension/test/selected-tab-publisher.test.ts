@@ -1,4 +1,4 @@
-import type { CdpCommand, JsonObject, Lease } from '@dvcol/chrome-debugger-bridge/protocol';
+import type { CdpCommand, JsonObject, Lease } from '@dvcol/cdb/protocol';
 
 import { expect, it, vi } from 'vitest';
 

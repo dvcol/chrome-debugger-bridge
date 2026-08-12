@@ -1,6 +1,6 @@
 import { styleText } from 'node:util';
 
-import { createStandaloneChromeDebuggerBridgeHost } from '@dvcol/chrome-debugger-bridge-websocket/node';
+import { createStandaloneChromeDebuggerBridgeHost } from '@dvcol/cdb-websocket/node';
 
 async function main(): Promise<void> {
   const host = await createStandaloneChromeDebuggerBridgeHost({

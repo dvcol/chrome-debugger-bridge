@@ -1,5 +1,5 @@
 {
-  "name": "@dvcol/chrome-debugger-bridge",
+  "name": "@dvcol/cdb",
   "type": "module",
   "version": "0.0.0",
   "description": "CDB (Chrome Debugger Bridge) runtime-neutral broker, protocol, and client primitives.",

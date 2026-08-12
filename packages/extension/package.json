@@ -1,5 +1,5 @@
 {
-  "name": "@dvcol/chrome-debugger-bridge-extension",
+  "name": "@dvcol/cdb-extension",
   "type": "module",
   "version": "0.0.0",
   "description": "CDB (Chrome Debugger Bridge) Manifest V3 debugger agent primitives.",
@@ -34,7 +34,7 @@
     "verify:pack": "publint"
   },
   "dependencies": {
-    "@dvcol/chrome-debugger-bridge": "workspace:^"
+    "@dvcol/cdb": "workspace:^"
   },
   "publishConfig": {
     "access": "public"

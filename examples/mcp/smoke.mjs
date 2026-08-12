@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 
-import { createEmbeddedChromeDebuggerBridge } from '@dvcol/chrome-debugger-bridge';
-import { mountMcpStdio, mountMcpStreamableHttp, supportedMcpProtocolVersions, supportedMcpSdkVersion } from '@dvcol/chrome-debugger-bridge-mcp';
+import { createEmbeddedChromeDebuggerBridge } from '@dvcol/cdb';
+import { mountMcpStdio, mountMcpStreamableHttp, supportedMcpProtocolVersions, supportedMcpSdkVersion } from '@dvcol/cdb-mcp';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 const target = {

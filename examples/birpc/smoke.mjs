@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 
 import { createBirpcBridgeClient } from '@dvcol/cdb-birpc/client';
 import { mountBirpcChromeDebuggerBridge } from '@dvcol/cdb-birpc/node';
-import { createMemoryAgentAuthenticationAdapter, createStaticClientAuthenticationAdapter } from '@dvcol/chrome-debugger-bridge-websocket/testing';
+import { createMemoryAgentAuthenticationAdapter, createStaticClientAuthenticationAdapter } from '@dvcol/cdb-websocket/testing';
 
 const target = {
   availability: 'available',

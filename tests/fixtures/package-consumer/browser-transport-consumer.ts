@@ -1,11 +1,11 @@
-import type { IndexedDbPairingStore } from '@dvcol/chrome-debugger-bridge-extension';
+import type { IndexedDbPairingStore } from '@dvcol/cdb-extension';
 import type {
   BrowserAgentConnection,
   PairedAgentCredentialStore,
-} from '@dvcol/chrome-debugger-bridge-websocket/browser';
+} from '@dvcol/cdb-websocket/browser';
 
-import { createIndexedDbPairingStore } from '@dvcol/chrome-debugger-bridge-extension';
-import { connectAgentWebSocket } from '@dvcol/chrome-debugger-bridge-websocket/browser';
+import { createIndexedDbPairingStore } from '@dvcol/cdb-extension';
+import { connectAgentWebSocket } from '@dvcol/cdb-websocket/browser';
 
 type Expect<Value extends true> = Value;
 type IndexedDbStoreSatisfiesBrowserStore = Expect<IndexedDbPairingStore extends PairedAgentCredentialStore ? true : false>;

@@ -7,9 +7,9 @@
     "smoke": "node smoke.mjs"
   },
   "dependencies": {
+    "@dvcol/cdb": "workspace:*",
     "@dvcol/cdb-birpc": "workspace:*",
-    "@dvcol/chrome-debugger-bridge": "workspace:*",
-    "@dvcol/chrome-debugger-bridge-extension": "workspace:*",
-    "@dvcol/chrome-debugger-bridge-websocket": "workspace:*"
+    "@dvcol/cdb-extension": "workspace:*",
+    "@dvcol/cdb-websocket": "workspace:*"
   }
 }

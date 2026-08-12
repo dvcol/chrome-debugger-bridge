@@ -7,8 +7,8 @@
     "smoke": "node smoke.mjs"
   },
   "dependencies": {
-    "@dvcol/chrome-debugger-bridge": "workspace:*",
-    "@dvcol/chrome-debugger-bridge-mcp": "workspace:*",
+    "@dvcol/cdb": "workspace:*",
+    "@dvcol/cdb-mcp": "workspace:*",
     "@modelcontextprotocol/client": "catalog:"
   }
 }

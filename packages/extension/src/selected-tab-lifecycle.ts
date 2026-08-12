@@ -1,4 +1,4 @@
-import type { JsonObject } from '@dvcol/chrome-debugger-bridge/protocol';
+import type { JsonObject } from '@dvcol/cdb/protocol';
 
 import type { ChromeDebuggerEventSource, SelectedTab, SelectedTabPublisher } from './selected-tab-publisher.js';
 

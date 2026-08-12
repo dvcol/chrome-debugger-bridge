@@ -1,4 +1,4 @@
-import type { ArtifactAuthority, ArtifactDescriptor, ArtifactWriter, MemoryArtifactStore } from '@dvcol/chrome-debugger-bridge';
+import type { ArtifactAuthority, ArtifactDescriptor, ArtifactWriter, MemoryArtifactStore } from '@dvcol/cdb';
 
 import { randomUUID } from 'node:crypto';
 import { lstatSync, readFileSync, rmSync } from 'node:fs';

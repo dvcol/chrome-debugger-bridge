@@ -1,20 +1,23 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 
-import { createBrowserChromeDebuggerBridgeClient } from '@dvcol/chrome-debugger-bridge-websocket/browser';
+import { createBrowserChromeDebuggerBridgeClient } from '@dvcol/cdb-websocket/browser';
 import {
   connectNodeClientWebSocket,
   createStandaloneAuthenticatedWebSocketBridge,
   mountAuthenticatedArtifactHttpEndpoint,
-} from '@dvcol/chrome-debugger-bridge-websocket/node';
+} from '@dvcol/cdb-websocket/node';
 import {
   createMemoryAgentAuthenticationAdapter,
   createStaticClientAuthenticationAdapter,
-} from '@dvcol/chrome-debugger-bridge-websocket/testing';
+} from '@dvcol/cdb-websocket/testing';
+import protocolJsonSchema from '@dvcol/cdb/protocol.schema.json' with { type: 'json' };
 
 const disconnectedErrorPattern = /disconnected/u;
 
 async function main() {
+  assert.equal(protocolJsonSchema.$id, 'urn:dvcol:chrome-debugger-bridge:protocol:1');
+  assert.equal(protocolJsonSchema.$schema, 'https://json-schema.org/draft/2020-12/schema');
   const authorization = 'Bearer packed-example-client';
   const target = {
     availability: 'available',

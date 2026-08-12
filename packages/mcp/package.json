@@ -1,5 +1,5 @@
 {
-  "name": "@dvcol/chrome-debugger-bridge-mcp",
+  "name": "@dvcol/cdb-mcp",
   "type": "module",
   "version": "0.0.0",
   "description": "CDB (Chrome Debugger Bridge) Model Context Protocol adapter.",
@@ -31,7 +31,7 @@
     "verify:pack": "publint"
   },
   "dependencies": {
-    "@dvcol/chrome-debugger-bridge": "workspace:^",
+    "@dvcol/cdb": "workspace:^",
     "@modelcontextprotocol/node": "catalog:",
     "@modelcontextprotocol/server": "catalog:",
     "zod": "catalog:protocol"

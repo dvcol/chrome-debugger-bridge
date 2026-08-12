@@ -1,5 +1,5 @@
 {
-  "name": "@dvcol/chrome-debugger-bridge-websocket",
+  "name": "@dvcol/cdb-websocket",
   "type": "module",
   "version": "0.0.0",
   "description": "CDB (Chrome Debugger Bridge) browser and Node WebSocket adapters.",
@@ -34,7 +34,7 @@
     "verify:pack": "publint"
   },
   "dependencies": {
-    "@dvcol/chrome-debugger-bridge": "workspace:^",
+    "@dvcol/cdb": "workspace:^",
     "ws": "catalog:transport"
   },
   "devDependencies": {

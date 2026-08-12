@@ -1,5 +1,5 @@
-import type { ArtifactAccessRequest, CdpEvent, ChromeDebuggerBridgeClient, Lease } from '@dvcol/chrome-debugger-bridge';
-import type { JsonObject } from '@dvcol/chrome-debugger-bridge/protocol';
+import type { ArtifactAccessRequest, CdpEvent, ChromeDebuggerBridgeClient, Lease } from '@dvcol/cdb';
+import type { JsonObject } from '@dvcol/cdb/protocol';
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import type { ServeStdioOptions } from '@modelcontextprotocol/server/stdio';
 import type { Server as HttpServer, IncomingMessage, ServerResponse } from 'node:http';

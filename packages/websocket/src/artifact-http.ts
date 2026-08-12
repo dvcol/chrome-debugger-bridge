@@ -1,4 +1,4 @@
-import type { ArtifactDescriptor } from '@dvcol/chrome-debugger-bridge';
+import type { ArtifactDescriptor } from '@dvcol/cdb';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import type { AuthenticatedPrincipal, ClientAuthenticationAdapter, TransportClaims } from './node.js';

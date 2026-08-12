@@ -1,4 +1,4 @@
-import type { PublishedTarget } from '@dvcol/chrome-debugger-bridge/protocol';
+import type { PublishedTarget } from '@dvcol/cdb/protocol';
 
 import type { BirpcRpcChannel } from '../src/client.js';
 
@@ -7,8 +7,8 @@ import { createServer } from 'node:http';
 import {
   createMemoryAgentAuthenticationAdapter,
   createStaticClientAuthenticationAdapter,
-} from '@dvcol/chrome-debugger-bridge-websocket/testing';
-import { artifactResultSchema } from '@dvcol/chrome-debugger-bridge/protocol';
+} from '@dvcol/cdb-websocket/testing';
+import { artifactResultSchema } from '@dvcol/cdb/protocol';
 import { expect, it } from 'vitest';
 
 import { createBirpcBridgeClient } from '../src/client.js';

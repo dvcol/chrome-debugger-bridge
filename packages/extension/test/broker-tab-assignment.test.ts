@@ -1,4 +1,4 @@
-import type { PublishedTarget } from '@dvcol/chrome-debugger-bridge/protocol';
+import type { PublishedTarget } from '@dvcol/cdb/protocol';
 
 import { expect, it, vi } from 'vitest';
 

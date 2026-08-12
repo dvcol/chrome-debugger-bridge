@@ -1,6 +1,6 @@
-import type { ArtifactDescriptor, ArtifactReader } from '@dvcol/chrome-debugger-bridge';
+import type { ArtifactDescriptor, ArtifactReader } from '@dvcol/cdb';
 
-import { createArtifactReader } from '@dvcol/chrome-debugger-bridge';
+import { createArtifactReader } from '@dvcol/cdb';
 
 export type ArtifactTransferControl
   = | { readonly artifact: ArtifactDescriptor; readonly kind: 'begin' }

@@ -5,7 +5,7 @@
 Do not add a Devframe MCP wrapper to the current release-critical example set.
 Create a separate, explicitly experimental follow-up only if we want to prove a
 hosted Vite/Devframe composition. It should be an application-level example,
-not another bridge adapter and not a replacement for `@dvcol/chrome-debugger-bridge-mcp`.
+not another bridge adapter and not a replacement for `@dvcol/cdb-mcp`.
 
 ## What Devframe provides
 

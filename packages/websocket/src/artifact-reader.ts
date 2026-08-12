@@ -1,6 +1,6 @@
-import type { ArtifactDescriptor, ArtifactReader } from '@dvcol/chrome-debugger-bridge';
+import type { ArtifactDescriptor, ArtifactReader } from '@dvcol/cdb';
 
-import { createArtifactReader } from '@dvcol/chrome-debugger-bridge';
+import { createArtifactReader } from '@dvcol/cdb';
 
 /** Creates a common artifact reader for an authenticated HTTP endpoint. */
 export function createHttpArtifactReader(input: {

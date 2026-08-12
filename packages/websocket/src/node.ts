@@ -1,16 +1,16 @@
-import type { ArtifactDescriptor } from '@dvcol/chrome-debugger-bridge';
+import type { ArtifactDescriptor } from '@dvcol/cdb';
 import type {
   ArtifactAccessRequest,
   CreateTargetBrokerOptions,
   TargetBroker,
-} from '@dvcol/chrome-debugger-bridge/broker';
+} from '@dvcol/cdb/broker';
 import type {
   AgentAuthenticationMessage,
   AgentToBrokerMessage,
   BrokerToAgentMessage,
   BrokerToClientMessage,
   ClientToBrokerMessage,
-} from '@dvcol/chrome-debugger-bridge/protocol';
+} from '@dvcol/cdb/protocol';
 import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 
@@ -21,14 +21,14 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { styleText } from 'node:util';
 
-import { connectAgentTargetBroker, connectClientTargetBroker, createTargetBroker } from '@dvcol/chrome-debugger-bridge';
+import { connectAgentTargetBroker, connectClientTargetBroker, createTargetBroker } from '@dvcol/cdb';
 import {
   agentAuthenticationMessageSchema,
   agentToBrokerMessageSchema,
   brokerToAgentMessageSchema,
   brokerToClientMessageSchema,
   clientToBrokerMessageSchema,
-} from '@dvcol/chrome-debugger-bridge/protocol';
+} from '@dvcol/cdb/protocol';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { defaultArtifactHttpPath, mountAuthenticatedArtifactHttpEndpoint } from './artifact-http.js';

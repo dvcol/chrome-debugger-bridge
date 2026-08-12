@@ -1,9 +1,9 @@
-import type { CapabilityGrant, CdpCommand, JsonObject, Lease, PublishedTarget } from '@dvcol/chrome-debugger-bridge/protocol';
+import type { CapabilityGrant, CdpCommand, JsonObject, Lease, PublishedTarget } from '@dvcol/cdb/protocol';
 
 import type { PublicChildSession } from './child-session-router.js';
 import type { TabScopeSelector } from './tab-scope.js';
 
-import { isCdpNameAllowed, requiredLeaseMode } from '@dvcol/chrome-debugger-bridge/cdp-catalogue';
+import { isCdpNameAllowed, requiredLeaseMode } from '@dvcol/cdb/cdp-catalogue';
 
 import { createChildSessionRouter } from './child-session-router.js';
 import { matchesTabScope } from './tab-scope.js';

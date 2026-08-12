@@ -7,7 +7,7 @@ import { promisify, styleText } from 'node:util';
 const executeFile = promisify(execFile);
 const publicPackageDirectories = ['birpc', 'core', 'extension', 'mcp', 'websocket'];
 const dependencyFieldNames = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const;
-const corePackageName = '@dvcol/chrome-debugger-bridge';
+const corePackageName = '@dvcol/cdb';
 const protocolJsonSchemaIdentifier = 'urn:dvcol:chrome-debugger-bridge:protocol:1';
 const protocolJsonSchemaExportName = './protocol.schema.json';
 const protocolJsonSchemaExportTarget = './dist/protocol.schema.json';
@@ -22,6 +22,7 @@ interface PackedPackageManifest {
   readonly optionalDependencies?: Readonly<Record<string, string>>;
   readonly peerDependencies?: Readonly<Record<string, string>>;
   readonly scripts?: Readonly<Record<string, string>>;
+  readonly sideEffects?: boolean;
 }
 
 interface JsonSchemaDocument {
@@ -38,6 +39,39 @@ interface PackedPackage {
   readonly artifactPath: string;
   readonly manifest: PackedPackageManifest;
   readonly runtimeImportSpecifiers: readonly string[];
+}
+
+interface ExampleCoverageEntry {
+  readonly example: string;
+  readonly exportName: string;
+  readonly packageName: string;
+  readonly subpath: string;
+}
+
+interface ExampleCoverageManifest {
+  readonly entries: readonly ExampleCoverageEntry[];
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseExampleCoverageManifest(value: unknown): ExampleCoverageManifest {
+  if (!isRecord(value) || !Array.isArray(value.entries) || value.entries.length === 0) {
+    throw new TypeError('examples/coverage.json must declare at least one public factory coverage entry.');
+  }
+  const entries = value.entries.map((entry): ExampleCoverageEntry => {
+    if (!isRecord(entry) || typeof entry.example !== 'string' || typeof entry.exportName !== 'string' || typeof entry.packageName !== 'string' || typeof entry.subpath !== 'string') {
+      throw new TypeError('examples/coverage.json entries must declare string example, exportName, packageName, and subpath values.');
+    }
+    return {
+      example: entry.example,
+      exportName: entry.exportName,
+      packageName: entry.packageName,
+      subpath: entry.subpath,
+    };
+  });
+  return { entries };
 }
 
 function collectImportTargets(exportValue: unknown): string[] {
@@ -70,6 +104,9 @@ function createPackageImportSpecifier(packageName: string, exportName: string): 
 
 const packedPackages: PackedPackage[] = [];
 const exampleDirectories = ['birpc', 'browser-client', 'embedded', 'extension', 'mcp', 'node-client', 'standalone-host'];
+const exampleCoverageManifest = parseExampleCoverageManifest(JSON.parse(
+  await readFile(join(workspaceRoot, 'examples', 'coverage.json'), 'utf8'),
+));
 
 for (const publicPackageDirectory of publicPackageDirectories) {
   const artifactDirectory = join(workspaceRoot, 'packages', publicPackageDirectory, 'artifacts');
@@ -89,6 +126,10 @@ for (const publicPackageDirectory of publicPackageDirectories) {
     await executeFile('tar', ['-xzf', artifactPath, '-C', extractionDirectory]);
     const extractedPackageDirectory = join(extractionDirectory, 'package');
     const manifest = JSON.parse(await readFile(join(extractedPackageDirectory, 'package.json'), 'utf8')) as PackedPackageManifest;
+
+    if (manifest.sideEffects !== false) {
+      throw new Error(`${manifest.name} must declare sideEffects: false for import-only public entries.`);
+    }
 
     if (manifest.name === corePackageName) {
       const schemaExportTarget = manifest.exports[protocolJsonSchemaExportName];
@@ -127,6 +168,12 @@ for (const publicPackageDirectory of publicPackageDirectories) {
     if (runtimeImportSpecifiers.length === 0) {
       throw new Error(`${manifest.name} exposes no importable runtime entry`);
     }
+    for (const exportValue of Object.values(manifest.exports)) {
+      for (const importTarget of collectImportTargets(exportValue)) {
+        if (importTarget.endsWith('.json')) continue;
+        await readFile(join(extractedPackageDirectory, importTarget));
+      }
+    }
     packedPackages.push({
       artifactName,
       artifactPath,
@@ -135,6 +182,27 @@ for (const publicPackageDirectory of publicPackageDirectories) {
     });
   } finally {
     await rm(extractionDirectory, { force: true, recursive: true });
+  }
+}
+
+const packedPackagesByName = new Map(packedPackages.map(packedPackage => [packedPackage.manifest.name, packedPackage]));
+const coveredFactoryKeys = new Set<string>();
+for (const coverageEntry of exampleCoverageManifest.entries) {
+  const coverageImportSpecifier = createPackageImportSpecifier(coverageEntry.packageName, coverageEntry.subpath);
+  const coveredFactoryKey = `${coverageImportSpecifier}:${coverageEntry.exportName}`;
+  if (coveredFactoryKeys.has(coveredFactoryKey)) {
+    throw new Error(`examples/coverage.json maps ${coveredFactoryKey} more than once.`);
+  }
+  coveredFactoryKeys.add(coveredFactoryKey);
+  if (!exampleDirectories.includes(coverageEntry.example)) {
+    throw new Error(`examples/coverage.json maps ${coveredFactoryKey} to unknown example ${coverageEntry.example}.`);
+  }
+  const packedPackage = packedPackagesByName.get(coverageEntry.packageName);
+  if (packedPackage === undefined) {
+    throw new Error(`examples/coverage.json maps ${coveredFactoryKey} to a package that is not packed.`);
+  }
+  if (!(coverageEntry.subpath in packedPackage.manifest.exports)) {
+    throw new Error(`examples/coverage.json maps ${coveredFactoryKey} to missing export ${coverageEntry.subpath}.`);
   }
 }
 
@@ -218,7 +286,29 @@ try {
     [
       '--input-type=module',
       '--eval',
-      `for (const importSpecifier of ${JSON.stringify(runtimeImportSpecifiers)}) await import(importSpecifier);`,
+      `
+const coverageEntries = ${JSON.stringify(exampleCoverageManifest.entries.map(coverageEntry => ({
+  exportName: coverageEntry.exportName,
+  importSpecifier: createPackageImportSpecifier(coverageEntry.packageName, coverageEntry.subpath),
+})))};
+const runtimeImportSpecifiers = ${JSON.stringify(runtimeImportSpecifiers)};
+const coveredFactoryKeys = new Set(coverageEntries.map(({ exportName, importSpecifier }) => [importSpecifier, exportName].join(':')));
+for (const { exportName, importSpecifier } of coverageEntries) {
+  const exportedModule = await import(importSpecifier);
+  if (typeof exportedModule[exportName] !== 'function') {
+    throw new TypeError(['examples/coverage.json maps', [importSpecifier, exportName].join(':'), 'but it is not a runtime factory export.'].join(' '));
+  }
+}
+for (const importSpecifier of runtimeImportSpecifiers) {
+  const exportedModule = await import(importSpecifier);
+  for (const [exportName, exportedValue] of Object.entries(exportedModule)) {
+    if (!/^(?:connect|create|install|mount)/u.test(exportName) || typeof exportedValue !== 'function') continue;
+    if (!coveredFactoryKeys.has([importSpecifier, exportName].join(':'))) {
+      throw new TypeError([importSpecifier, exportName].join(':') + ' is a public factory without an example coverage entry.');
+    }
+  }
+}
+`,
     ],
     { cwd: temporaryConsumerDirectory },
   );

@@ -1,4 +1,4 @@
-import { createArtifactReader } from '@dvcol/chrome-debugger-bridge';
+import { createArtifactReader } from '@dvcol/cdb';
 import { expect, it } from 'vitest';
 
 import {

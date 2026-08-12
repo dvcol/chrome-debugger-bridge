@@ -1,4 +1,4 @@
-import type { BrokerToClientMessage } from '@dvcol/chrome-debugger-bridge/protocol';
+import type { BrokerToClientMessage } from '@dvcol/cdb/protocol';
 
 import type { AgentAuthenticationTranscript } from '../src/authentication.js';
 import type {

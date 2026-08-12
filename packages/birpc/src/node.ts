@@ -2,15 +2,15 @@ import type {
   CdpSubscription,
   TargetBroker,
   TargetChange,
-} from '@dvcol/chrome-debugger-bridge';
+} from '@dvcol/cdb';
 import type {
   AgentAuthenticationAdapter,
   AuthenticatedPrincipal,
   ClientAuthenticationAdapter,
   MountAuthenticatedWebSocketBridgeOptions,
   WebSocketBridgeLimits,
-} from '@dvcol/chrome-debugger-bridge-websocket/node';
-import type { CreateTargetBrokerOptions } from '@dvcol/chrome-debugger-bridge/broker';
+} from '@dvcol/cdb-websocket/node';
+import type { CreateTargetBrokerOptions } from '@dvcol/cdb/broker';
 import type { BirpcOptions } from 'birpc';
 import type { Server as HttpServer } from 'node:http';
 
@@ -21,8 +21,8 @@ import type {
   BirpcSubscriptionDescriptor,
 } from './client.js';
 
-import { connectAgentTargetBroker, connectClientTargetBroker, createTargetBroker } from '@dvcol/chrome-debugger-bridge';
-import { mountAuthenticatedWebSocketBridge } from '@dvcol/chrome-debugger-bridge-websocket/node';
+import { connectAgentTargetBroker, connectClientTargetBroker, createTargetBroker } from '@dvcol/cdb';
+import { mountAuthenticatedWebSocketBridge } from '@dvcol/cdb-websocket/node';
 import { createBirpc } from 'birpc';
 
 export interface MountBirpcChromeDebuggerBridgeOptions<

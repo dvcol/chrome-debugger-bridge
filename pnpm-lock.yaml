@@ -158,49 +158,49 @@ importers:
 
   examples/birpc:
     dependencies:
+      '@dvcol/cdb':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@dvcol/cdb-birpc':
         specifier: workspace:*
         version: link:../../packages/birpc
-      '@dvcol/chrome-debugger-bridge':
-        specifier: workspace:*
-        version: link:../../packages/core
-      '@dvcol/chrome-debugger-bridge-extension':
+      '@dvcol/cdb-extension':
         specifier: workspace:*
         version: link:../../packages/extension
-      '@dvcol/chrome-debugger-bridge-websocket':
+      '@dvcol/cdb-websocket':
         specifier: workspace:*
         version: link:../../packages/websocket
 
   examples/browser-client:
     dependencies:
-      '@dvcol/chrome-debugger-bridge':
+      '@dvcol/cdb':
         specifier: workspace:*
         version: link:../../packages/core
-      '@dvcol/chrome-debugger-bridge-websocket':
+      '@dvcol/cdb-websocket':
         specifier: workspace:*
         version: link:../../packages/websocket
 
   examples/embedded:
     dependencies:
-      '@dvcol/chrome-debugger-bridge':
+      '@dvcol/cdb':
         specifier: workspace:*
         version: link:../../packages/core
 
   examples/extension:
     dependencies:
-      '@dvcol/chrome-debugger-bridge-extension':
+      '@dvcol/cdb-extension':
         specifier: workspace:*
         version: link:../../packages/extension
-      '@dvcol/chrome-debugger-bridge-websocket':
+      '@dvcol/cdb-websocket':
         specifier: workspace:*
         version: link:../../packages/websocket
 
   examples/mcp:
     dependencies:
-      '@dvcol/chrome-debugger-bridge':
+      '@dvcol/cdb':
         specifier: workspace:*
         version: link:../../packages/core
-      '@dvcol/chrome-debugger-bridge-mcp':
+      '@dvcol/cdb-mcp':
         specifier: workspace:*
         version: link:../../packages/mcp
       '@modelcontextprotocol/client':
@@ -209,28 +209,28 @@ importers:
 
   examples/node-client:
     dependencies:
-      '@dvcol/chrome-debugger-bridge':
+      '@dvcol/cdb':
         specifier: workspace:*
         version: link:../../packages/core
-      '@dvcol/chrome-debugger-bridge-websocket':
+      '@dvcol/cdb-websocket':
         specifier: workspace:*
         version: link:../../packages/websocket
 
   examples/standalone-host:
     dependencies:
-      '@dvcol/chrome-debugger-bridge':
+      '@dvcol/cdb':
         specifier: workspace:*
         version: link:../../packages/core
-      '@dvcol/chrome-debugger-bridge-websocket':
+      '@dvcol/cdb-websocket':
         specifier: workspace:*
         version: link:../../packages/websocket
 
   packages/birpc:
     dependencies:
-      '@dvcol/chrome-debugger-bridge':
+      '@dvcol/cdb':
         specifier: workspace:^
         version: link:../core
-      '@dvcol/chrome-debugger-bridge-websocket':
+      '@dvcol/cdb-websocket':
         specifier: workspace:^
         version: link:../websocket
       birpc:
@@ -255,13 +255,13 @@ importers:
 
   packages/extension:
     dependencies:
-      '@dvcol/chrome-debugger-bridge':
+      '@dvcol/cdb':
         specifier: workspace:^
         version: link:../core
 
   packages/mcp:
     dependencies:
-      '@dvcol/chrome-debugger-bridge':
+      '@dvcol/cdb':
         specifier: workspace:^
         version: link:../core
       '@modelcontextprotocol/node':
@@ -280,7 +280,7 @@ importers:
 
   packages/websocket:
     dependencies:
-      '@dvcol/chrome-debugger-bridge':
+      '@dvcol/cdb':
         specifier: workspace:^
         version: link:../core
       ws:
@@ -293,13 +293,13 @@ importers:
 
   tests/fixtures/package-consumer:
     dependencies:
-      '@dvcol/chrome-debugger-bridge':
+      '@dvcol/cdb':
         specifier: workspace:*
         version: link:../../../packages/core
-      '@dvcol/chrome-debugger-bridge-extension':
+      '@dvcol/cdb-extension':
         specifier: workspace:*
         version: link:../../../packages/extension
-      '@dvcol/chrome-debugger-bridge-websocket':
+      '@dvcol/cdb-websocket':
         specifier: workspace:*
         version: link:../../../packages/websocket
 

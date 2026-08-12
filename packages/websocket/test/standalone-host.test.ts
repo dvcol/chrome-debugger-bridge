@@ -1,4 +1,4 @@
-import type { BrokerToClientMessage, ClientToBrokerMessage, PublishedTarget } from '@dvcol/chrome-debugger-bridge/protocol';
+import type { BrokerToClientMessage, ClientToBrokerMessage, PublishedTarget } from '@dvcol/cdb/protocol';
 
 import type { NodeClientConnection, StandaloneChromeDebuggerBridgeHost } from '../src/node.js';
 

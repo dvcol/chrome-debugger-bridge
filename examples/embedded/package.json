@@ -4,9 +4,9 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "smoke": "node --input-type=module --eval \"await import('@dvcol/chrome-debugger-bridge/embedded')\""
+    "smoke": "node --input-type=module --eval \"await import('@dvcol/cdb/embedded')\""
   },
   "dependencies": {
-    "@dvcol/chrome-debugger-bridge": "workspace:*"
+    "@dvcol/cdb": "workspace:*"
   }
 }

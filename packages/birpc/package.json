@@ -32,8 +32,8 @@
     "verify:pack": "publint"
   },
   "dependencies": {
-    "@dvcol/chrome-debugger-bridge": "workspace:^",
-    "@dvcol/chrome-debugger-bridge-websocket": "workspace:^",
+    "@dvcol/cdb": "workspace:^",
+    "@dvcol/cdb-websocket": "workspace:^",
     "birpc": "catalog:"
   },
   "publishConfig": {

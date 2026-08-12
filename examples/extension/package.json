@@ -4,10 +4,10 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "smoke": "node --input-type=module --eval \"await import('@dvcol/chrome-debugger-bridge-extension')\""
+    "smoke": "node --input-type=module --eval \"await import('@dvcol/cdb-extension')\""
   },
   "dependencies": {
-    "@dvcol/chrome-debugger-bridge-extension": "workspace:*",
-    "@dvcol/chrome-debugger-bridge-websocket": "workspace:*"
+    "@dvcol/cdb-extension": "workspace:*",
+    "@dvcol/cdb-websocket": "workspace:*"
   }
 }

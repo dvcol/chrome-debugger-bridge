@@ -176,11 +176,11 @@ The package names below are the proposed naming baseline:
 
 | Directory | Published name | Runtime | Purpose |
 | --- | --- | --- | --- |
-| `packages/core` | `@dvcol/chrome-debugger-bridge` | Neutral | Protocol types and validation contracts, broker state machine, client facade, policies, errors, and test contracts. |
-| `packages/extension` | `@dvcol/chrome-debugger-bridge-extension` | Browser extension | MV3 agent, `chrome.debugger` port, target/session mapping, extension-side security kernel, and bootstrap contracts. |
-| `packages/websocket` | `@dvcol/chrome-debugger-bridge-websocket` | Browser and Node subpaths | Direct agent transport, generic client transport, JSON-RPC codec, WebSocket host mounting, heartbeat, reconnect, and binary artifact frames. |
+| `packages/core` | `@dvcol/cdb` | Neutral | Protocol types and validation contracts, broker state machine, client facade, policies, errors, and test contracts. |
+| `packages/extension` | `@dvcol/cdb-extension` | Browser extension | MV3 agent, `chrome.debugger` port, target/session mapping, extension-side security kernel, and bootstrap contracts. |
+| `packages/websocket` | `@dvcol/cdb-websocket` | Browser and Node subpaths | Direct agent transport, generic client transport, JSON-RPC codec, WebSocket host mounting, heartbeat, reconnect, and binary artifact frames. |
 | `packages/birpc` | `@dvcol/cdb-birpc` | Browser and Node subpaths | Application-owned `birpc` host integration, `birpc` facade, and one-shot page/content bootstrap adapters. |
-| `packages/mcp` | `@dvcol/chrome-debugger-bridge-mcp` | Node | MCP tools and Streamable HTTP adapter backed by the core client facade. |
+| `packages/mcp` | `@dvcol/cdb-mcp` | Node | MCP tools and Streamable HTTP adapter backed by the core client facade. |
 
 Private examples demonstrate composition and remain outside the fixed publication group.
 
@@ -205,24 +205,24 @@ Every public adapter, client, and host composition must have a runnable example.
 Prefer explicit subpath exports over broad barrel files when runtimes differ:
 
 ```text
-@dvcol/chrome-debugger-bridge
-@dvcol/chrome-debugger-bridge/protocol
-@dvcol/chrome-debugger-bridge/broker
-@dvcol/chrome-debugger-bridge/client
-@dvcol/chrome-debugger-bridge/testing
+@dvcol/cdb
+@dvcol/cdb/protocol
+@dvcol/cdb/broker
+@dvcol/cdb/client
+@dvcol/cdb/testing
 
-@dvcol/chrome-debugger-bridge-extension
-@dvcol/chrome-debugger-bridge-extension/bootstrap
-@dvcol/chrome-debugger-bridge-extension/testing
+@dvcol/cdb-extension
+@dvcol/cdb-extension/bootstrap
+@dvcol/cdb-extension/testing
 
-@dvcol/chrome-debugger-bridge-websocket/browser
-@dvcol/chrome-debugger-bridge-websocket/node
-@dvcol/chrome-debugger-bridge-websocket/testing
+@dvcol/cdb-websocket/browser
+@dvcol/cdb-websocket/node
+@dvcol/cdb-websocket/testing
 
 @dvcol/cdb-birpc/client
 @dvcol/cdb-birpc/node
 
-@dvcol/chrome-debugger-bridge-mcp
+@dvcol/cdb-mcp
 ```
 
 All packages are ESM-only, publish declarations and source maps, declare exact export maps, and contain no implicit process startup or global side effects.
