@@ -4,7 +4,7 @@ import type { DiagnosticCode, DiagnosticTraceStore } from './diagnostic-trace.js
 import type { CdpCommand, CdpEvent, CdpSubscriptionRequest, JsonObject, JsonValue, Lease, PublishedTarget } from './protocol.js';
 
 import { createMemoryArtifactStore, externalizeJsonResult } from './artifact-store.js';
-import { isCdpNameAllowed, requiredLeaseMode } from './cdp-authorization.js';
+import { isCdpNameAllowed, isKnownCdpEventName, requiredLeaseMode } from './cdp-authorization.js';
 
 type TargetChangeInput
   = | { readonly kind: 'published'; readonly target: PublishedTarget }
@@ -68,6 +68,7 @@ export interface CdpSubscription extends AsyncIterable<CdpEvent> {
 
 interface SubscriptionState {
   close: () => void;
+  readonly authorizedMethods: ReadonlySet<string>;
   offer: (method: string, parameters: JsonObject, sessionId?: string) => void;
   request: CdpSubscriptionRequest;
   sequence: number;
@@ -197,6 +198,17 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       : 'method' in request.match
         ? request.match.method
         : request.match.methodPrefix;
+  }
+
+  function getAuthorizedSubscriptionMethods(request: CdpSubscriptionRequest, lease: Lease, target: PublishedTarget): ReadonlySet<string> {
+    const matches = (method: string): boolean => 'method' in request.match
+      ? method === request.match.method
+      : 'domain' in request.match
+        ? method.startsWith(`${request.match.domain}.`)
+        : method.startsWith(request.match.methodPrefix);
+    const methods = lease.methods.filter(method => matches(method) && isCdpNameAllowed(target.capabilities, method, 'event') && (lease.mode !== 'shared-read' || requiredLeaseMode(target.capabilities, [method]) !== 'exclusive-control') && ('method' in request.match || isKnownCdpEventName(method)));
+    if (methods.length === 0) throw new TargetBrokerError('CAPABILITY_DENIED');
+    return new Set(methods);
   }
 
   function getSubscriptionDemandKey(target: Pick<PublishedTarget, 'generation' | 'id'>, request: CdpSubscriptionRequest): string {
@@ -568,8 +580,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       ensureActive();
       const target = getCurrentTarget(request.targetId, request.targetGeneration);
       const lease = getActiveLease(request, authority);
-      const requestedName = 'method' in request.match ? request.match.method : undefined;
-      if (requestedName !== undefined && (!lease.methods.includes(requestedName) || !isCdpNameAllowed(target.capabilities, requestedName, 'event') || (lease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [requestedName]) === 'exclusive-control'))) throw new TargetBrokerError('CAPABILITY_DENIED');
+      const authorizedMethods = getAuthorizedSubscriptionMethods(request, lease, target);
       if ((request.batch !== undefined && request.batch.maximumEvents > request.buffer.capacity) || (hasStatefulSubscriptionDemand(request) && request.buffer.capacity > 16)) throw new TargetBrokerError('CAPABILITY_DENIED');
       const id = generateId();
       const buffer: CdpEvent[] = [];
@@ -624,7 +635,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       } }) };
       await incrementSubscriptionDemand(target, request);
       demandActive = true;
-      subscriptions.set(id, { close, offer(method, parameters, sessionId) {
+      subscriptions.set(id, { authorizedMethods, close, offer(method, parameters, sessionId) {
         const matches = eventMatchesSubscription(request, method, parameters, sessionId);
         let activeLease: Lease;
         try {
@@ -633,7 +644,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
           close();
           return;
         }
-        if (!matches || closed || !activeLease.methods.includes(method) || !isCdpNameAllowed(target.capabilities, method, 'event') || (activeLease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [method]) === 'exclusive-control')) return;
+        if (!matches || closed || !activeLease.methods.includes(method) || !subscriptions.get(id)?.authorizedMethods.has(method) || !isCdpNameAllowed(target.capabilities, method, 'event') || (activeLease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [method]) === 'exclusive-control')) return;
         const current = subscriptions.get(id);
         if (current === undefined) return;
         const event: CdpEvent = { method, parameters, sequence: current.sequence++, subscriptionId: id, targetGeneration: target.generation, targetId: target.id, ...(sessionId === undefined ? {} : { sessionId }) };

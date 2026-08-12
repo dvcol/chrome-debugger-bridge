@@ -12,6 +12,11 @@ const kernelOwnedNames = new Set<string>(cdpKernelOwnedNames);
 
 export type CdpNameKind = 'command' | 'event';
 
+/** Returns reviewed event names only; unknown unsafe names cannot be introduced by a wildcard filter. */
+export function isKnownCdpEventName(name: string): boolean {
+  return (catalogue[name] ?? bridgeCatalogue[name])?.kind === 'event';
+}
+
 /** Resolves the catalogue and exact-name grant without inspecting native CDP payloads. */
 export function isCdpNameAllowed(grant: CapabilityGrant, name: string, kind: CdpNameKind): boolean {
   if (kernelOwnedNames.has(name)) return false;
