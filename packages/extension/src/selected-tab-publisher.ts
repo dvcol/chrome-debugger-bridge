@@ -155,7 +155,18 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       await configureFlatSessions(parameters.sessionId);
       await enableActiveRootDomains(parameters.sessionId);
       await options.chromeDebugger.sendCommand({ sessionId: parameters.sessionId, tabId: selectedTabId! }, 'Runtime.runIfWaitingForDebugger');
-    })().catch(() => {
+    })().catch(async () => {
+      const target = { sessionId: parameters.sessionId, tabId: selectedTabId! };
+      try {
+        await options.chromeDebugger.sendCommand(target, 'Runtime.runIfWaitingForDebugger');
+      } catch {
+        /** Cleanup must not replace the original child setup failure. */
+      }
+      try {
+        await options.chromeDebugger.detach(target);
+      } catch {
+        /** A late Chrome detach is equivalent to completed cleanup. */
+      }
       childSessionRouter.detach(parameters.sessionId);
     });
     return childSession;
