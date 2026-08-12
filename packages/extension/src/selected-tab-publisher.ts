@@ -110,7 +110,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
   function isPublishable(tab: SelectedTab): boolean {
     return !tab.incognito
       && isSupportedPage(tab.url)
-      && (options.tabScopeSelector === undefined || matchesTabScope(options.tabScopeSelector, tab))
+      && (options.tabScopeSelector === undefined || (options.tabScopeSelector.kind === 'active-tab' && selectedTabId === tab.tabId) || matchesTabScope(options.tabScopeSelector, tab))
       && (options.isExposureAllowed?.(tab) ?? true);
   }
 
