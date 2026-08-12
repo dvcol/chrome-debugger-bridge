@@ -625,7 +625,7 @@ type ExposureSelector =
 
 These types are internal to the extension package because they contain Chrome IDs. Public clients only see opaque scopes and targets.
 
-Every relevant Chrome event re-evaluates selectors. Leaving a group/window/pattern, entering an unauthorized incognito context, closing, or manual revocation removes access immediately.
+Explicit-tab and active-tab selectors are snapshots: their resolved tab IDs do not change when focus changes later. Group, window, and URL-pattern selectors are live collections: current and future matching tabs are published independently, including tabs opened by scripts in a selected window. Every relevant Chrome event re-evaluates live selectors. Leaving a group/window/pattern, entering an unauthorized incognito context, closing, or manual revocation removes access immediately.
 
 ### 10.3 Exposure authority
 

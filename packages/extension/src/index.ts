@@ -38,4 +38,10 @@ export {
   type SelectedTabPublisher,
   type SelectedTabPublisherOptions,
 } from './selected-tab-publisher.js';
+export {
+  type ChromeTabScopeLifecyclePort,
+  createTabScopeLifecycle,
+  type TabScopeLifecycle,
+  type TabScopeLifecycleOptions,
+} from './tab-scope-lifecycle.js';
 export { matchesTabScope, type TabScopeSelector } from './tab-scope.js';
