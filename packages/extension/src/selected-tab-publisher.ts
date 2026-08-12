@@ -29,9 +29,21 @@ export interface SelectedTab {
   readonly windowId?: number;
 }
 
+export interface CommandAuthorizationContext {
+  readonly capabilities: CapabilityGrant;
+  readonly method: string;
+  readonly parameters: JsonObject | undefined;
+  readonly sessionId: string | undefined;
+}
+
+/** Applies extension-owned restrictions to native CDP command parameters after mandatory bridge checks. */
+export type CommandAuthorizationPolicy = (context: CommandAuthorizationContext) => boolean | Promise<boolean>;
+
 export interface SelectedTabPublisherOptions {
   readonly capabilities: CapabilityGrant;
   readonly chromeDebugger: ChromeDebuggerPort;
+  /** Can make a published target's command authorization stricter, but never relax the bridge kernel. */
+  readonly commandAuthorizationPolicy?: CommandAuthorizationPolicy;
   readonly isExposureAllowed?: (tab: Omit<SelectedTab, 'tabId'>) => boolean;
   readonly metadataPolicy?: (tab: Omit<SelectedTab, 'tabId'>) => Pick<PublishedTarget, 'title' | 'url'>;
   readonly publishTarget: (target: PublishedTarget) => Promise<void> | void;
@@ -63,6 +75,12 @@ export interface SelectedTabPublisher {
 
 const domainNamePattern = /^[A-Za-z]+$/u;
 const eligibleChildTargetTypes = new Set(['iframe', 'service_worker', 'shared_worker', 'worker']);
+
+function isBaselineCommandAuthorized(context: CommandAuthorizationContext): boolean {
+  if (context.method !== 'Page.setDownloadBehavior') return true;
+  const behavior = context.parameters?.behavior;
+  return behavior === 'default' || behavior === 'deny';
+}
 
 function isSupportedPage(url: string | undefined): boolean {
   if (url === undefined) {
@@ -194,6 +212,16 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     }
     const chromeSessionId = command.sessionId === undefined ? undefined : childSessionRouter.resolve(command.sessionId);
     if (command.sessionId !== undefined && chromeSessionId === undefined) throw new Error('The requested command is not permitted.');
+    const authorizationContext: CommandAuthorizationContext = {
+      capabilities: publishedTarget.capabilities,
+      method: command.method,
+      parameters: command.parameters,
+      sessionId: command.sessionId,
+    };
+    const isPolicyAuthorized = await options.commandAuthorizationPolicy?.(authorizationContext) ?? true;
+    if (!isBaselineCommandAuthorized(authorizationContext) || !isPolicyAuthorized) {
+      throw new Error('The requested command is not permitted.');
+    }
     try {
       const value = await options.chromeDebugger.sendCommand({ tabId: selectedTabId, ...(chromeSessionId === undefined ? {} : { sessionId: chromeSessionId }) }, command.method, command.parameters);
       if (abortSignal.aborted) {

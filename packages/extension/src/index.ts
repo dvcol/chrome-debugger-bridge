@@ -31,6 +31,8 @@ export {
 } from './selected-tab-lifecycle.js';
 export {
   type ChromeDebuggerPort,
+  type CommandAuthorizationContext,
+  type CommandAuthorizationPolicy,
   createSelectedTabPublisher,
   type SelectedTab,
   type SelectedTabPublisher,

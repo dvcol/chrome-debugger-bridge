@@ -18,7 +18,7 @@ An exact-name `allow` list covers both commands and events. It adds names when a
 
 ## Thin-wrapper boundary
 
-CDP parameters, responses, and event payloads pass through without catalogue-level validation or rewriting. Large responses retain the authority of their originating command when transported as artifacts.
+CDP parameters, responses, and event payloads pass through without catalogue-level validation or rewriting. The extension security kernel still applies narrow parameter-aware authorization to prevent cross-target escape and unrestricted download behavior. Large responses retain the authority of their originating command when transported as artifacts.
 
 The bridge owns target discovery, attachment, and native domain activation. `Target.*` plus native `enable` and `disable` commands therefore remain outside the client catalogue. Eligible flat child sessions inherit their published root grant through opaque bridge session identities.
 

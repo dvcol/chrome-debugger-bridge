@@ -71,6 +71,28 @@ it('validates the opaque target grant before forwarding a debugger command', asy
   expect(JSON.stringify(sendCommand.mock.calls)).not.toContain('42');
 });
 
+it('keeps raw download behavior parameter-sensitive in the extension security kernel', async () => {
+  expect.assertions(5);
+  const sendCommand = vi.fn(async () => ({ result: 'safe' }));
+  const publisher = createSelectedTabPublisher({
+    capabilities: { level: 'unsafe' },
+    chromeDebugger: { attach() {}, detach() {}, sendCommand },
+    publishTarget() {},
+    revokeTarget() {},
+    scopeId,
+    updateTarget() {},
+  });
+  const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+  sendCommand.mockClear();
+  const lease = { expiresAt: '2030-01-01T00:00:00.000Z', id: '20000000-0000-4000-8000-000000000001', issuedAt: '2026-08-12T00:00:00.000Z', methods: ['Page.setDownloadBehavior'], mode: 'exclusive-control' as const, targetGeneration: target.generation, targetId: target.id };
+
+  await expect(publisher.executeCommand({ leaseId: lease.id, method: 'Page.setDownloadBehavior', operationId: '30000000-0000-4000-8000-000000000001', parameters: { behavior: 'allow', downloadPath: '/private/downloads' }, targetGeneration: target.generation, targetId: target.id }, new AbortController().signal, lease)).rejects.toThrow('not permitted');
+  expect(sendCommand).not.toHaveBeenCalled();
+  await expect(publisher.executeCommand({ leaseId: lease.id, method: 'Page.setDownloadBehavior', operationId: '30000000-0000-4000-8000-000000000002', parameters: { behavior: 'deny' }, targetGeneration: target.generation, targetId: target.id }, new AbortController().signal, lease)).resolves.toEqual({ result: 'safe' });
+  expect(sendCommand).toHaveBeenCalledOnce();
+  expect(sendCommand).toHaveBeenCalledWith({ tabId: 42 }, 'Page.setDownloadBehavior', { behavior: 'deny' });
+});
+
 it('forwards only an opaque published target with a CDP event', async () => {
   expect.assertions(3);
   const events: unknown[] = [];
