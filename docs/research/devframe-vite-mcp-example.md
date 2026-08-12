@@ -54,16 +54,12 @@ example, diagnostics or target summaries) through Devframe's agent host.
 
 ## Compatibility and risk
 
-This workspace uses the MCP SDK v2 split packages (`@modelcontextprotocol/server`,
-`@modelcontextprotocol/node`, and `@modelcontextprotocol/client`) at 2.0.0.
-Devframe's published adapter documentation names the monolithic
-`@modelcontextprotocol/sdk` peer; its source package manifest likewise
-declares that optional peer. [Devframe package manifest](https://github.com/devframes/devframe/blob/main/packages/devframe/package.json)
-
-That does not prove the two can never coexist, but it does make a dependency
-resolution and runtime compatibility spike a prerequisite. The Devframe
-agent-native and MCP features are also explicitly experimental and may change
-without a major version bump. [Agent-Native Devframe](https://devfra.me/guide/agent-native)
+This workspace and Devframe 0.8.2 both use MCP SDK v2 split packages:
+`@modelcontextprotocol/client` and `@modelcontextprotocol/server` 2.0.0.
+The experimental example verifies that the two dependency sets resolve and that
+Devframe's route-based Streamable HTTP server accepts an SDK-v2 MCP session.
+The agent-native and MCP features remain explicitly experimental and may change
+without a major version bump. [Devframe package manifest](https://github.com/devframes/devframe/blob/main/packages/devframe/package.json), [Agent-Native Devframe](https://devfra.me/guide/agent-native)
 
 Adding the example now would introduce external Devframe and Vite DevTools-kit
 dependencies, a second MCP endpoint/authority model, and potentially two SDK
@@ -88,6 +84,6 @@ semantic tools in Devframe, make Devframe/Vite dependencies public runtime
 dependencies of bridge packages, or alter the release-critical package/export
 contract.
 
-**Suggested blocker:** a dependency-resolution and runtime-compatibility spike,
-because the Devframe adapter currently declares the monolithic MCP SDK peer.
-Keep it outside the critical path unless a real Vite consumer requires it.
+The dependency-resolution and runtime-compatibility spike passed with Devframe
+0.8.2 and MCP SDK v2. Keep this integration isolated because its upstream
+agent-native surface remains experimental.

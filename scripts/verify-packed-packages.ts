@@ -103,7 +103,7 @@ function createPackageImportSpecifier(packageName: string, exportName: string): 
 }
 
 const packedPackages: PackedPackage[] = [];
-const exampleDirectories = ['birpc', 'browser-client', 'embedded', 'extension', 'mcp', 'node-client', 'standalone-host'];
+const exampleDirectories = ['birpc', 'browser-client', 'devframe', 'embedded', 'extension', 'mcp', 'node-client', 'standalone-host'];
 const exampleCoverageManifest = parseExampleCoverageManifest(JSON.parse(
   await readFile(join(workspaceRoot, 'examples', 'coverage.json'), 'utf8'),
 ));
@@ -342,7 +342,7 @@ for (const importSpecifier of runtimeImportSpecifiers) {
     .join('\n');
   await writeFile(
     join(packedExampleRoot, 'pnpm-workspace.yaml'),
-    `packages:\n  - examples/*\ncatalog:\n  '@modelcontextprotocol/client': 2.0.0\noverrides:\n${packedPackageOverrides}\n`,
+    `packages:\n  - examples/*\ncatalog:\n  '@modelcontextprotocol/client': 2.0.0\ncatalogs:\n  devtools:\n    '@vitejs/devtools-kit': 0.4.12\n    devframe: 0.8.2\n    vite: 8.2.0\noverrides:\n${packedPackageOverrides}\n`,
     'utf8',
   );
 

@@ -27,6 +27,8 @@ catalogs:
     tsdown: 0.22.14
     turbo: 2.10.8
   devtools:
+    '@vitejs/devtools-kit': 0.4.12
+    devframe: 0.8.2
     vite: 8.2.0
   protocol:
     '@standard-schema/spec': 1.1.0

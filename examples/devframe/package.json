@@ -1,0 +1,16 @@
+{
+  "name": "@chrome-debugger-bridge-example/devframe",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "smoke": "node smoke.mjs"
+  },
+  "dependencies": {
+    "@dvcol/cdb": "workspace:*",
+    "@modelcontextprotocol/client": "catalog:",
+    "@vitejs/devtools-kit": "catalog:devtools",
+    "devframe": "catalog:devtools",
+    "vite": "catalog:devtools"
+  }
+}
