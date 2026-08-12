@@ -12,11 +12,17 @@ export interface ArtifactAuthority {
   readonly targetId: string;
 }
 
+/** Selects a bounded byte window without exposing artifact storage details. */
+export interface ArtifactByteRange {
+  readonly length: number;
+  readonly offset: number;
+}
+
 /** Retains opaque, target-authorized artifacts behind the broker boundary. */
 export interface ArtifactStore {
   create: (input: ArtifactAuthority & { readonly bytes: Uint8Array; readonly expiresAt: string; readonly mediaType: string; readonly signal?: AbortSignal }) => Promise<ArtifactDescriptor>;
   createWriter: (input: ArtifactAuthority & { readonly expiresAt: string; readonly mediaType: string; readonly signal?: AbortSignal }) => ArtifactWriter;
-  read: (id: string, authority: ArtifactAuthority) => Uint8Array;
+  read: (id: string, authority: ArtifactAuthority, range?: ArtifactByteRange) => Uint8Array;
   release: (id: string, authority: ArtifactAuthority) => void;
   revokeTarget: (targetId: string, targetGeneration: number) => void;
 }
@@ -59,6 +65,14 @@ export type InlineOrArtifactResult<Value> = Value | { readonly artifact: Artifac
 interface StoredArtifact extends ArtifactAuthority {
   readonly bytes: Uint8Array;
   readonly descriptor: ArtifactDescriptor;
+}
+
+function readRange(bytes: Uint8Array, range: ArtifactByteRange | undefined): Uint8Array {
+  if (range === undefined) return bytes.slice();
+  if (!Number.isSafeInteger(range.offset) || range.offset < 0 || !Number.isSafeInteger(range.length) || range.length < 1 || range.offset >= bytes.byteLength) {
+    throw new Error('The artifact range is invalid.');
+  }
+  return bytes.slice(range.offset, Math.min(bytes.byteLength, range.offset + range.length));
 }
 
 async function digest(bytes: Uint8Array): Promise<string> {
@@ -160,8 +174,8 @@ export function createMemoryArtifactStore(maximumBytes: number, now: () => numbe
       return writer.close();
     },
     createWriter,
-    read(id, authority) {
-      return access(id, authority).bytes.slice();
+    read(id, authority, range) {
+      return readRange(access(id, authority).bytes, range);
     },
     release(id, authority) {
       const artifact = access(id, authority);

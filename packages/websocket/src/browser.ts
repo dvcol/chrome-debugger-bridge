@@ -847,9 +847,15 @@ export async function createBrowserChromeDebuggerBridgeClient(
       const response = await request({ kind: 'request', method: 'leases.release', parameters: requestInput, protocolVersion: 1, requestId: crypto.randomUUID() });
       if (response.method !== 'leases.release') throw new Error('Received an unexpected lease response');
     },
-    async readArtifact(requestInput: ArtifactAccessRequest): Promise<Uint8Array> {
+    async readArtifact(requestInput: ArtifactAccessRequest, signal?: AbortSignal): Promise<Uint8Array> {
       const endpoint = new URL(encodeURIComponent(requestInput.artifactId), options.artifactEndpoint);
-      const response = await globalThis.fetch(endpoint, { headers: { authorization: options.authorization } });
+      const response = await globalThis.fetch(endpoint, {
+        headers: {
+          authorization: options.authorization,
+          ...(requestInput.range === undefined ? {} : { range: `bytes=${requestInput.range.offset}-${requestInput.range.offset + requestInput.range.length - 1}` }),
+        },
+        ...(signal === undefined ? {} : { signal }),
+      });
       if (!response.ok) throw new Error(`Artifact read failed with HTTP ${response.status}.`);
       return new Uint8Array(await response.arrayBuffer());
     },

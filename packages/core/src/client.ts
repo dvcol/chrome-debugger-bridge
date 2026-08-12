@@ -14,7 +14,7 @@ export interface TargetDirectory {
   executeCommand?: (command: CdpCommand) => Promise<CdpCommandResult>;
   listTargets: () => readonly PublishedTarget[] | Promise<readonly PublishedTarget[]>;
   releaseLease?: (request: ReleaseLeaseRequest) => void | Promise<void>;
-  readArtifact?: (request: ArtifactAccessRequest) => Uint8Array | Promise<Uint8Array>;
+  readArtifact?: (request: ArtifactAccessRequest, signal?: AbortSignal) => Uint8Array | Promise<Uint8Array>;
   releaseArtifact?: (request: ArtifactAccessRequest) => void | Promise<void>;
   renewLease?: (request: RenewLeaseRequest) => Lease | Promise<Lease>;
   watchTargets?: () => AsyncIterable<TargetChange>;
@@ -26,7 +26,7 @@ export interface ChromeDebuggerBridgeClient {
   executeCommand: (command: CdpCommand) => Promise<CdpCommandResult>;
   listTargets: () => Promise<readonly PublishedTarget[]>;
   releaseLease: (request: ReleaseLeaseRequest) => Promise<void>;
-  readArtifact: (request: ArtifactAccessRequest) => Promise<Uint8Array>;
+  readArtifact: (request: ArtifactAccessRequest, signal?: AbortSignal) => Promise<Uint8Array>;
   releaseArtifact: (request: ArtifactAccessRequest) => Promise<void>;
   renewLease: (request: RenewLeaseRequest) => Promise<Lease>;
   subscribe: (request: CdpSubscriptionRequest) => Promise<CdpSubscription>;
@@ -55,9 +55,12 @@ export function createChromeDebuggerBridgeClient(directory: TargetDirectory): Ch
       if (directory.releaseLease === undefined) throw new Error('The target directory does not support leases.');
       await directory.releaseLease(request);
     },
-    async readArtifact(request) {
+    async readArtifact(request, signal) {
       if (directory.readArtifact === undefined) throw new Error('The target directory does not support artifacts.');
-      return directory.readArtifact(request);
+      if (signal?.aborted) throw new Error('The artifact read was cancelled.');
+      const bytes = await directory.readArtifact(request, signal);
+      if (signal?.aborted) throw new Error('The artifact read was cancelled.');
+      return bytes;
     },
     async releaseArtifact(request) {
       if (directory.releaseArtifact === undefined) throw new Error('The target directory does not support artifacts.');

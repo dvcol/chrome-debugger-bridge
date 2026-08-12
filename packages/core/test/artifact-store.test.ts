@@ -6,12 +6,14 @@ const authority = { ownerId: 'client', targetGeneration: 1, targetId: '10000000-
 const futureExpiry = '2030-08-05T00:00:00.000Z';
 
 it('stores bounded opaque artifacts and enforces owner and target authority', async () => {
-  expect.assertions(5);
+  expect.assertions(7);
   const store = createMemoryArtifactStore(4);
   const descriptor = await store.create({ ...authority, bytes: new Uint8Array([1, 2]), expiresAt: futureExpiry, mediaType: 'application/octet-stream' });
   expect(descriptor).toMatchObject({ length: 2, mediaType: 'application/octet-stream' });
   expect(descriptor).not.toHaveProperty('path');
   expect(store.read(descriptor.id, authority)).toEqual(new Uint8Array([1, 2]));
+  expect(store.read(descriptor.id, authority, { length: 1, offset: 1 })).toEqual(new Uint8Array([2]));
+  expect(() => store.read(descriptor.id, authority, { length: 1, offset: 2 })).toThrow('range is invalid');
   expect(() => store.read(descriptor.id, { ...authority, ownerId: 'other' })).toThrow('not available');
   await expect(store.create({ ...authority, bytes: new Uint8Array([1, 2, 3]), expiresAt: futureExpiry, mediaType: 'application/octet-stream' })).rejects.toThrow('memory limit');
 });

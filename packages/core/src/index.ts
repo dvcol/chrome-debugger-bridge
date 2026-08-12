@@ -1,6 +1,7 @@
 export { type AgentTargetConnection, connectAgentTargetBroker } from './agent-target-connection.js';
 export {
   type ArtifactAuthority,
+  type ArtifactByteRange,
   type ArtifactDescriptor,
   type ArtifactReader,
   type ArtifactStore,

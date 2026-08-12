@@ -1,4 +1,4 @@
-import type { ArtifactAuthority, InlineOrArtifactResult, MemoryArtifactStore } from './artifact-store.js';
+import type { ArtifactAuthority, ArtifactByteRange, InlineOrArtifactResult, MemoryArtifactStore } from './artifact-store.js';
 import type { TargetChange, TargetRevocationReason } from './client.js';
 import type { DiagnosticCode, DiagnosticTraceStore } from './diagnostic-trace.js';
 import type { CdpCommand, CdpEvent, CdpSubscriptionRequest, JsonObject, JsonValue, Lease, PublishedTarget } from './protocol.js';
@@ -38,6 +38,7 @@ export interface ReleaseLeaseRequest {
 export interface ArtifactAccessRequest {
   readonly artifactId: string;
   readonly leaseId: string;
+  readonly range?: ArtifactByteRange;
   readonly targetGeneration: number;
   readonly targetId: string;
 }
@@ -472,7 +473,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     },
     readArtifact(request) {
       ensureActive();
-      return artifactStore.read(request.artifactId, getArtifactAuthority(request));
+      return artifactStore.read(request.artifactId, getArtifactAuthority(request), request.range);
     },
     releaseArtifact(request) {
       ensureActive();

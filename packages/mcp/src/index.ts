@@ -1,9 +1,10 @@
-import type { CdpEvent, ChromeDebuggerBridgeClient, Lease } from '@dvcol/chrome-debugger-bridge';
+import type { ArtifactAccessRequest, CdpEvent, ChromeDebuggerBridgeClient, Lease } from '@dvcol/chrome-debugger-bridge';
 import type { JsonObject } from '@dvcol/chrome-debugger-bridge/protocol';
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import type { ServeStdioOptions } from '@modelcontextprotocol/server/stdio';
 import type { Server as HttpServer, IncomingMessage, ServerResponse } from 'node:http';
 
+import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 
 import { toNodeHandler } from '@modelcontextprotocol/node';
@@ -14,6 +15,7 @@ import { z } from 'zod/v4';
 export const supportedMcpProtocolVersions = ['2026-07-28'] as const;
 export const supportedMcpSdkVersion = '2.0.0';
 const cdpMethodPattern = /^[A-Za-z]+\.[A-Za-z]+$/u;
+const maximumArtifactReadBytes = 49_152;
 
 class McpToolError extends Error {
   constructor(
@@ -33,6 +35,7 @@ export interface MountMcpStreamableHttpOptions {
 
 export interface McpChromeDebuggerBridgeClient extends ChromeDebuggerBridgeClient {
   cancelCommand: (request: { readonly operationId: string; readonly targetGeneration: number; readonly targetId: string }) => Promise<void>;
+  readArtifact: (request: ArtifactAccessRequest & { readonly range?: { readonly length: number; readonly offset: number } }, signal?: AbortSignal) => Promise<Uint8Array>;
 }
 
 export interface MountedMcpStreamableHttp {
@@ -87,6 +90,32 @@ async function executeSemanticCommand(
   parameters: JsonObject,
 ): Promise<unknown> {
   return withLease(client, input, mode, [method], async lease => client.executeCommand({ leaseId: lease.id, method, operationId: randomUUID(), parameters, targetGeneration: input.targetGeneration, targetId: input.targetId }));
+}
+
+function artifactFromCommandResult(result: unknown): unknown | undefined {
+  if (typeof result !== 'object' || result === null || !('value' in result)) return undefined;
+  const value = result.value;
+  if (typeof value !== 'object' || value === null || !('artifact' in value)) return undefined;
+  return value.artifact;
+}
+
+async function executeArtifactCommand(
+  client: McpChromeDebuggerBridgeClient,
+  input: { readonly targetGeneration: number; readonly targetId: string },
+  method: string,
+  parameters: JsonObject,
+): Promise<unknown> {
+  const lease = await client.acquireLease({ durationMilliseconds: 30_000, mode: 'shared-read', requestedMethods: [method], targetGeneration: input.targetGeneration, targetId: input.targetId });
+  let retainLease = false;
+  try {
+    const result = await client.executeCommand({ leaseId: lease.id, method, operationId: randomUUID(), parameters, targetGeneration: input.targetGeneration, targetId: input.targetId });
+    const artifact = artifactFromCommandResult(result);
+    if (artifact === undefined) return typeof result === 'object' && result !== null && 'value' in result ? result.value : result;
+    retainLease = true;
+    return { artifact, lease };
+  } finally {
+    if (!retainLease) await client.releaseLease({ leaseId: lease.id, targetGeneration: input.targetGeneration, targetId: input.targetId });
+  }
 }
 
 async function executeSemanticCommands(
@@ -193,6 +222,21 @@ function createMcpServer(client: McpChromeDebuggerBridgeClient, enableRawCdp = f
       return toolError(error);
     }
   });
+  server.registerTool('browser.read_artifact', { description: 'Read one bounded, authorized artifact range as base64.', inputSchema: z.object({ artifactId: z.string().uuid(), leaseId: z.string().uuid(), maximumBytes: z.number().int().positive().max(maximumArtifactReadBytes).default(maximumArtifactReadBytes), offset: z.number().int().nonnegative().default(0), targetGeneration: z.number().int().nonnegative(), targetId: z.string().uuid() }) }, async (input, ctx) => {
+    try {
+      const bytes = await client.readArtifact({
+        artifactId: input.artifactId,
+        leaseId: input.leaseId,
+        range: { length: input.maximumBytes, offset: input.offset },
+        targetGeneration: input.targetGeneration,
+        targetId: input.targetId,
+      }, ctx.mcpReq.signal);
+      if (bytes.byteLength > input.maximumBytes) throw new McpToolError('MCP_ARTIFACT_RANGE_INVALID', 'The artifact range exceeded the requested limit.');
+      return jsonContent({ bytes: Buffer.from(bytes).toString('base64'), encoding: 'base64', offset: input.offset });
+    } catch (error) {
+      return toolError(error);
+    }
+  });
   server.registerTool('browser.inspect', { description: 'Evaluate a read-only inspection expression through an authorized lease.', inputSchema: z.object({ expression: z.string().min(1), leaseId: z.string().uuid(), targetGeneration: z.number().int().nonnegative(), targetId: z.string().uuid() }) }, async (input, ctx) => {
     const operationId = randomUUID();
     const abort = (): void => {
@@ -230,16 +274,14 @@ function createMcpServer(client: McpChromeDebuggerBridgeClient, enableRawCdp = f
   });
   server.registerTool('browser.screenshot', { description: 'Capture a screenshot, returning the bridge inline-or-artifact result without base64 expansion.', inputSchema: z.object({ ...targetInput, format: z.enum(['jpeg', 'png', 'webp']).default('png') }) }, async (input) => {
     try {
-      const result = await executeSemanticCommand(client, input, 'shared-read', 'Page.captureScreenshot', { format: input.format });
-      return jsonContent((result as { readonly value: unknown }).value);
+      return jsonContent(await executeArtifactCommand(client, input, 'Page.captureScreenshot', { format: input.format }));
     } catch (error) {
       return toolError(error);
     }
   });
   server.registerTool('browser.network_body', { description: 'Read a network response body, returning the bridge inline-or-artifact result without base64 expansion.', inputSchema: z.object({ ...targetInput, requestId: z.string().min(1) }) }, async (input) => {
     try {
-      const result = await executeSemanticCommand(client, input, 'shared-read', 'Network.getResponseBody', { requestId: input.requestId });
-      return jsonContent((result as { readonly value: unknown }).value);
+      return jsonContent(await executeArtifactCommand(client, input, 'Network.getResponseBody', { requestId: input.requestId }));
     } catch (error) {
       return toolError(error);
     }

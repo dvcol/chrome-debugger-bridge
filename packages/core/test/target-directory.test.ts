@@ -305,7 +305,7 @@ it('executes only a non-expired lease grant through the registered opaque target
 });
 
 it('externalizes large command results and invalidates their access with the target grant', async () => {
-  expect.assertions(5);
+  expect.assertions(6);
   const broker = createTargetBroker({ artifactLifetimeMilliseconds: 1_000, maximumArtifactBytes: 100, maximumInlineResultBytes: 4 });
   const client = createChromeDebuggerBridgeClient(broker);
   broker.publishTarget(target);
@@ -319,6 +319,7 @@ it('externalizes large command results and invalidates their access with the tar
   expect(result.value).not.toHaveProperty('artifact.path');
   const request = { artifactId: await artifactId(result.value), leaseId: lease.id, targetGeneration: target.generation, targetId: target.id };
   expect(await client.readArtifact(request)).toEqual(new TextEncoder().encode(JSON.stringify({ value: 'large result' })));
+  expect(await client.readArtifact({ ...request, range: { length: 5, offset: 2 } })).toEqual(new TextEncoder().encode(JSON.stringify({ value: 'large result' })).slice(2, 7));
   await client.releaseArtifact(request);
   await expect(client.readArtifact(request)).rejects.toThrow('not available');
   const secondResult = await client.executeCommand({ leaseId: lease.id, method: 'Runtime.evaluate', operationId: '30000000-0000-4000-8000-000000000008', targetGeneration: target.generation, targetId: target.id });

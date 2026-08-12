@@ -17,20 +17,26 @@ const target = {
 } as const;
 
 it('serves target discovery through the official SDK Streamable HTTP client', async () => {
-  expect.assertions(30);
+  expect.assertions(38);
   const server = createServer();
   const acquiredLeases: unknown[] = [];
   const cancelledCommands: unknown[] = [];
   const executedMethods: string[] = [];
   const releasedArtifacts: unknown[] = [];
   const releasedLeases: unknown[] = [];
+  const artifactReads: unknown[] = [];
+  const artifactDescriptor = { expiresAt: '2030-01-01T00:00:00.000Z', id: '017c10a7-e0af-40ec-879f-cd87dffaf036', length: 100_000, mediaType: 'image/png' };
   let closedSubscriptions = 0;
   let rejectPendingInspection: ((reason?: unknown) => void) | undefined;
   let resolvePendingEvent: ((result: IteratorResult<never>) => void) | undefined;
   let resolveInspectionStarted: (() => void) | undefined;
+  let resolveArtifactReadStarted: (() => void) | undefined;
   let resolveSubscriptionStarted: (() => void) | undefined;
   const inspectionStarted = new Promise<void>((resolve) => {
     resolveInspectionStarted = resolve;
+  });
+  const artifactReadStarted = new Promise<void>((resolve) => {
+    resolveArtifactReadStarted = resolve;
   });
   let subscriptionStarted = new Promise<void>((resolve) => {
     resolveSubscriptionStarted = resolve;
@@ -53,10 +59,22 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       }
       if (command.method === 'Runtime.evaluate') throw Object.assign(new Error('Denied.'), { code: 'CAPABILITY_DENIED' });
       executedMethods.push(command.method);
+      if (command.method === 'Network.getResponseBody') return { operationId: '017c10a7-e0af-40ec-879f-cd87dffaf036', value: { artifact: artifactDescriptor } };
       return { operationId: '017c10a7-e0af-40ec-879f-cd87dffaf036', value: { result: { type: 'string', value: command.method } } };
     },
     async listTargets() {
       return [target];
+    },
+    async readArtifact(request: unknown, signal?: AbortSignal) {
+      artifactReads.push({ request, signalAborted: signal?.aborted });
+      if (typeof request === 'object' && request !== null && 'range' in request && request.range !== null && typeof request.range === 'object' && 'offset' in request.range && request.range.offset === 8) return new Uint8Array([1, 2]);
+      if (typeof request === 'object' && request !== null && 'range' in request && request.range !== null && typeof request.range === 'object' && 'offset' in request.range && request.range.offset === 9) {
+        resolveArtifactReadStarted?.();
+        return new Promise<Uint8Array>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('The artifact read was cancelled.')), { once: true });
+        });
+      }
+      return new Uint8Array([1, 2]);
     },
     async releaseLease(request: unknown) {
       releasedLeases.push(request);
@@ -117,7 +135,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    expect(tools.tools.map(tool => tool.name)).toEqual(['browser.list_targets', 'browser.acquire', 'browser.renew', 'browser.release', 'browser.release_artifact', 'browser.inspect', 'browser.snapshot', 'browser.screenshot', 'browser.network_body', 'browser.evaluate', 'browser.navigate', 'browser.click', 'browser.type', 'browser.press', 'browser.console', 'browser.network', 'browser.wait_for']);
+    expect(tools.tools.map(tool => tool.name)).toEqual(['browser.list_targets', 'browser.acquire', 'browser.renew', 'browser.release', 'browser.release_artifact', 'browser.read_artifact', 'browser.inspect', 'browser.snapshot', 'browser.screenshot', 'browser.network_body', 'browser.evaluate', 'browser.navigate', 'browser.click', 'browser.type', 'browser.press', 'browser.console', 'browser.network', 'browser.wait_for']);
     const result = await client.callTool({ arguments: {}, name: 'browser.list_targets' });
     expect(result.isError).toBeUndefined();
     expect(result.content).toEqual([{ text: JSON.stringify([target]), type: 'text' }]);
@@ -128,9 +146,24 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     expect(screenshot.content).toEqual([{ text: JSON.stringify({ result: { type: 'string', value: 'Page.captureScreenshot' } }), type: 'text' }]);
     const networkBody = await client.callTool({ arguments: { requestId: 'request-1', targetGeneration: target.generation, targetId: target.id }, name: 'browser.network_body' });
     expect(networkBody.isError).toBeUndefined();
+    expect(networkBody.content).toEqual([{ text: JSON.stringify({ artifact: artifactDescriptor, lease: { expiresAt: '2030-01-01T00:00:00.000Z', id: '017c10a7-e0af-40ec-879f-cd87dffaf036', mode: 'shared-read', targetGeneration: target.generation, targetId: target.id } }), type: 'text' }]);
     const releasedArtifact = await client.callTool({ arguments: { artifactId: '017c10a7-e0af-40ec-879f-cd87dffaf036', leaseId: '017c10a7-e0af-40ec-879f-cd87dffaf036', targetGeneration: target.generation, targetId: target.id }, name: 'browser.release_artifact' });
     expect(releasedArtifact.isError).toBeUndefined();
     expect(releasedArtifacts).toEqual([{ artifactId: '017c10a7-e0af-40ec-879f-cd87dffaf036', leaseId: '017c10a7-e0af-40ec-879f-cd87dffaf036', targetGeneration: target.generation, targetId: target.id }]);
+    const releasedArtifactLease = await client.callTool({ arguments: { leaseId: '017c10a7-e0af-40ec-879f-cd87dffaf036', targetGeneration: target.generation, targetId: target.id }, name: 'browser.release' });
+    expect(releasedArtifactLease.isError).toBeUndefined();
+    const artifactRead = await client.callTool({ arguments: { artifactId: '017c10a7-e0af-40ec-879f-cd87dffaf036', leaseId: '017c10a7-e0af-40ec-879f-cd87dffaf036', maximumBytes: 2, offset: 4, targetGeneration: target.generation, targetId: target.id }, name: 'browser.read_artifact' });
+    expect(artifactRead.isError).toBeUndefined();
+    expect(artifactRead.content).toEqual([{ text: JSON.stringify({ bytes: 'AQI=', encoding: 'base64', offset: 4 }), type: 'text' }]);
+    expect(artifactReads).toEqual([{ request: { artifactId: '017c10a7-e0af-40ec-879f-cd87dffaf036', leaseId: '017c10a7-e0af-40ec-879f-cd87dffaf036', range: { length: 2, offset: 4 }, targetGeneration: target.generation, targetId: target.id }, signalAborted: false }]);
+    const oversizedArtifactRead = await client.callTool({ arguments: { artifactId: '017c10a7-e0af-40ec-879f-cd87dffaf036', leaseId: '017c10a7-e0af-40ec-879f-cd87dffaf036', maximumBytes: 1, offset: 8, targetGeneration: target.generation, targetId: target.id }, name: 'browser.read_artifact' });
+    expect(oversizedArtifactRead.isError).toBe(true);
+    expect(oversizedArtifactRead.content).toEqual([{ text: JSON.stringify({ code: 'MCP_ARTIFACT_RANGE_INVALID' }), type: 'text' }]);
+    const artifactCancellationController = new AbortController();
+    const cancelledArtifactRead = client.callTool({ arguments: { artifactId: '017c10a7-e0af-40ec-879f-cd87dffaf036', leaseId: '017c10a7-e0af-40ec-879f-cd87dffaf036', maximumBytes: 1, offset: 9, targetGeneration: target.generation, targetId: target.id }, name: 'browser.read_artifact' }, { signal: artifactCancellationController.signal });
+    await artifactReadStarted;
+    artifactCancellationController.abort();
+    await expect(cancelledArtifactRead).rejects.toThrow();
     const navigation = await client.callTool({ arguments: { targetGeneration: target.generation, targetId: target.id, url: 'https://example.test/' }, name: 'browser.navigate' });
     expect(navigation.isError).toBeUndefined();
     const click = await client.callTool({ arguments: { targetGeneration: target.generation, targetId: target.id, x: 10, y: 20 }, name: 'browser.click' });
