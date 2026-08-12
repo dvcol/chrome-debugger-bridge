@@ -74,6 +74,21 @@ it('keeps leases principal-owned across reconnect grace while isolating connecti
   }
 });
 
+it('terminates a subscription when its lease expires without further traffic', async () => {
+  expect.assertions(1);
+  vi.useFakeTimers();
+  try {
+    const broker = createTargetBroker();
+    broker.publishTarget(target);
+    const lease = broker.acquireLease({ durationMilliseconds: 10, requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
+    const subscription = await broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(subscription[Symbol.asyncIterator]().next()).resolves.toEqual({ done: true, value: undefined });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it('orders target changes and starts every watcher from a fresh snapshot', async () => {
   expect.assertions(4);
   const broker = createTargetBroker();
