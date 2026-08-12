@@ -88,8 +88,20 @@ async function executeSemanticCommand(
   mode: Lease['mode'],
   method: string,
   parameters: JsonObject,
+  signal?: AbortSignal,
 ): Promise<unknown> {
-  return withLease(client, input, mode, [method], async lease => client.executeCommand({ leaseId: lease.id, method, operationId: randomUUID(), parameters, targetGeneration: input.targetGeneration, targetId: input.targetId }));
+  return withLease(client, input, mode, [method], async (lease) => {
+    const operationId = randomUUID();
+    const abort = (): void => {
+      void client.cancelCommand({ operationId, targetGeneration: input.targetGeneration, targetId: input.targetId }).catch(() => {});
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    try {
+      return await client.executeCommand({ leaseId: lease.id, method, operationId, parameters, targetGeneration: input.targetGeneration, targetId: input.targetId });
+    } finally {
+      signal?.removeEventListener('abort', abort);
+    }
+  });
 }
 
 function artifactFromCommandResult(result: unknown): unknown | undefined {
@@ -286,9 +298,9 @@ function createMcpServer(client: McpChromeDebuggerBridgeClient, enableRawCdp = f
       return toolError(error);
     }
   });
-  server.registerTool('browser.evaluate', { description: 'Evaluate a read-only expression through a read lease.', inputSchema: z.object({ ...targetInput, expression: z.string().min(1) }) }, async (input) => {
+  server.registerTool('browser.evaluate', { description: 'Evaluate page JavaScript, which may mutate page state, through an exclusive interact lease.', inputSchema: z.object({ ...targetInput, expression: z.string().min(1) }) }, async (input, ctx) => {
     try {
-      return jsonContent(await executeSemanticCommand(client, input, 'shared-read', 'Runtime.evaluate', { expression: input.expression, returnByValue: true }));
+      return jsonContent(await executeSemanticCommand(client, input, 'exclusive-control', 'Runtime.evaluate', { expression: input.expression, returnByValue: true }, ctx.mcpReq.signal));
     } catch (error) {
       return toolError(error);
     }

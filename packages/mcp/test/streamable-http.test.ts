@@ -17,7 +17,7 @@ const target = {
 } as const;
 
 it('serves target discovery through the official SDK Streamable HTTP client', async () => {
-  expect.assertions(38);
+  expect.assertions(41);
   const server = createServer();
   const acquiredLeases: unknown[] = [];
   const cancelledCommands: unknown[] = [];
@@ -57,7 +57,8 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
           rejectPendingInspection = reject;
         });
       }
-      if (command.method === 'Runtime.evaluate') throw Object.assign(new Error('Denied.'), { code: 'CAPABILITY_DENIED' });
+      if (command.method === 'Runtime.evaluate' && command.parameters?.expression === 'cdp-failure') throw Object.assign(new Error('Denied.'), { code: 'CAPABILITY_DENIED' });
+      if (command.method === 'Runtime.evaluate') return { operationId: '017c10a7-e0af-40ec-879f-cd87dffaf036', value: { result: { type: 'string', value: 'document.title' } } };
       executedMethods.push(command.method);
       if (command.method === 'Network.getResponseBody') return { operationId: '017c10a7-e0af-40ec-879f-cd87dffaf036', value: { artifact: artifactDescriptor } };
       return { operationId: '017c10a7-e0af-40ec-879f-cd87dffaf036', value: { result: { type: 'string', value: command.method } } };
@@ -172,25 +173,33 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     expect(press.isError).toBeUndefined();
     const consoleEvent = await client.callTool({ arguments: { targetGeneration: target.generation, targetId: target.id, timeoutMilliseconds: 100 }, name: 'browser.console' });
     expect(consoleEvent.isError).toBeUndefined();
-    const deniedEvaluation = await client.callTool({ arguments: { expression: 'document.title', targetGeneration: target.generation, targetId: target.id }, name: 'browser.evaluate' });
-    expect(deniedEvaluation.isError).toBe(true);
-    expect(deniedEvaluation.content).toEqual([{ text: JSON.stringify({ code: 'CAPABILITY_DENIED' }), type: 'text' }]);
+    const evaluation = await client.callTool({ arguments: { expression: 'document.title', targetGeneration: target.generation, targetId: target.id }, name: 'browser.evaluate' });
+    expect(evaluation.isError).toBeUndefined();
+    expect(evaluation.content).toEqual([{ text: JSON.stringify({ operationId: '017c10a7-e0af-40ec-879f-cd87dffaf036', value: { result: { type: 'string', value: 'document.title' } } }), type: 'text' }]);
+    const failedEvaluation = await client.callTool({ arguments: { expression: 'cdp-failure', targetGeneration: target.generation, targetId: target.id }, name: 'browser.evaluate' });
+    expect(failedEvaluation.isError).toBe(true);
+    expect(failedEvaluation.content).toEqual([{ text: JSON.stringify({ code: 'CAPABILITY_DENIED' }), type: 'text' }]);
+    const evaluationCancellationController = new AbortController();
+    const cancelledEvaluation = client.callTool({ arguments: { expression: 'await-cancellation', targetGeneration: target.generation, targetId: target.id }, name: 'browser.evaluate' }, { signal: evaluationCancellationController.signal });
+    await inspectionStarted;
+    evaluationCancellationController.abort();
+    await expect(cancelledEvaluation).rejects.toThrow();
     const inspectionCancellationController = new AbortController();
     const cancelledInspection = client.callTool({ arguments: { expression: 'await-cancellation', leaseId: '017c10a7-e0af-40ec-879f-cd87dffaf036', targetGeneration: target.generation, targetId: target.id }, name: 'browser.inspect' }, { signal: inspectionCancellationController.signal });
     await inspectionStarted;
     inspectionCancellationController.abort();
     await expect(cancelledInspection).rejects.toThrow();
     await expect.poll(() => cancelledCommands).toMatchObject([{ targetGeneration: target.generation, targetId: target.id }]);
-    expect(acquiredLeases).toMatchObject([{ mode: 'shared-read', requestedMethods: ['DOMSnapshot.captureSnapshot'] }, { mode: 'shared-read', requestedMethods: ['Page.captureScreenshot'] }, { mode: 'shared-read', requestedMethods: ['Network.getResponseBody'] }, { mode: 'exclusive-control', requestedMethods: ['Page.navigate'] }, { mode: 'exclusive-control', requestedMethods: ['Input.dispatchMouseEvent'] }, { mode: 'exclusive-control', requestedMethods: ['Input.dispatchKeyEvent'] }, { mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'] }, { mode: 'shared-read', requestedMethods: ['Runtime.evaluate'] }]);
+    expect(acquiredLeases).toMatchObject([{ mode: 'shared-read', requestedMethods: ['DOMSnapshot.captureSnapshot'] }, { mode: 'shared-read', requestedMethods: ['Page.captureScreenshot'] }, { mode: 'shared-read', requestedMethods: ['Network.getResponseBody'] }, { mode: 'exclusive-control', requestedMethods: ['Page.navigate'] }, { mode: 'exclusive-control', requestedMethods: ['Input.dispatchMouseEvent'] }, { mode: 'exclusive-control', requestedMethods: ['Input.dispatchKeyEvent'] }, { mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'] }, { mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'] }, { mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'] }, { mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'] }]);
     expect(executedMethods).toEqual(['DOMSnapshot.captureSnapshot', 'Page.captureScreenshot', 'Network.getResponseBody', 'Page.navigate', 'Input.dispatchMouseEvent', 'Input.dispatchMouseEvent', 'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent']);
-    expect(releasedLeases).toHaveLength(8);
+    expect(releasedLeases).toHaveLength(10);
     expect(closedSubscriptions).toBe(1);
     const timedOutWait = await client.callTool({ arguments: { method: 'Network.loadingFinished', targetGeneration: target.generation, targetId: target.id, timeoutMilliseconds: 10 }, name: 'browser.wait_for' });
     await subscriptionStarted;
     expect(timedOutWait.isError).toBe(true);
     expect(timedOutWait.content).toEqual([{ text: JSON.stringify({ code: 'MCP_WAIT_TIMEOUT' }), type: 'text' }]);
     expect(closedSubscriptions).toBe(2);
-    expect(releasedLeases).toHaveLength(9);
+    expect(releasedLeases).toHaveLength(11);
     subscriptionStarted = new Promise<void>((resolve) => {
       resolveSubscriptionStarted = resolve;
     });
@@ -200,7 +209,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     cancellationController.abort();
     await expect(cancelledWait).rejects.toThrow();
     await expect.poll(() => closedSubscriptions).toBe(3);
-    expect(releasedLeases).toHaveLength(10);
+    expect(releasedLeases).toHaveLength(12);
     expect(supportedMcpSdkVersion).toBe('2.0.0');
     expect(supportedMcpProtocolVersions).toEqual(['2026-07-28']);
   } finally {
