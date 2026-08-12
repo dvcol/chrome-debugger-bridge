@@ -69,6 +69,7 @@ export interface CdpSubscription extends AsyncIterable<CdpEvent> {
 interface SubscriptionState {
   close: () => void;
   readonly authorizedMethods: ReadonlySet<string>;
+  readonly demand: string;
   offer: (method: string, parameters: JsonObject, sessionId?: string) => void;
   request: CdpSubscriptionRequest;
   sequence: number;
@@ -192,12 +193,10 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     return JSON.stringify(value) === JSON.stringify(request.predicate.equals);
   }
 
-  function getSubscriptionDemand(request: CdpSubscriptionRequest): string {
-    return 'domain' in request.match
-      ? `${request.match.domain}.`
-      : 'method' in request.match
-        ? request.match.method
-        : request.match.methodPrefix;
+  function getSubscriptionDemand(authorizedMethods: ReadonlySet<string>): string {
+    const method = authorizedMethods.values().next().value;
+    if (method === undefined) throw new TargetBrokerError('CAPABILITY_DENIED');
+    return method;
   }
 
   function getAuthorizedSubscriptionMethods(request: CdpSubscriptionRequest, lease: Lease, target: PublishedTarget): ReadonlySet<string> {
@@ -211,38 +210,38 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     return new Set(methods);
   }
 
-  function getSubscriptionDemandKey(target: Pick<PublishedTarget, 'generation' | 'id'>, request: CdpSubscriptionRequest): string {
-    return `${getTargetKey(target.id, target.generation)}:${request.sessionId ?? 'root'}:${getSubscriptionDemand(request).split('.', 1)[0]}`;
+  function getSubscriptionDemandKey(target: Pick<PublishedTarget, 'generation' | 'id'>, request: CdpSubscriptionRequest, demand: string): string {
+    return `${getTargetKey(target.id, target.generation)}:${request.sessionId ?? 'root'}:${demand.split('.', 1)[0]}`;
   }
 
-  function hasStatefulSubscriptionDemand(request: CdpSubscriptionRequest): boolean {
-    return statefulSubscriptionDomains.has(getSubscriptionDemand(request).split('.', 1)[0] ?? '');
+  function hasStatefulSubscriptionDemand(demand: string): boolean {
+    return statefulSubscriptionDomains.has(demand.split('.', 1)[0] ?? '');
   }
 
-  async function incrementSubscriptionDemand(target: PublishedTarget, request: CdpSubscriptionRequest): Promise<void> {
-    const demandKey = getSubscriptionDemandKey(target, request);
+  async function incrementSubscriptionDemand(target: PublishedTarget, request: CdpSubscriptionRequest, demand: string): Promise<void> {
+    const demandKey = getSubscriptionDemandKey(target, request, demand);
     const count = subscriptionDemandCountsByKey.get(demandKey) ?? 0;
     subscriptionDemandCountsByKey.set(demandKey, count + 1);
     if (count !== 0) return;
     const executor = executorsByTargetKey.get(getTargetKey(target.id, target.generation));
     try {
-      if (request.sessionId === undefined) await executor?.setSubscriptionDemand?.(getSubscriptionDemand(request), true);
-      else await executor?.setSubscriptionDemand?.(getSubscriptionDemand(request), true, request.sessionId);
+      if (request.sessionId === undefined) await executor?.setSubscriptionDemand?.(demand, true);
+      else await executor?.setSubscriptionDemand?.(demand, true, request.sessionId);
     } catch {
       subscriptionDemandCountsByKey.delete(demandKey);
       throw new TargetBrokerError('CDP_COMMAND_FAILED');
     }
   }
 
-  function decrementSubscriptionDemand(target: PublishedTarget, request: CdpSubscriptionRequest): void {
-    const demandKey = getSubscriptionDemandKey(target, request);
+  function decrementSubscriptionDemand(target: PublishedTarget, request: CdpSubscriptionRequest, demand: string): void {
+    const demandKey = getSubscriptionDemandKey(target, request, demand);
     const count = subscriptionDemandCountsByKey.get(demandKey) ?? 0;
     if (count <= 1) {
       subscriptionDemandCountsByKey.delete(demandKey);
       const executor = executorsByTargetKey.get(getTargetKey(target.id, target.generation));
       const setup = request.sessionId === undefined
-        ? executor?.setSubscriptionDemand?.(getSubscriptionDemand(request), false)
-        : executor?.setSubscriptionDemand?.(getSubscriptionDemand(request), false, request.sessionId);
+        ? executor?.setSubscriptionDemand?.(demand, false)
+        : executor?.setSubscriptionDemand?.(demand, false, request.sessionId);
       void setup?.catch(() => {});
     } else subscriptionDemandCountsByKey.set(demandKey, count - 1);
   }
@@ -581,7 +580,8 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       const target = getCurrentTarget(request.targetId, request.targetGeneration);
       const lease = getActiveLease(request, authority);
       const authorizedMethods = getAuthorizedSubscriptionMethods(request, lease, target);
-      if ((request.batch !== undefined && request.batch.maximumEvents > request.buffer.capacity) || (hasStatefulSubscriptionDemand(request) && request.buffer.capacity > 16)) throw new TargetBrokerError('CAPABILITY_DENIED');
+      const demand = getSubscriptionDemand(authorizedMethods);
+      if ((request.batch !== undefined && request.batch.maximumEvents > request.buffer.capacity) || (hasStatefulSubscriptionDemand(demand) && request.buffer.capacity > 16)) throw new TargetBrokerError('CAPABILITY_DENIED');
       const id = generateId();
       const buffer: CdpEvent[] = [];
       const batch = request.batch ?? { flushMilliseconds: 1, maximumEvents: 1 };
@@ -612,7 +612,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         subscriptions.delete(id);
         subscriptionConnectionIdsById.delete(id);
         resolver?.({ done: true, value: undefined });
-        if (demandActive) decrementSubscriptionDemand(target, request);
+        if (demandActive) decrementSubscriptionDemand(target, request, demand);
         demandActive = false;
       };
       const subscription: CdpSubscription = { close, get droppedCount() {
@@ -633,9 +633,9 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
           scheduleFlush();
         });
       } }) };
-      await incrementSubscriptionDemand(target, request);
+      await incrementSubscriptionDemand(target, request, demand);
       demandActive = true;
-      subscriptions.set(id, { authorizedMethods, close, offer(method, parameters, sessionId) {
+      subscriptions.set(id, { authorizedMethods, close, demand, offer(method, parameters, sessionId) {
         const matches = eventMatchesSubscription(request, method, parameters, sessionId);
         let activeLease: Lease;
         try {
