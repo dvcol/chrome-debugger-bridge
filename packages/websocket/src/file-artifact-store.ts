@@ -1,7 +1,7 @@
 import type { ArtifactAuthority, ArtifactDescriptor, ArtifactWriter, MemoryArtifactStore } from '@dvcol/cdb';
 
 import { randomUUID } from 'node:crypto';
-import { lstatSync, readFileSync, rmSync } from 'node:fs';
+import { closeSync, lstatSync, openSync, readSync, rmSync } from 'node:fs';
 import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -11,6 +11,11 @@ interface StoredArtifact extends ArtifactAuthority {
 
 interface PersistedArtifact extends StoredArtifact {
   readonly version: 1;
+}
+
+interface ArtifactByteRange {
+  readonly length: number;
+  readonly offset: number;
 }
 
 export interface FileArtifactStore extends MemoryArtifactStore {
@@ -39,6 +44,12 @@ const artifactIdentifierPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[4-8][0-9a-f]{3}-[89
 
 function isArtifactIdentifier(value: string): boolean {
   return artifactIdentifierPattern.test(value);
+}
+
+function selectRange(length: number, range: ArtifactByteRange | undefined): { readonly length: number; readonly offset: number } {
+  if (range === undefined) return { length, offset: 0 };
+  if (!Number.isSafeInteger(range.offset) || range.offset < 0 || !Number.isSafeInteger(range.length) || range.length < 1 || range.offset >= length) throw new Error('The artifact range is invalid.');
+  return { length: Math.min(range.length, length - range.offset), offset: range.offset };
 }
 
 function isStoredArtifact(value: unknown): value is PersistedArtifact {
@@ -233,7 +244,7 @@ export async function createFileArtifactStore(options: FileArtifactStoreOptions)
       return writer.close();
     },
     createWriter,
-    read(id, authority) {
+    read(id, authority, range) {
       const artifact = access(id, authority);
       const path = artifactPath(options.directory, id, 'bin');
       const fileInfo = lstatSync(path);
@@ -241,7 +252,19 @@ export async function createFileArtifactStore(options: FileArtifactStoreOptions)
         remove(id);
         throw new Error('The artifact is not available.');
       }
-      return new Uint8Array(readFileSync(path));
+      const selectedRange = selectRange(artifact.descriptor.length, range);
+      const bytes = new Uint8Array(selectedRange.length);
+      const descriptor = openSync(path, 'r');
+      try {
+        const bytesRead = readSync(descriptor, bytes, 0, bytes.byteLength, selectedRange.offset);
+        if (bytesRead !== bytes.byteLength) {
+          remove(id);
+          throw new Error('The artifact is not available.');
+        }
+        return bytes;
+      } finally {
+        closeSync(descriptor);
+      }
     },
     release(id, authority) {
       access(id, authority);

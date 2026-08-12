@@ -82,3 +82,15 @@ it('never follows a replaced artifact data symlink', async () => {
   expect(() => store.read(descriptor.id, authority)).toThrow('not available');
   expect(await readdir(directory)).toEqual(['outside.bin']);
 });
+
+it('reads bounded, clamped artifact ranges with the memory-store contract', async () => {
+  expect.assertions(5);
+  const directory = await createDirectory();
+  const store = await createFileArtifactStore({ directory, maximumBytes: 16, maximumBytesPerOwner: 16 });
+  const descriptor = await store.create({ ...authority, bytes: Uint8Array.from([1, 2, 3, 4]), expiresAt: futureExpiry, mediaType: 'application/octet-stream' });
+  expect(store.read(descriptor.id, authority, { length: 2, offset: 1 })).toEqual(Uint8Array.from([2, 3]));
+  expect(store.read(descriptor.id, authority, { length: 8, offset: 2 })).toEqual(Uint8Array.from([3, 4]));
+  expect(store.read(descriptor.id, authority, { length: 1, offset: 3 })).toEqual(Uint8Array.from([4]));
+  expect(() => store.read(descriptor.id, authority, { length: 0, offset: 0 })).toThrow('range is invalid');
+  expect(() => store.read(descriptor.id, authority, { length: 1, offset: 4 })).toThrow('range is invalid');
+});
