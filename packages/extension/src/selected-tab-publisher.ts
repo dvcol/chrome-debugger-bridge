@@ -75,8 +75,10 @@ export interface SelectedTabPublisher {
 
 const domainNamePattern = /^[A-Za-z]+$/u;
 const eligibleChildTargetTypes = new Set(['iframe', 'service_worker', 'shared_worker', 'worker']);
+const crossProfileCommandNames = new Set(['Network.clearBrowserCache', 'Network.clearBrowserCookies', 'Network.deleteCookies', 'Network.getAllCookies', 'Network.setCookie', 'Storage.clearDataForOrigin', 'Storage.clearDataForStorageKey', 'Storage.getCookies', 'Storage.setCookies']);
 
 function isBaselineCommandAuthorized(context: CommandAuthorizationContext): boolean {
+  if (crossProfileCommandNames.has(context.method)) return false;
   if (context.method !== 'Page.setDownloadBehavior') return true;
   const behavior = context.parameters?.behavior;
   return behavior === 'default' || behavior === 'deny';
