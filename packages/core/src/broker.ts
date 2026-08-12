@@ -43,6 +43,14 @@ export interface ArtifactAccessRequest {
   readonly targetId: string;
 }
 
+/** Authenticated caller identity. Principal ownership survives a transport reconnect; connection ownership does not. */
+export interface ClientAuthority {
+  readonly connectionId: string;
+  readonly principalId: string;
+}
+
+const localClientAuthority: ClientAuthority = { connectionId: 'local', principalId: 'local' };
+
 export interface TargetCommandExecutor {
   execute: (command: CdpCommand, abortSignal: AbortSignal, lease: Lease) => Promise<JsonObject>;
   setSubscriptionDemand?: (methodPrefix: string, active: boolean, sessionId?: string) => Promise<void>;
@@ -82,14 +90,18 @@ export interface CreateTargetBrokerOptions {
   /** Generates opaque protocol identifiers; hosts may supply their own secure identifier adapter. */
   readonly generateId?: () => string;
   readonly now?: () => number;
+  /** Retains a principal's leases after its final connection closes; zero releases them immediately. */
+  readonly reconnectGraceMilliseconds?: number;
 }
 
 export interface TargetBroker {
-  acquireLease: (request: AcquireLeaseRequest) => Lease;
-  cancelCommand: (operationId: string) => void;
+  acquireLease: (request: AcquireLeaseRequest, authority?: ClientAuthority) => Lease;
+  cancelCommand: (operationId: string, authority?: ClientAuthority) => void;
+  connectClient: (authority: ClientAuthority) => void;
+  disconnectClient: (authority: ClientAuthority) => void;
   /** Stops all broker work and releases broker-owned resources. */
   dispose: () => void;
-  executeCommand: (command: CdpCommand) => Promise<{ readonly operationId: string; readonly value: InlineOrArtifactResult<JsonObject> }>;
+  executeCommand: (command: CdpCommand, authority?: ClientAuthority) => Promise<{ readonly operationId: string; readonly value: InlineOrArtifactResult<JsonObject> }>;
   listTargets: () => readonly PublishedTarget[];
   publishTarget: (target: PublishedTarget) => void;
   registerTargetExecutor: (target: Pick<PublishedTarget, 'generation' | 'id'>, executor: TargetCommandExecutor) => void;
@@ -98,11 +110,11 @@ export interface TargetBroker {
   updateTarget: (target: PublishedTarget) => void;
   watchTargets: () => AsyncIterable<TargetChange>;
   publishEvent: (target: Pick<PublishedTarget, 'generation' | 'id'>, method: string, parameters: JsonObject, sessionId?: string) => void;
-  releaseLease: (request: ReleaseLeaseRequest) => void;
-  readArtifact: (request: ArtifactAccessRequest) => Uint8Array;
-  releaseArtifact: (request: ArtifactAccessRequest) => void;
-  renewLease: (request: RenewLeaseRequest) => Lease;
-  subscribe: (request: CdpSubscriptionRequest) => Promise<CdpSubscription>;
+  releaseLease: (request: ReleaseLeaseRequest, authority?: ClientAuthority) => void;
+  readArtifact: (request: ArtifactAccessRequest, authority?: ClientAuthority) => Uint8Array;
+  releaseArtifact: (request: ArtifactAccessRequest, authority?: ClientAuthority) => void;
+  renewLease: (request: RenewLeaseRequest, authority?: ClientAuthority) => Lease;
+  subscribe: (request: CdpSubscriptionRequest, authority?: ClientAuthority) => Promise<CdpSubscription>;
 }
 
 /** Stores only opaque target records received from an authenticated extension agent. */
@@ -112,17 +124,22 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   const maximumArtifactBytes = options.maximumArtifactBytes ?? 16_777_216;
   const maximumInlineResultBytes = options.maximumInlineResultBytes ?? 65_536;
   const maximumLeaseMilliseconds = options.maximumLeaseMilliseconds ?? 60_000;
+  const reconnectGraceMilliseconds = options.reconnectGraceMilliseconds ?? 5_000;
   const generateId = options.generateId ?? (() => globalThis.crypto.randomUUID());
   const now = options.now ?? Date.now;
   const artifactStore = options.artifactStore ?? createMemoryArtifactStore(maximumArtifactBytes, now);
   const targetsById = new Map<string, PublishedTarget>();
   const highestGenerationByTargetId = new Map<string, number>();
   const leasesById = new Map<string, Lease>();
+  const leasePrincipalIdsById = new Map<string, string>();
   const executorsByTargetKey = new Map<string, TargetCommandExecutor>();
-  const cancellationsByOperationId = new Map<string, AbortController>();
+  const cancellationsByOperationId = new Map<string, { readonly abortController: AbortController; readonly connectionId: string }>();
   const commandOperationIdsByTargetKey = new Map<string, Set<string>>();
   const subscriptionDemandCountsByKey = new Map<string, number>();
   const subscriptions = new Map<string, SubscriptionState>();
+  const subscriptionConnectionIdsById = new Map<string, string>();
+  const connectedPrincipalIdsByConnectionId = new Map<string, string>();
+  const reconnectGraceTimeoutsByPrincipalId = new Map<string, ReturnType<typeof setTimeout>>();
   const targetWatchers = new Set<{ close: () => void; offer: (change: TargetChange) => void }>();
   let disposed = false;
   let targetChangeSequence = 0;
@@ -217,29 +234,34 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     } else subscriptionDemandCountsByKey.set(demandKey, count - 1);
   }
 
-  function removeExpiredLeases(): void {
-    for (const [leaseId, lease] of leasesById) if (Date.parse(lease.expiresAt) <= now()) leasesById.delete(leaseId);
+  function deleteLease(leaseId: string): void {
+    leasesById.delete(leaseId);
+    leasePrincipalIdsById.delete(leaseId);
   }
 
-  function getActiveLease(request: Pick<RenewLeaseRequest, 'leaseId' | 'targetGeneration' | 'targetId'>): Lease {
+  function removeExpiredLeases(): void {
+    for (const [leaseId, lease] of leasesById) if (Date.parse(lease.expiresAt) <= now()) deleteLease(leaseId);
+  }
+
+  function getActiveLease(request: Pick<RenewLeaseRequest, 'leaseId' | 'targetGeneration' | 'targetId'>, authority: ClientAuthority): Lease {
     const lease = leasesById.get(request.leaseId);
-    if (lease === undefined || lease.targetId !== request.targetId || lease.targetGeneration !== request.targetGeneration) throw new TargetBrokerError('LEASE_REQUIRED');
+    if (lease === undefined || leasePrincipalIdsById.get(request.leaseId) !== authority.principalId || lease.targetId !== request.targetId || lease.targetGeneration !== request.targetGeneration) throw new TargetBrokerError('LEASE_REQUIRED');
     if (Date.parse(lease.expiresAt) <= now()) {
-      leasesById.delete(lease.id);
+      deleteLease(lease.id);
       throw new TargetBrokerError('LEASE_EXPIRED');
     }
     return lease;
   }
 
-  function getArtifactAuthority(request: ArtifactAccessRequest): ArtifactAuthority {
+  function getArtifactAuthority(request: ArtifactAccessRequest, authority: ClientAuthority): ArtifactAuthority {
     getCurrentTarget(request.targetId, request.targetGeneration);
-    const lease = getActiveLease(request);
+    const lease = getActiveLease(request, authority);
     return { ownerId: lease.id, targetGeneration: request.targetGeneration, targetId: request.targetId };
   }
 
   let targetBroker: TargetBroker;
   return targetBroker = {
-    acquireLease(request) {
+    acquireLease(request, authority = localClientAuthority) {
       ensureActive();
       const target = getCurrentTarget(request.targetId, request.targetGeneration);
       const mode = request.mode ?? 'shared-read';
@@ -272,16 +294,41 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         targetId: target.id,
       };
       leasesById.set(lease.id, lease);
+      leasePrincipalIdsById.set(lease.id, authority.principalId);
       return lease;
     },
-    cancelCommand(operationId) {
+    cancelCommand(operationId, authority = localClientAuthority) {
       if (disposed) return;
-      cancellationsByOperationId.get(operationId)?.abort();
+      const cancellation = cancellationsByOperationId.get(operationId);
+      if (cancellation?.connectionId === authority.connectionId) cancellation.abortController.abort();
+    },
+    connectClient(authority) {
+      ensureActive();
+      connectedPrincipalIdsByConnectionId.set(authority.connectionId, authority.principalId);
+      const reconnectGraceTimeout = reconnectGraceTimeoutsByPrincipalId.get(authority.principalId);
+      if (reconnectGraceTimeout !== undefined) {
+        clearTimeout(reconnectGraceTimeout);
+        reconnectGraceTimeoutsByPrincipalId.delete(authority.principalId);
+      }
+    },
+    disconnectClient(authority) {
+      if (disposed || connectedPrincipalIdsByConnectionId.get(authority.connectionId) !== authority.principalId) return;
+      connectedPrincipalIdsByConnectionId.delete(authority.connectionId);
+      for (const cancellation of cancellationsByOperationId.values()) if (cancellation.connectionId === authority.connectionId) cancellation.abortController.abort();
+      for (const [subscriptionId, connectionId] of subscriptionConnectionIdsById) if (connectionId === authority.connectionId) subscriptions.get(subscriptionId)?.close();
+      if ([...connectedPrincipalIdsByConnectionId.values()].includes(authority.principalId)) return;
+      const releasePrincipalLeases = (): void => {
+        reconnectGraceTimeoutsByPrincipalId.delete(authority.principalId);
+        if ([...connectedPrincipalIdsByConnectionId.values()].includes(authority.principalId)) return;
+        for (const [leaseId, principalId] of leasePrincipalIdsById) if (principalId === authority.principalId) deleteLease(leaseId);
+      };
+      if (reconnectGraceMilliseconds === 0) releasePrincipalLeases();
+      else reconnectGraceTimeoutsByPrincipalId.set(authority.principalId, setTimeout(releasePrincipalLeases, reconnectGraceMilliseconds));
     },
     dispose() {
       if (disposed) return;
       disposed = true;
-      for (const cancellation of cancellationsByOperationId.values()) cancellation.abort();
+      for (const cancellation of cancellationsByOperationId.values()) cancellation.abortController.abort();
       cancellationsByOperationId.clear();
       commandOperationIdsByTargetKey.clear();
       for (const subscription of subscriptions.values()) subscription.close();
@@ -290,22 +337,23 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       targetsById.clear();
       executorsByTargetKey.clear();
       leasesById.clear();
+      leasePrincipalIdsById.clear();
+      for (const reconnectGraceTimeout of reconnectGraceTimeoutsByPrincipalId.values()) clearTimeout(reconnectGraceTimeout);
+      reconnectGraceTimeoutsByPrincipalId.clear();
+      connectedPrincipalIdsByConnectionId.clear();
       subscriptionDemandCountsByKey.clear();
       for (const watcher of targetWatchers) watcher.close();
       targetWatchers.clear();
     },
-    async executeCommand(command) {
+    async executeCommand(command, authority = localClientAuthority) {
       ensureActive();
       const target = getCurrentTarget(command.targetId, command.targetGeneration);
-      const lease = leasesById.get(command.leaseId);
-      if (lease === undefined || lease.targetId !== target.id || lease.targetGeneration !== target.generation) {
-        recordDiagnostic('LEASE_REQUIRED');
-        throw new TargetBrokerError('LEASE_REQUIRED');
-      }
-      if (Date.parse(lease.expiresAt) <= now()) {
-        leasesById.delete(lease.id);
-        recordDiagnostic('LEASE_EXPIRED');
-        throw new TargetBrokerError('LEASE_EXPIRED');
+      let lease: Lease;
+      try {
+        lease = getActiveLease(command, authority);
+      } catch (error) {
+        recordDiagnostic(error instanceof TargetBrokerError ? error.code : 'LEASE_REQUIRED');
+        throw error;
       }
       if (!lease.methods.includes(command.method) || !isCdpNameAllowed(target.capabilities, command.method, 'command') || (lease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [command.method]) === 'exclusive-control')) {
         recordDiagnostic('CAPABILITY_DENIED');
@@ -317,7 +365,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         throw new TargetBrokerError('TARGET_NOT_FOUND');
       }
       const abortController = new AbortController();
-      cancellationsByOperationId.set(command.operationId, abortController);
+      cancellationsByOperationId.set(command.operationId, { abortController, connectionId: authority.connectionId });
       const targetKey = getTargetKey(target.id, target.generation);
       const operationIds = commandOperationIdsByTargetKey.get(targetKey) ?? new Set<string>();
       operationIds.add(command.operationId);
@@ -396,10 +444,10 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       if (target?.generation === generation) {
         recordDiagnostic('TARGET_REVOKED');
         targetsById.delete(targetId);
-        for (const operationId of commandOperationIdsByTargetKey.get(getTargetKey(targetId, generation)) ?? []) cancellationsByOperationId.get(operationId)?.abort();
+        for (const operationId of commandOperationIdsByTargetKey.get(getTargetKey(targetId, generation)) ?? []) cancellationsByOperationId.get(operationId)?.abortController.abort();
         for (const [leaseId, lease] of leasesById) {
           if (lease.targetId === targetId && lease.targetGeneration === generation) {
-            leasesById.delete(leaseId);
+            deleteLease(leaseId);
           }
         }
         for (const subscription of subscriptions.values()) if (subscription.request.targetId === targetId && subscription.request.targetGeneration === generation) subscription.close();
@@ -415,7 +463,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       targetsById.set(target.id, target);
       highestGenerationByTargetId.set(target.id, currentTarget.generation);
       for (const [leaseId, lease] of leasesById) {
-        if (lease.targetId === target.id && lease.targetGeneration === target.generation && lease.methods.some(method => !isCdpNameAllowed(target.capabilities, method, 'command') && !isCdpNameAllowed(target.capabilities, method, 'event'))) leasesById.delete(leaseId);
+        if (lease.targetId === target.id && lease.targetGeneration === target.generation && lease.methods.some(method => !isCdpNameAllowed(target.capabilities, method, 'command') && !isCdpNameAllowed(target.capabilities, method, 'event'))) deleteLease(leaseId);
       }
       publishTargetChange({ kind: 'updated', target });
     },
@@ -465,34 +513,33 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       if (!isCdpNameAllowed(publishedTarget.capabilities, method, 'event')) return;
       for (const subscription of subscriptions.values()) if (subscription.request.targetId === target.id && subscription.request.targetGeneration === target.generation) subscription.offer(method, parameters, sessionId);
     },
-    releaseLease(request) {
+    releaseLease(request, authority = localClientAuthority) {
       ensureActive();
       getCurrentTarget(request.targetId, request.targetGeneration);
-      const lease = getActiveLease(request);
-      leasesById.delete(lease.id);
+      const lease = getActiveLease(request, authority);
+      deleteLease(lease.id);
     },
-    readArtifact(request) {
+    readArtifact(request, authority = localClientAuthority) {
       ensureActive();
-      return artifactStore.read(request.artifactId, getArtifactAuthority(request), request.range);
+      return artifactStore.read(request.artifactId, getArtifactAuthority(request, authority), request.range);
     },
-    releaseArtifact(request) {
+    releaseArtifact(request, authority = localClientAuthority) {
       ensureActive();
-      artifactStore.release(request.artifactId, getArtifactAuthority(request));
+      artifactStore.release(request.artifactId, getArtifactAuthority(request, authority));
     },
-    renewLease(request) {
+    renewLease(request, authority = localClientAuthority) {
       ensureActive();
       getCurrentTarget(request.targetId, request.targetGeneration);
       if (!Number.isSafeInteger(request.durationMilliseconds) || request.durationMilliseconds < 1 || request.durationMilliseconds > maximumLeaseMilliseconds) throw new TargetBrokerError('CAPABILITY_DENIED');
-      const lease = getActiveLease(request);
+      const lease = getActiveLease(request, authority);
       const renewedLease: Lease = { ...lease, expiresAt: new Date(now() + request.durationMilliseconds).toISOString() };
       leasesById.set(lease.id, renewedLease);
       return renewedLease;
     },
-    async subscribe(request) {
+    async subscribe(request, authority = localClientAuthority) {
       ensureActive();
       const target = getCurrentTarget(request.targetId, request.targetGeneration);
-      const lease = leasesById.get(request.leaseId);
-      if (lease === undefined || lease.targetId !== target.id || lease.targetGeneration !== target.generation || Date.parse(lease.expiresAt) <= now()) throw new TargetBrokerError('LEASE_REQUIRED');
+      const lease = getActiveLease(request, authority);
       const requestedName = 'method' in request.match ? request.match.method : undefined;
       if (requestedName !== undefined && (!lease.methods.includes(requestedName) || !isCdpNameAllowed(target.capabilities, requestedName, 'event') || (lease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [requestedName]) === 'exclusive-control'))) throw new TargetBrokerError('CAPABILITY_DENIED');
       if ((request.batch !== undefined && request.batch.maximumEvents > request.buffer.capacity) || (hasStatefulSubscriptionDemand(request) && request.buffer.capacity > 16)) throw new TargetBrokerError('CAPABILITY_DENIED');
@@ -524,6 +571,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         if (flushTimeout !== undefined) clearTimeout(flushTimeout);
         buffer.length = 0;
         subscriptions.delete(id);
+        subscriptionConnectionIdsById.delete(id);
         resolver?.({ done: true, value: undefined });
         if (demandActive) decrementSubscriptionDemand(target, request);
         demandActive = false;
@@ -569,6 +617,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
           }
         }
       }, request, sequence: 1 });
+      subscriptionConnectionIdsById.set(id, authority.connectionId);
       return subscription;
     },
   };

@@ -38,6 +38,42 @@ it('lists only opaque targets published by the agent', async () => {
   expect(await client.listTargets()).toEqual([]);
 });
 
+it('keeps leases principal-owned across reconnect grace while isolating connections', async () => {
+  expect.assertions(6);
+  vi.useFakeTimers();
+  try {
+    const broker = createTargetBroker({ reconnectGraceMilliseconds: 5_000 });
+    const firstConnection = { connectionId: 'first', principalId: 'principal-a' };
+    const secondConnection = { connectionId: 'second', principalId: 'principal-a' };
+    const otherPrincipal = { connectionId: 'other', principalId: 'principal-b' };
+    broker.publishTarget(target);
+    broker.connectClient(firstConnection);
+    const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id }, firstConnection);
+    expect(() => broker.renewLease({ durationMilliseconds: 1_000, leaseId: lease.id, targetGeneration: target.generation, targetId: target.id }, otherPrincipal)).toThrowError(expect.objectContaining({ code: 'LEASE_REQUIRED' }));
+    broker.disconnectClient(firstConnection);
+    expect(() => broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id }, otherPrincipal)).toThrowError(expect.objectContaining({ code: 'LEASE_CONFLICT' }));
+    broker.connectClient(secondConnection);
+    expect(broker.renewLease({ durationMilliseconds: 1_000, leaseId: lease.id, targetGeneration: target.generation, targetId: target.id }, secondConnection).id).toBe(lease.id);
+    broker.disconnectClient(secondConnection);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(() => broker.renewLease({ durationMilliseconds: 1_000, leaseId: lease.id, targetGeneration: target.generation, targetId: target.id }, secondConnection)).toThrowError(expect.objectContaining({ code: 'LEASE_REQUIRED' }));
+    broker.connectClient(firstConnection);
+    const immediateLease = broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id }, firstConnection);
+    broker.disconnectClient(firstConnection);
+    expect(immediateLease.id).toMatch(/^[0-9a-f-]{36}$/u);
+    broker.dispose();
+    const immediateBroker = createTargetBroker({ reconnectGraceMilliseconds: 0 });
+    immediateBroker.publishTarget(target);
+    immediateBroker.connectClient(firstConnection);
+    const zeroGraceLease = immediateBroker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id }, firstConnection);
+    immediateBroker.disconnectClient(firstConnection);
+    expect(() => immediateBroker.renewLease({ durationMilliseconds: 1_000, leaseId: zeroGraceLease.id, targetGeneration: target.generation, targetId: target.id }, firstConnection)).toThrowError(expect.objectContaining({ code: 'LEASE_REQUIRED' }));
+    immediateBroker.dispose();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it('orders target changes and starts every watcher from a fresh snapshot', async () => {
   expect.assertions(4);
   const broker = createTargetBroker();

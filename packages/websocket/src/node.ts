@@ -1359,7 +1359,7 @@ export async function createStandaloneChromeDebuggerBridgeHost(
       const grant = artifactGrants.get(artifactId);
       if (grant === undefined || grant.principalId !== principal.id) return undefined;
       try {
-        return { bytes: broker.readArtifact(grant.access), descriptor: grant.descriptor };
+        return { bytes: broker.readArtifact(grant.access, { connectionId: `artifact:${principal.id}`, principalId: principal.id }), descriptor: grant.descriptor };
       } catch {
         artifactGrants.delete(artifactId);
         return undefined;
@@ -1375,7 +1375,7 @@ export async function createStandaloneChromeDebuggerBridgeHost(
     onAgentConnection(connection) {
       connectAgentTargetBroker(connection.connection, broker);
     },
-    onClientConnection({ connection, principal }) {
+    onClientConnection({ connection, connectionId, principal }) {
       const pendingArtifactAccesses = new Map<string, ArtifactAccessRequest>();
       const originalOnMessage = connection.onMessage;
       const originalSend = connection.send;
@@ -1404,7 +1404,7 @@ export async function createStandaloneChromeDebuggerBridgeHost(
           await originalSend(message);
         },
       };
-      const disconnect = connectClientTargetBroker(mediatedConnection, broker);
+      const disconnect = connectClientTargetBroker(mediatedConnection, broker, { connectionId, principalId: principal.id });
       void connection.closed.then(disconnect, disconnect);
     },
     originPolicy,

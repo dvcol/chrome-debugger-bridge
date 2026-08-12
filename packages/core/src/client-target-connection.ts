@@ -1,4 +1,4 @@
-import type { CdpSubscription, TargetBroker, TargetBrokerError } from './broker.js';
+import type { CdpSubscription, ClientAuthority, TargetBroker, TargetBrokerError } from './broker.js';
 import type { BrokerToClientMessage, ClientToBrokerMessage } from './protocol.js';
 
 export interface ClientTargetConnection {
@@ -7,7 +7,8 @@ export interface ClientTargetConnection {
 }
 
 /** Streams an initial target snapshot and ordered lifecycle changes to one authenticated client. */
-export function connectClientTargetBroker(connection: ClientTargetConnection, broker: TargetBroker): () => void {
+export function connectClientTargetBroker(connection: ClientTargetConnection, broker: TargetBroker, authority: ClientAuthority = { connectionId: 'local', principalId: 'local' }): () => void {
+  broker.connectClient(authority);
   const iterator = broker.watchTargets()[Symbol.asyncIterator]();
   const subscriptions = new Map<string, CdpSubscription>();
   let stopped = false;
@@ -49,7 +50,7 @@ export function connectClientTargetBroker(connection: ClientTargetConnection, br
     void (async () => {
       try {
         if (message.method === 'cdp.subscribe') {
-          const subscription = await broker.subscribe(message.parameters);
+          const subscription = await broker.subscribe(message.parameters, authority);
           subscriptions.set(subscription.id, subscription);
           void streamSubscription(subscription).finally(() => subscriptions.delete(subscription.id));
           await connection.send({ kind: 'response', method: 'cdp.subscribe', protocolVersion: 1, requestId: message.requestId, result: { subscriptionId: subscription.id } });
@@ -60,19 +61,19 @@ export function connectClientTargetBroker(connection: ClientTargetConnection, br
         } else if (message.method === 'targets.list') {
           await connection.send({ kind: 'response', method: 'targets.list', protocolVersion: 1, requestId: message.requestId, result: { targets: [...broker.listTargets()] } });
         } else if (message.method === 'leases.acquire') {
-          const lease = broker.acquireLease(message.parameters);
+          const lease = broker.acquireLease(message.parameters, authority);
           await connection.send({ kind: 'response', method: 'leases.acquire', protocolVersion: 1, requestId: message.requestId, result: { lease } });
         } else if (message.method === 'leases.renew') {
-          const lease = broker.renewLease(message.parameters);
+          const lease = broker.renewLease(message.parameters, authority);
           await connection.send({ kind: 'response', method: 'leases.renew', protocolVersion: 1, requestId: message.requestId, result: { lease } });
         } else if (message.method === 'leases.release') {
-          broker.releaseLease(message.parameters);
+          broker.releaseLease(message.parameters, authority);
           await connection.send({ kind: 'response', method: 'leases.release', protocolVersion: 1, requestId: message.requestId, result: {} });
         } else if (message.method === 'cdp.send') {
-          const result = await broker.executeCommand(message.parameters);
+          const result = await broker.executeCommand(message.parameters, authority);
           await connection.send({ kind: 'response', method: 'cdp.send', protocolVersion: 1, requestId: message.requestId, result });
         } else if (message.method === 'cdp.cancel') {
-          broker.cancelCommand(message.parameters.operationId);
+          broker.cancelCommand(message.parameters.operationId, authority);
           await connection.send({ kind: 'response', method: 'cdp.cancel', protocolVersion: 1, requestId: message.requestId, result: {} });
         } else {
           await sendError(message, new Error('Unsupported request'));
@@ -103,6 +104,7 @@ export function connectClientTargetBroker(connection: ClientTargetConnection, br
     disconnectMessages?.();
     for (const subscription of subscriptions.values()) subscription.close();
     subscriptions.clear();
+    broker.disconnectClient(authority);
     void iterator.return?.();
   };
 }
