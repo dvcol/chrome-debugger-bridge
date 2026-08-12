@@ -132,6 +132,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   const highestGenerationByTargetId = new Map<string, number>();
   const leasesById = new Map<string, Lease>();
   const leasePrincipalIdsById = new Map<string, string>();
+  const leaseExpiryTimeoutsById = new Map<string, ReturnType<typeof setTimeout>>();
   const executorsByTargetKey = new Map<string, TargetCommandExecutor>();
   const cancellationsByOperationId = new Map<string, { readonly abortController: AbortController; readonly connectionId: string }>();
   const commandOperationIdsByTargetKey = new Map<string, Set<string>>();
@@ -235,8 +236,20 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   }
 
   function deleteLease(leaseId: string): void {
+    const expiryTimeout = leaseExpiryTimeoutsById.get(leaseId);
+    if (expiryTimeout !== undefined) clearTimeout(expiryTimeout);
+    leaseExpiryTimeoutsById.delete(leaseId);
     leasesById.delete(leaseId);
     leasePrincipalIdsById.delete(leaseId);
+  }
+
+  function scheduleLeaseExpiry(lease: Lease): void {
+    const timeout = setTimeout(() => {
+      if (leasesById.get(lease.id)?.expiresAt !== lease.expiresAt) return;
+      deleteLease(lease.id);
+      closeSubscriptionsUsingLease(lease.id);
+    }, Math.max(0, Date.parse(lease.expiresAt) - now()));
+    leaseExpiryTimeoutsById.set(lease.id, timeout);
   }
 
   function removeExpiredLeases(): void {
@@ -300,6 +313,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       };
       leasesById.set(lease.id, lease);
       leasePrincipalIdsById.set(lease.id, authority.principalId);
+      scheduleLeaseExpiry(lease);
       return lease;
     },
     cancelCommand(operationId, authority = localClientAuthority) {
@@ -343,6 +357,8 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       executorsByTargetKey.clear();
       leasesById.clear();
       leasePrincipalIdsById.clear();
+      for (const expiryTimeout of leaseExpiryTimeoutsById.values()) clearTimeout(expiryTimeout);
+      leaseExpiryTimeoutsById.clear();
       for (const reconnectGraceTimeout of reconnectGraceTimeoutsByPrincipalId.values()) clearTimeout(reconnectGraceTimeout);
       reconnectGraceTimeoutsByPrincipalId.clear();
       connectedPrincipalIdsByConnectionId.clear();
@@ -543,6 +559,9 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       const lease = getActiveLease(request, authority);
       const renewedLease: Lease = { ...lease, expiresAt: new Date(now() + request.durationMilliseconds).toISOString() };
       leasesById.set(lease.id, renewedLease);
+      const previousExpiryTimeout = leaseExpiryTimeoutsById.get(lease.id);
+      if (previousExpiryTimeout !== undefined) clearTimeout(previousExpiryTimeout);
+      scheduleLeaseExpiry(renewedLease);
       return renewedLease;
     },
     async subscribe(request, authority = localClientAuthority) {
