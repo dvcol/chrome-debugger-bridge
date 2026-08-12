@@ -248,6 +248,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     if (lease === undefined || leasePrincipalIdsById.get(request.leaseId) !== authority.principalId || lease.targetId !== request.targetId || lease.targetGeneration !== request.targetGeneration) throw new TargetBrokerError('LEASE_REQUIRED');
     if (Date.parse(lease.expiresAt) <= now()) {
       deleteLease(lease.id);
+      closeSubscriptionsUsingLease(lease.id);
       throw new TargetBrokerError('LEASE_EXPIRED');
     }
     return lease;
@@ -257,6 +258,10 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     getCurrentTarget(request.targetId, request.targetGeneration);
     const lease = getActiveLease(request, authority);
     return { ownerId: lease.id, targetGeneration: request.targetGeneration, targetId: request.targetId };
+  }
+
+  function closeSubscriptionsUsingLease(leaseId: string): void {
+    for (const subscription of subscriptions.values()) if (subscription.request.leaseId === leaseId) subscription.close();
   }
 
   let targetBroker: TargetBroker;
@@ -463,7 +468,10 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       targetsById.set(target.id, target);
       highestGenerationByTargetId.set(target.id, currentTarget.generation);
       for (const [leaseId, lease] of leasesById) {
-        if (lease.targetId === target.id && lease.targetGeneration === target.generation && lease.methods.some(method => !isCdpNameAllowed(target.capabilities, method, 'command') && !isCdpNameAllowed(target.capabilities, method, 'event'))) deleteLease(leaseId);
+        if (lease.targetId === target.id && lease.targetGeneration === target.generation && lease.methods.some(method => !isCdpNameAllowed(target.capabilities, method, 'command') && !isCdpNameAllowed(target.capabilities, method, 'event'))) {
+          deleteLease(leaseId);
+          closeSubscriptionsUsingLease(leaseId);
+        }
       }
       publishTargetChange({ kind: 'updated', target });
     },
@@ -518,6 +526,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       getCurrentTarget(request.targetId, request.targetGeneration);
       const lease = getActiveLease(request, authority);
       deleteLease(lease.id);
+      closeSubscriptionsUsingLease(lease.id);
     },
     readArtifact(request, authority = localClientAuthority) {
       ensureActive();
@@ -598,7 +607,14 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       demandActive = true;
       subscriptions.set(id, { close, offer(method, parameters, sessionId) {
         const matches = eventMatchesSubscription(request, method, parameters, sessionId);
-        if (!matches || closed || !lease.methods.includes(method) || !isCdpNameAllowed(target.capabilities, method, 'event') || (lease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [method]) === 'exclusive-control')) return;
+        let activeLease: Lease;
+        try {
+          activeLease = getActiveLease(request, authority);
+        } catch {
+          close();
+          return;
+        }
+        if (!matches || closed || !activeLease.methods.includes(method) || !isCdpNameAllowed(target.capabilities, method, 'event') || (activeLease.mode === 'shared-read' && requiredLeaseMode(target.capabilities, [method]) === 'exclusive-control')) return;
         const current = subscriptions.get(id);
         if (current === undefined) return;
         const event: CdpEvent = { method, parameters, sequence: current.sequence++, subscriptionId: id, targetGeneration: target.generation, targetId: target.id, ...(sessionId === undefined ? {} : { sessionId }) };

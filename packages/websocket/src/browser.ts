@@ -786,11 +786,18 @@ export async function createBrowserChromeDebuggerBridgeClient(
   const restoreSubscriptions = async (): Promise<void> => {
     for (const subscription of subscriptionStates) {
       if (subscription.closed) continue;
-      const response = await request({ kind: 'request', method: 'cdp.subscribe', parameters: subscription.request, protocolVersion: 1, requestId: crypto.randomUUID() }, true);
-      if (response.method !== 'cdp.subscribe') throw new Error('Received an unexpected subscription response');
-      subscriptions.delete(subscription.id);
-      subscription.id = response.result.subscriptionId;
-      subscriptions.set(subscription.id, subscription);
+      try {
+        const response = await request({ kind: 'request', method: 'cdp.subscribe', parameters: subscription.request, protocolVersion: 1, requestId: crypto.randomUUID() }, true);
+        if (response.method !== 'cdp.subscribe') throw new Error('Received an unexpected subscription response');
+        subscriptions.delete(subscription.id);
+        subscription.id = response.result.subscriptionId;
+        subscriptions.set(subscription.id, subscription);
+      } catch (error) {
+        subscription.closed = true;
+        subscriptions.delete(subscription.id);
+        subscriptionStates.delete(subscription);
+        subscription.events.close(error instanceof Error ? error : new Error('LEASE_REQUIRED'));
+      }
     }
   };
   async function reconnect(): Promise<void> {
