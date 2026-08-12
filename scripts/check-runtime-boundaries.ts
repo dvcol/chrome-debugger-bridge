@@ -8,7 +8,7 @@ const browserEntryPaths = [
   'packages/extension/src/pairing-store.ts',
   'packages/websocket/src/browser.ts',
   'packages/websocket/src/authentication.ts',
-  'packages/devframe/src/client.ts',
+  'packages/birpc/src/client.ts',
 ];
 const browserOutputPaths = [
   'packages/extension/dist/bootstrap.js',
@@ -16,7 +16,7 @@ const browserOutputPaths = [
   'packages/extension/dist/testing.js',
   'packages/websocket/dist/browser.js',
   'packages/websocket/dist/testing.js',
-  'packages/devframe/dist/client.js',
+  'packages/birpc/dist/client.js',
 ];
 const nodeImportMarkers = [
   "from 'node:",

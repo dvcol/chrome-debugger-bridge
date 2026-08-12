@@ -3,7 +3,7 @@
     { "path": "./packages/core" },
     { "path": "./packages/extension" },
     { "path": "./packages/websocket" },
-    { "path": "./packages/devframe" },
+    { "path": "./packages/birpc" },
     { "path": "./packages/mcp" }
   ],
   "files": []

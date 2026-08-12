@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { promisify, styleText } from 'node:util';
 
 const executeFile = promisify(execFile);
-const publicPackageDirectories = ['core', 'devframe', 'extension', 'mcp', 'websocket'];
+const publicPackageDirectories = ['birpc', 'core', 'extension', 'mcp', 'websocket'];
 const dependencyFieldNames = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const;
 const corePackageName = '@dvcol/chrome-debugger-bridge';
 const protocolJsonSchemaIdentifier = 'urn:dvcol:chrome-debugger-bridge:protocol:1';
@@ -69,7 +69,7 @@ function createPackageImportSpecifier(packageName: string, exportName: string): 
 }
 
 const packedPackages: PackedPackage[] = [];
-const exampleDirectories = ['browser-client', 'devframe', 'embedded', 'extension', 'mcp', 'node-client', 'standalone-host'];
+const exampleDirectories = ['birpc', 'browser-client', 'embedded', 'extension', 'mcp', 'node-client', 'standalone-host'];
 
 for (const publicPackageDirectory of publicPackageDirectories) {
   const artifactDirectory = join(workspaceRoot, 'packages', publicPackageDirectory, 'artifacts');

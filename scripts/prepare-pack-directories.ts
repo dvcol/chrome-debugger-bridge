@@ -1,7 +1,7 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
-const publicPackageDirectories = ['core', 'devframe', 'extension', 'mcp', 'websocket'];
+const publicPackageDirectories = ['birpc', 'core', 'extension', 'mcp', 'websocket'];
 const workspaceRoot = process.cwd();
 
 await Promise.all(publicPackageDirectories.map(async (publicPackageDirectory) => {

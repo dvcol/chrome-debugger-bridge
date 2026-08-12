@@ -1,4 +1,4 @@
-export interface DevframeConnectionOffer {
+export interface BirpcConnectionOffer {
   readonly brokerId: string;
   readonly display?: { readonly title?: string };
   readonly endpoint: string;
@@ -7,63 +7,63 @@ export interface DevframeConnectionOffer {
   readonly protocolVersions: { readonly maximum: number; readonly minimum: number };
 }
 
-export interface DevframeOfferRuntimeMessage {
-  readonly kind: 'chrome-debugger-bridge.devframe-offer';
-  readonly offer: DevframeConnectionOffer;
+export interface BirpcOfferRuntimeMessage {
+  readonly kind: 'chrome-debugger-bridge.birpc-offer';
+  readonly offer: BirpcConnectionOffer;
   readonly origin: string;
 }
 
-export interface DevframeOfferMessageSource {
+export interface BirpcOfferMessageSource {
   readonly origin: string;
   readonly source: MessageEventSource | null;
 }
 
-export interface CreateDevframeOfferContentRelayOptions {
+export interface CreateBirpcOfferContentRelayOptions {
   readonly addWindowMessageListener: (listener: (event: MessageEvent<unknown>) => void) => void;
   readonly allowedOrigin: string;
-  readonly postRuntimeMessage: (message: DevframeOfferRuntimeMessage) => Promise<void>;
+  readonly postRuntimeMessage: (message: BirpcOfferRuntimeMessage) => Promise<void>;
   readonly removeWindowMessageListener: (listener: (event: MessageEvent<unknown>) => void) => void;
   readonly windowSource: MessageEventSource;
 }
 
-export interface DevframeOfferContentRelay {
+export interface BirpcOfferContentRelay {
   dispose: () => void;
   receive: (event: MessageEvent<unknown>) => void;
 }
 
-export interface DevframeOfferLocator {
-  locate: (offer: DevframeConnectionOffer) => Promise<DevframeConnectionOffer | undefined>;
+export interface BirpcOfferLocator {
+  locate: (offer: BirpcConnectionOffer) => Promise<BirpcConnectionOffer | undefined>;
 }
 
-export interface DevframeOfferPairingPolicy {
-  approve: (offer: DevframeConnectionOffer, origin: string) => Promise<boolean>;
+export interface BirpcOfferPairingPolicy {
+  approve: (offer: BirpcConnectionOffer, origin: string) => Promise<boolean>;
 }
 
-export interface CreateDevframeAgentBootstrapOptions<Connection> {
+export interface CreateBirpcAgentBootstrapOptions<Connection> {
   /** Closes a connection that completes after its offer has been cancelled or the bootstrap has disposed. */
   readonly closeConnection?: (connection: Connection) => void;
-  readonly connect: (offer: DevframeConnectionOffer) => Promise<Connection>;
-  readonly locator: DevframeOfferLocator;
+  readonly connect: (offer: BirpcConnectionOffer) => Promise<Connection>;
+  readonly locator: BirpcOfferLocator;
   readonly now?: () => number;
-  readonly pairingPolicy: DevframeOfferPairingPolicy;
+  readonly pairingPolicy: BirpcOfferPairingPolicy;
 }
 
-export interface DevframeAgentBootstrap<Connection> {
+export interface BirpcAgentBootstrap<Connection> {
   accept: (message: unknown) => Promise<Connection | undefined>;
   cancel: (nonce: string) => void;
   dispose: () => void;
 }
 
-export interface DevframeRuntimeMessagePort {
+export interface BirpcRuntimeMessagePort {
   addListener: (listener: (message: unknown) => void) => void;
   removeListener: (listener: (message: unknown) => void) => void;
 }
 
-export interface InstalledDevframeOfferRuntimeHandler {
+export interface InstalledBirpcOfferRuntimeHandler {
   dispose: () => void;
 }
 
-const offerMessageKind = 'chrome-debugger-bridge.devframe-offer';
+const offerMessageKind = 'chrome-debugger-bridge.birpc-offer';
 const identifierPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -71,7 +71,7 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 }
 
 /** Validates the non-secret connection offer before it crosses into extension runtime messaging. */
-export function parseDevframeConnectionOffer(value: unknown): DevframeConnectionOffer | undefined {
+export function parseBirpcConnectionOffer(value: unknown): BirpcConnectionOffer | undefined {
   if (!isRecord(value)) return undefined;
   if ('authorization' in value || 'credential' in value || 'credentialId' in value || 'tabId' in value) return undefined;
   const protocolVersions = value.protocolVersions;
@@ -114,7 +114,7 @@ export function parseDevframeConnectionOffer(value: unknown): DevframeConnection
 }
 
 /** Relays one origin-bound offer from the page to extension runtime messaging, then removes its listener. */
-export function createDevframeOfferContentRelay(options: CreateDevframeOfferContentRelayOptions): DevframeOfferContentRelay {
+export function createBirpcOfferContentRelay(options: CreateBirpcOfferContentRelayOptions): BirpcOfferContentRelay {
   let disposed = false;
   let receive: (event: MessageEvent<unknown>) => void;
   const dispose = (): void => {
@@ -124,7 +124,7 @@ export function createDevframeOfferContentRelay(options: CreateDevframeOfferCont
   };
   receive = (event: MessageEvent<unknown>): void => {
     if (disposed || event.origin !== options.allowedOrigin || event.source !== options.windowSource) return;
-    const offer = parseDevframeConnectionOffer(event.data);
+    const offer = parseBirpcConnectionOffer(event.data);
     if (offer === undefined) return;
     dispose();
     void options.postRuntimeMessage({ kind: offerMessageKind, offer, origin: event.origin }).catch(() => {});
@@ -134,7 +134,7 @@ export function createDevframeOfferContentRelay(options: CreateDevframeOfferCont
 }
 
 /** Validates a one-shot runtime offer before allowing the extension agent to open its own direct transport. */
-export function createDevframeAgentBootstrap<Connection>(options: CreateDevframeAgentBootstrapOptions<Connection>): DevframeAgentBootstrap<Connection> {
+export function createBirpcAgentBootstrap<Connection>(options: CreateBirpcAgentBootstrapOptions<Connection>): BirpcAgentBootstrap<Connection> {
   const now = options.now ?? Date.now;
   const cancelledNonces = new Set<string>();
   const consumedNonces = new Set<string>();
@@ -150,7 +150,7 @@ export function createDevframeAgentBootstrap<Connection>(options: CreateDevframe
   return {
     async accept(message) {
       if (disposed || !isRecord(message) || message.kind !== offerMessageKind || typeof message.origin !== 'string') return undefined;
-      const offer = parseDevframeConnectionOffer(message.offer);
+      const offer = parseBirpcConnectionOffer(message.offer);
       if (offer === undefined || cancelledNonces.has(offer.nonce) || consumedNonces.has(offer.nonce) || Date.parse(offer.expiresAt) <= now()) {
         if (offer !== undefined) cancel(offer.nonce);
         return undefined;
@@ -178,10 +178,10 @@ export function createDevframeAgentBootstrap<Connection>(options: CreateDevframe
 }
 
 /** Installs the service-worker runtime boundary and removes it deterministically on disposal. */
-export function installDevframeOfferRuntimeHandler<Connection>(
-  runtime: DevframeRuntimeMessagePort,
-  bootstrap: DevframeAgentBootstrap<Connection>,
-): InstalledDevframeOfferRuntimeHandler {
+export function installBirpcOfferRuntimeHandler<Connection>(
+  runtime: BirpcRuntimeMessagePort,
+  bootstrap: BirpcAgentBootstrap<Connection>,
+): InstalledBirpcOfferRuntimeHandler {
   let disposed = false;
   const listener = (message: unknown): void => {
     if (disposed) return;

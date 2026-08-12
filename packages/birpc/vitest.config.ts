@@ -4,6 +4,6 @@ export default defineProject({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
-    name: 'unit-node:devframe',
+    name: 'unit-node:birpc',
   },
 });

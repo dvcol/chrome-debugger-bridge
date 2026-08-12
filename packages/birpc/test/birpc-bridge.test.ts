@@ -1,6 +1,6 @@
 import type { PublishedTarget } from '@dvcol/chrome-debugger-bridge/protocol';
 
-import type { DevframeRpcChannel } from '../src/client.js';
+import type { BirpcRpcChannel } from '../src/client.js';
 
 import { createServer } from 'node:http';
 
@@ -11,8 +11,8 @@ import {
 import { artifactResultSchema } from '@dvcol/chrome-debugger-bridge/protocol';
 import { expect, it } from 'vitest';
 
-import { createDevframeBridgeClient } from '../src/client.js';
-import { mountDevframeChromeDebuggerBridge } from '../src/node.js';
+import { createBirpcBridgeClient } from '../src/client.js';
+import { mountBirpcChromeDebuggerBridge } from '../src/node.js';
 
 const target = {
   availability: 'available',
@@ -23,13 +23,13 @@ const target = {
   type: 'page',
 } satisfies PublishedTarget;
 
-function createChannelPair(): readonly [DevframeRpcChannel, DevframeRpcChannel] {
+function createChannelPair(): readonly [BirpcRpcChannel, BirpcRpcChannel] {
   const leftListeners = new Set<(message: unknown) => void>();
   const rightListeners = new Set<(message: unknown) => void>();
   const createChannel = (
     listeners: Set<(message: unknown) => void>,
     remoteListeners: Set<(message: unknown) => void>,
-  ): DevframeRpcChannel => ({
+  ): BirpcRpcChannel => ({
     off(listener) {
       listeners.delete(listener);
     },
@@ -45,30 +45,30 @@ function createChannelPair(): readonly [DevframeRpcChannel, DevframeRpcChannel] 
   return [createChannel(leftListeners, rightListeners), createChannel(rightListeners, leftListeners)];
 }
 
-it('maps the shared client facade through a Devframe birpc channel without owning the HTTP listener', async () => {
+it('maps the shared client facade through a Birpc birpc channel without owning the HTTP listener', async () => {
   expect.assertions(15);
   const server = createServer();
   const [hostChannel, clientChannel] = createChannelPair();
-  const bridge = mountDevframeChromeDebuggerBridge({
+  const bridge = mountBirpcChromeDebuggerBridge({
     agentAuthentication: createMemoryAgentAuthenticationAdapter({
       brokerId: 'a797a9c2-ad27-4ca1-87f7-5bf9f58f936d',
       pairingCode: '123456',
       pairingCodeExpiresAt: Date.now() + 60_000,
       principal: { id: 'ecb4e5c2-7597-4fea-9fec-a7f0b6c181d7', role: 'agent' },
     }),
-    agentPath: '/devframe-agent',
+    agentPath: '/birpc-agent',
     artifactLifetimeMilliseconds: 60_000,
     brokerId: 'a797a9c2-ad27-4ca1-87f7-5bf9f58f936d',
     channel: hostChannel,
-    clientAuthentication: createStaticClientAuthenticationAdapter('Bearer devframe-client', { id: 'b4fd95e4-b7d4-43b2-b152-a86d07d0aad2', role: 'client' }),
-    clientPath: '/devframe-client',
+    clientAuthentication: createStaticClientAuthenticationAdapter('Bearer birpc-client', { id: 'b4fd95e4-b7d4-43b2-b152-a86d07d0aad2', role: 'client' }),
+    clientPath: '/birpc-client',
     maximumInlineResultBytes: 1,
     originPolicy() {
       return true;
     },
     server,
   });
-  const client = createDevframeBridgeClient(clientChannel);
+  const client = createBirpcBridgeClient(clientChannel);
   let resolveStarted: (() => void) | undefined;
   const commandStarted = new Promise<void>((resolve) => {
     resolveStarted = resolve;
@@ -76,10 +76,10 @@ it('maps the shared client facade through a Devframe birpc channel without ownin
   bridge.broker.publishTarget(target);
   bridge.broker.registerTargetExecutor(target, {
     async execute(command, abortSignal) {
-      if (command.parameters?.expression !== 'wait') return { result: { type: 'string', value: 'Devframe bridge' } };
+      if (command.parameters?.expression !== 'wait') return { result: { type: 'string', value: 'Birpc bridge' } };
       resolveStarted?.();
       return new Promise<never>((_resolve, reject) => {
-        abortSignal.addEventListener('abort', () => reject(new Error('Cancelled by Devframe client.')), { once: true });
+        abortSignal.addEventListener('abort', () => reject(new Error('Cancelled by Birpc client.')), { once: true });
       });
     },
   });
@@ -119,29 +119,29 @@ it('maps the shared client facade through a Devframe birpc channel without ownin
   expect(bridge.diagnostics()).toEqual({ disposed: true, ownsBroker: true, subscriptionCount: 0, watchingTargets: false });
 });
 
-it('releases Devframe routes and streams across repeated host mount cycles', async () => {
+it('releases Birpc routes and streams across repeated host mount cycles', async () => {
   expect.assertions(5);
   const server = createServer();
   const [firstHostChannel, firstClientChannel] = createChannelPair();
-  const createBridge = (channel: DevframeRpcChannel) => mountDevframeChromeDebuggerBridge({
+  const createBridge = (channel: BirpcRpcChannel) => mountBirpcChromeDebuggerBridge({
     agentAuthentication: createMemoryAgentAuthenticationAdapter({
       brokerId: 'ad0ea525-155e-47b7-a218-4a4b2c91d1e0',
       pairingCode: '123456',
       pairingCodeExpiresAt: Date.now() + 60_000,
       principal: { id: 'c206d4c0-5650-42bb-a60c-054673446442', role: 'agent' },
     }),
-    agentPath: '/devframe-agent',
+    agentPath: '/birpc-agent',
     brokerId: 'ad0ea525-155e-47b7-a218-4a4b2c91d1e0',
     channel,
-    clientAuthentication: createStaticClientAuthenticationAdapter('Bearer devframe-client', { id: 'ccc243ef-b45a-4c1b-8877-8da4ca3b4dc4', role: 'client' }),
-    clientPath: '/devframe-client',
+    clientAuthentication: createStaticClientAuthenticationAdapter('Bearer birpc-client', { id: 'ccc243ef-b45a-4c1b-8877-8da4ca3b4dc4', role: 'client' }),
+    clientPath: '/birpc-client',
     originPolicy() {
       return true;
     },
     server,
   });
   const firstBridge = createBridge(firstHostChannel);
-  const firstClient = createDevframeBridgeClient(firstClientChannel);
+  const firstClient = createBirpcBridgeClient(firstClientChannel);
   const targetIterator = firstClient.watchTargets()[Symbol.asyncIterator]();
 
   try {
@@ -153,7 +153,7 @@ it('releases Devframe routes and streams across repeated host mount cycles', asy
 
     const [secondHostChannel, secondClientChannel] = createChannelPair();
     const secondBridge = createBridge(secondHostChannel);
-    const secondClient = createDevframeBridgeClient(secondClientChannel);
+    const secondClient = createBirpcBridgeClient(secondClientChannel);
     expect(server.listenerCount('upgrade')).toBe(1);
     secondClient.dispose();
     await secondBridge.dispose();

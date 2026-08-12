@@ -1,7 +1,7 @@
 import type { AgentToBrokerMessage, BrokerToAgentMessage, JsonObject, PublishedTarget } from '../../../packages/core/src/protocol.js';
 import type { BrowserAgentConnection } from '../../../packages/websocket/src/browser.js';
 
-import { createAgentRecovery, createDevframeAgentBootstrap, createIndexedDbPairingStore, createSelectedTabLifecycle, createSelectedTabPublisher } from '../../../packages/extension/src/index.js';
+import { createAgentRecovery, createBirpcAgentBootstrap, createIndexedDbPairingStore, createSelectedTabLifecycle, createSelectedTabPublisher } from '../../../packages/extension/src/index.js';
 import { connectAgentWebSocket } from '../../../packages/websocket/src/browser.js';
 
 interface ServiceWorkerTestInput {
@@ -17,7 +17,7 @@ interface ServiceWorkerTestResult {
   readonly responseMethod: BrokerToAgentMessage['method'];
 }
 
-interface DevframeBootstrapTestResult {
+interface BirpcBootstrapTestResult {
   readonly brokerId: string;
   readonly malformedRejected: boolean;
   readonly responseMethod: BrokerToAgentMessage['method'];
@@ -26,7 +26,7 @@ interface DevframeBootstrapTestResult {
 
 interface BridgeTestGlobal {
   runAuthenticatedBridgeTest: (input: ServiceWorkerTestInput) => Promise<ServiceWorkerTestResult>;
-  runDevframeBootstrapTest: (input: ServiceWorkerTestInput) => Promise<DevframeBootstrapTestResult>;
+  runBirpcBootstrapTest: (input: ServiceWorkerTestInput) => Promise<BirpcBootstrapTestResult>;
   runDebuggerLifecycleTest: () => Promise<{ readonly revoked: boolean; readonly value: string }>;
   runPublishedTargetLifecycleTest: (updatedUrl: string) => Promise<readonly { readonly kind: 'published' | 'revoked' | 'updated'; readonly reason?: string }[]>;
   runPublishedTargetAgentTest: (input: ServiceWorkerTestInput) => Promise<Pick<PublishedTarget, 'generation' | 'id'>>;
@@ -162,7 +162,7 @@ bridgeTestGlobal.runAuthenticatedBridgeTest = async (input) => {
   };
 };
 
-bridgeTestGlobal.runDevframeBootstrapTest = async (input) => {
+bridgeTestGlobal.runBirpcBootstrapTest = async (input) => {
   const endpoint = input.endpoint;
   const offer = {
     brokerId: 'de2d3196-3e05-4f9d-9c93-d6651b9e38a2',
@@ -171,10 +171,10 @@ bridgeTestGlobal.runDevframeBootstrapTest = async (input) => {
     nonce: crypto.randomUUID(),
     protocolVersions: { maximum: 1, minimum: 1 },
   };
-  const bootstrap = createDevframeAgentBootstrap({
+  const bootstrap = createBirpcAgentBootstrap({
     async connect(candidate) {
       return connectAgentWebSocket({
-        credentialStore: createIndexedDbPairingStore({ databaseName: `mv3-devframe-bootstrap-${candidate.nonce}` }),
+        credentialStore: createIndexedDbPairingStore({ databaseName: `mv3-birpc-bootstrap-${candidate.nonce}` }),
         endpoint: candidate.endpoint,
         async requestPairingCode() {
           return input.pairingCode;
@@ -185,13 +185,13 @@ bridgeTestGlobal.runDevframeBootstrapTest = async (input) => {
       return candidate.endpoint === endpoint ? candidate : undefined;
     } },
     pairingPolicy: { async approve(_candidate, origin) {
-      return origin === 'https://devframe.example.test';
+      return origin === 'https://birpc.example.test';
     } },
   });
-  const malformedRejected = await bootstrap.accept({ kind: 'chrome-debugger-bridge.devframe-offer', offer: { invalid: true }, origin: 'https://devframe.example.test' }) === undefined;
-  const wrongOriginRejected = await bootstrap.accept({ kind: 'chrome-debugger-bridge.devframe-offer', offer: { ...offer, nonce: crypto.randomUUID() }, origin: 'https://attacker.example.test' }) === undefined;
-  const connection = await bootstrap.accept({ kind: 'chrome-debugger-bridge.devframe-offer', offer, origin: 'https://devframe.example.test' });
-  if (connection === undefined) throw new Error('The Devframe offer did not open a direct agent connection.');
+  const malformedRejected = await bootstrap.accept({ kind: 'chrome-debugger-bridge.birpc-offer', offer: { invalid: true }, origin: 'https://birpc.example.test' }) === undefined;
+  const wrongOriginRejected = await bootstrap.accept({ kind: 'chrome-debugger-bridge.birpc-offer', offer: { ...offer, nonce: crypto.randomUUID() }, origin: 'https://attacker.example.test' }) === undefined;
+  const connection = await bootstrap.accept({ kind: 'chrome-debugger-bridge.birpc-offer', offer, origin: 'https://birpc.example.test' });
+  if (connection === undefined) throw new Error('The Birpc offer did not open a direct agent connection.');
   bootstrap.dispose();
   const response = new Promise<BrokerToAgentMessage>((resolve) => {
     const removeListener = connection.onMessage((message) => {
@@ -206,7 +206,7 @@ bridgeTestGlobal.runDevframeBootstrapTest = async (input) => {
       connectionGeneration: 1,
       features: ['bridge.cdp.read'],
       heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 },
-      implementation: { instanceId: crypto.randomUUID(), name: 'mv3-devframe-bootstrap-test', role: 'agent', version: '0.0.0' },
+      implementation: { instanceId: crypto.randomUUID(), name: 'mv3-birpc-bootstrap-test', role: 'agent', version: '0.0.0' },
       limits: { maximumArtifactBytes: 16_777_216, maximumInlineResultBytes: 65_536, maximumMessageBytes: 16_384 },
       protocolVersions: { maximum: 1, minimum: 1 },
     },
@@ -214,7 +214,7 @@ bridgeTestGlobal.runDevframeBootstrapTest = async (input) => {
     requestId: crypto.randomUUID(),
   });
   const message = await response;
-  connection.close(1000, 'Devframe bootstrap test complete');
+  connection.close(1000, 'Birpc bootstrap test complete');
   await connection.closed;
   return { brokerId: connection.brokerId, malformedRejected, responseMethod: message.method, wrongOriginRejected };
 };

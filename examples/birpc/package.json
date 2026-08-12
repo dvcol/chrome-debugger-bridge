@@ -1,5 +1,5 @@
 {
-  "name": "@chrome-debugger-bridge-example/devframe",
+  "name": "@chrome-debugger-bridge-example/birpc",
   "type": "module",
   "version": "0.0.0",
   "private": true,
@@ -7,8 +7,8 @@
     "smoke": "node smoke.mjs"
   },
   "dependencies": {
+    "@dvcol/cdb-birpc": "workspace:*",
     "@dvcol/chrome-debugger-bridge": "workspace:*",
-    "@dvcol/chrome-debugger-bridge-devframe": "workspace:*",
     "@dvcol/chrome-debugger-bridge-extension": "workspace:*",
     "@dvcol/chrome-debugger-bridge-websocket": "workspace:*"
   }

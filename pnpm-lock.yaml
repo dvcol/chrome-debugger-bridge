@@ -156,26 +156,26 @@ importers:
         specifier: catalog:testing
         version: 4.1.10(@types/node@26.1.2)(@vitest/browser-playwright@4.1.10)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.2.0(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0))
 
+  examples/birpc:
+    dependencies:
+      '@dvcol/cdb-birpc':
+        specifier: workspace:*
+        version: link:../../packages/birpc
+      '@dvcol/chrome-debugger-bridge':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@dvcol/chrome-debugger-bridge-extension':
+        specifier: workspace:*
+        version: link:../../packages/extension
+      '@dvcol/chrome-debugger-bridge-websocket':
+        specifier: workspace:*
+        version: link:../../packages/websocket
+
   examples/browser-client:
     dependencies:
       '@dvcol/chrome-debugger-bridge':
         specifier: workspace:*
         version: link:../../packages/core
-      '@dvcol/chrome-debugger-bridge-websocket':
-        specifier: workspace:*
-        version: link:../../packages/websocket
-
-  examples/devframe:
-    dependencies:
-      '@dvcol/chrome-debugger-bridge':
-        specifier: workspace:*
-        version: link:../../packages/core
-      '@dvcol/chrome-debugger-bridge-devframe':
-        specifier: workspace:*
-        version: link:../../packages/devframe
-      '@dvcol/chrome-debugger-bridge-extension':
-        specifier: workspace:*
-        version: link:../../packages/extension
       '@dvcol/chrome-debugger-bridge-websocket':
         specifier: workspace:*
         version: link:../../packages/websocket
@@ -225,6 +225,18 @@ importers:
         specifier: workspace:*
         version: link:../../packages/websocket
 
+  packages/birpc:
+    dependencies:
+      '@dvcol/chrome-debugger-bridge':
+        specifier: workspace:^
+        version: link:../core
+      '@dvcol/chrome-debugger-bridge-websocket':
+        specifier: workspace:^
+        version: link:../websocket
+      birpc:
+        specifier: 'catalog:'
+        version: 4.0.0
+
   packages/core:
     dependencies:
       '@standard-schema/spec':
@@ -240,18 +252,6 @@ importers:
       ajv-formats:
         specifier: catalog:testing
         version: 3.0.1(ajv@8.20.0)
-
-  packages/devframe:
-    dependencies:
-      '@dvcol/chrome-debugger-bridge':
-        specifier: workspace:^
-        version: link:../core
-      '@dvcol/chrome-debugger-bridge-websocket':
-        specifier: workspace:^
-        version: link:../websocket
-      birpc:
-        specifier: 'catalog:'
-        version: 4.0.0
 
   packages/extension:
     dependencies:

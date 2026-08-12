@@ -6,7 +6,7 @@ import * as testingModule from '../src/testing.js';
 
 it('keeps the extension public entries importable', () => {
   expect.assertions(3);
-  expect(Object.keys(indexModule)).toEqual(['createAgentRecovery', 'createDevframeAgentBootstrap', 'createDevframeOfferContentRelay', 'installDevframeOfferRuntimeHandler', 'parseDevframeConnectionOffer', 'createBrokerTabAssignment', 'createChildSessionRouter', 'createIndexedDbPairingStore', 'createSelectedTabLifecycle', 'createSelectedTabPublisher', 'matchesTabScope']);
-  expect(Object.keys(bootstrapModule)).toEqual(['parseDevframeConnectionOffer', 'createDevframeOfferContentRelay', 'createDevframeAgentBootstrap', 'installDevframeOfferRuntimeHandler']);
+  expect(Object.keys(indexModule)).toEqual(['createAgentRecovery', 'createBirpcAgentBootstrap', 'createBirpcOfferContentRelay', 'installBirpcOfferRuntimeHandler', 'parseBirpcConnectionOffer', 'createBrokerTabAssignment', 'createChildSessionRouter', 'createIndexedDbPairingStore', 'createSelectedTabLifecycle', 'createSelectedTabPublisher', 'matchesTabScope']);
+  expect(Object.keys(bootstrapModule)).toEqual(['parseBirpcConnectionOffer', 'createBirpcOfferContentRelay', 'createBirpcAgentBootstrap', 'installBirpcOfferRuntimeHandler']);
   expect(Object.keys(testingModule)).toEqual([]);
 });

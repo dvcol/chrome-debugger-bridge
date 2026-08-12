@@ -33,12 +33,12 @@ Devframe deliberately does not depend on Vite or the Vite DevTools kit.
 
 ## Fit with this repository
 
-The existing Devframe integration is intentionally transport-neutral at the
-Devframe boundary: it accepts an existing HTTP server plus a `birpc`-shaped
+The existing application-owned custom birpc adapter is intentionally
+transport-neutral: it accepts an existing HTTP server plus a `birpc`-shaped
 channel, then mounts authenticated direct agent/client WebSocket endpoints.
-It does not create a Devframe definition or own the Vite listener. See
-[`packages/devframe/src/node.ts`](../../packages/devframe/src/node.ts) and
-[`examples/devframe/README.md`](../../examples/devframe/README.md).
+It does not create a Devframe definition or own a Vite listener. See
+[`packages/birpc/src/node.ts`](../../packages/birpc/src/node.ts) and
+[`examples/birpc/README.md`](../../examples/birpc/README.md).
 
 The existing MCP package is a different composition. It supplies the bridge's
 lease- and capability-governed CDP tools over MCP SDK v2 Streamable HTTP or an
@@ -67,25 +67,27 @@ without a major version bump. [Agent-Native Devframe](https://devfra.me/guide/ag
 
 Adding the example now would introduce external Devframe and Vite DevTools-kit
 dependencies, a second MCP endpoint/authority model, and potentially two SDK
-package families. None is needed to validate the public bridge Devframe or MCP
-adapters already in the release map.
+package families. None is needed to validate the public bridge custom-birpc or
+MCP adapters already in the release map.
 
 ## Candidate follow-up issue
 
 **Title:** Prove an experimental Vite Devframe agent-native MCP composition
 
 **Scope:** Build one private, packed-package example that starts an actual Vite
-DevTools host, mounts `mountDevframeChromeDebuggerBridge`, and enables a
-separate Devframe agent-native MCP surface. Use a dedicated endpoint and prove
-that it does not expose pairing credentials, raw target identifiers, or raw
-CDP by default. Validate HTTP session/origin isolation, shutdown of both MCP
-servers, and dependency compatibility with this repository's MCP SDK v2.
+DevTools host and enables a separate Devframe agent-native MCP surface. Compose
+directly with the bridge's lower-level broker/client contracts; never import,
+mount, wrap, or proxy the bridge MCP package or `@dvcol/cdb-birpc`. Use a
+dedicated endpoint and prove that it does not expose pairing credentials, raw
+target identifiers, or raw CDP by default. Validate HTTP session/origin
+isolation, shutdown of both MCP servers, and dependency compatibility with this
+repository's MCP SDK v2.
 
 **Explicit non-goals:** Do not replace the bridge MCP adapter, reimplement its
 semantic tools in Devframe, make Devframe/Vite dependencies public runtime
 dependencies of bridge packages, or alter the release-critical package/export
 contract.
 
-**Suggested blocker:** public naming approval (issue #37), because this example
-would add a documented endpoint and integration surface. Keep it outside the
-critical path unless a real Vite consumer requires it.
+**Suggested blocker:** a dependency-resolution and runtime-compatibility spike,
+because the Devframe adapter currently declares the monolithic MCP SDK peer.
+Keep it outside the critical path unless a real Vite consumer requires it.

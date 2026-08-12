@@ -15,17 +15,17 @@ import type { BirpcOptions } from 'birpc';
 import type { Server as HttpServer } from 'node:http';
 
 import type {
-  DevframeBridgeClientRpc,
-  DevframeBridgeHostRpc,
-  DevframeRpcChannel,
-  DevframeSubscriptionDescriptor,
+  BirpcBridgeClientRpc,
+  BirpcBridgeHostRpc,
+  BirpcRpcChannel,
+  BirpcSubscriptionDescriptor,
 } from './client.js';
 
 import { connectAgentTargetBroker, connectClientTargetBroker, createTargetBroker } from '@dvcol/chrome-debugger-bridge';
 import { mountAuthenticatedWebSocketBridge } from '@dvcol/chrome-debugger-bridge-websocket/node';
 import { createBirpc } from 'birpc';
 
-export interface MountDevframeChromeDebuggerBridgeOptions<
+export interface MountBirpcChromeDebuggerBridgeOptions<
   AgentPrincipal extends AuthenticatedPrincipal,
   ClientPrincipal extends AuthenticatedPrincipal,
 > extends CreateTargetBrokerOptions {
@@ -33,7 +33,7 @@ export interface MountDevframeChromeDebuggerBridgeOptions<
   readonly agentPath: string;
   readonly broker?: TargetBroker;
   readonly brokerId: string;
-  readonly channel: DevframeRpcChannel;
+  readonly channel: BirpcRpcChannel;
   readonly clientAuthentication: ClientAuthenticationAdapter<ClientPrincipal>;
   readonly clientPath: string;
   readonly originPolicy: MountAuthenticatedWebSocketBridgeOptions<AgentPrincipal, ClientPrincipal>['originPolicy'];
@@ -41,26 +41,26 @@ export interface MountDevframeChromeDebuggerBridgeOptions<
   readonly webSocketLimits?: WebSocketBridgeLimits;
 }
 
-export interface MountedDevframeChromeDebuggerBridge {
+export interface MountedBirpcChromeDebuggerBridge {
   readonly broker: TargetBroker;
-  diagnostics: () => DevframeBridgeDiagnostics;
+  diagnostics: () => BirpcBridgeDiagnostics;
   dispose: () => Promise<void>;
 }
 
-/** Reports only Devframe mount lifecycle state, never connection details or broker payloads. */
-export interface DevframeBridgeDiagnostics {
+/** Reports only Birpc mount lifecycle state, never connection details or broker payloads. */
+export interface BirpcBridgeDiagnostics {
   readonly disposed: boolean;
   readonly ownsBroker: boolean;
   readonly subscriptionCount: number;
   readonly watchingTargets: boolean;
 }
 
-interface DevframeSubscriptionState {
+interface BirpcSubscriptionState {
   readonly subscription: CdpSubscription;
   streaming: boolean;
 }
 
-function createBirpcChannelOptions(channel: DevframeRpcChannel): Pick<BirpcOptions, 'off' | 'on' | 'post'> {
+function createBirpcChannelOptions(channel: BirpcRpcChannel): Pick<BirpcOptions, 'off' | 'on' | 'post'> {
   return {
     on(listener: (message: unknown) => void) {
       channel.on(listener);
@@ -76,22 +76,22 @@ function createBirpcChannelOptions(channel: DevframeRpcChannel): Pick<BirpcOptio
   };
 }
 
-/** Mounts broker transports onto an existing Vite or Devframe server without taking its listener lifecycle. */
-export function mountDevframeChromeDebuggerBridge<
+/** Mounts broker transports onto an application-owned HTTP server without taking its listener lifecycle. */
+export function mountBirpcChromeDebuggerBridge<
   AgentPrincipal extends AuthenticatedPrincipal,
   ClientPrincipal extends AuthenticatedPrincipal,
->(options: MountDevframeChromeDebuggerBridgeOptions<AgentPrincipal, ClientPrincipal>): MountedDevframeChromeDebuggerBridge {
+>(options: MountBirpcChromeDebuggerBridgeOptions<AgentPrincipal, ClientPrincipal>): MountedBirpcChromeDebuggerBridge {
   const broker = options.broker ?? createTargetBroker(options);
   const ownsBroker = options.broker === undefined;
-  const subscriptions = new Map<string, DevframeSubscriptionState>();
+  const subscriptions = new Map<string, BirpcSubscriptionState>();
   let targetWatch: AsyncIterator<TargetChange> | undefined;
   let disposed = false;
 
   const ensureActive = (): void => {
-    if (disposed) throw new Error('The Devframe bridge is disposed.');
+    if (disposed) throw new Error('The Birpc bridge is disposed.');
   };
 
-  const rpc = createBirpc<DevframeBridgeClientRpc, DevframeBridgeHostRpc>({
+  const rpc = createBirpc<BirpcBridgeClientRpc, BirpcBridgeHostRpc>({
     async acquireLease(request) {
       ensureActive();
       return broker.acquireLease(request);
@@ -127,7 +127,7 @@ export function mountDevframeChromeDebuggerBridge<
     async startSubscription(subscriptionId) {
       ensureActive();
       const state = subscriptions.get(subscriptionId);
-      if (state === undefined) throw new Error('The Devframe subscription does not exist.');
+      if (state === undefined) throw new Error('The Birpc subscription does not exist.');
       if (state.streaming) return;
       state.streaming = true;
       void (async () => {
@@ -172,7 +172,7 @@ export function mountDevframeChromeDebuggerBridge<
       await targetWatch?.return?.();
       targetWatch = undefined;
     },
-    async subscribe(request): Promise<DevframeSubscriptionDescriptor> {
+    async subscribe(request): Promise<BirpcSubscriptionDescriptor> {
       ensureActive();
       const subscription = await broker.subscribe(request);
       subscriptions.set(subscription.id, { streaming: false, subscription });

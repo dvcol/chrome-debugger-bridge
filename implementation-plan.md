@@ -10,7 +10,7 @@ Build a set of modular TypeScript primitives that lets any Chrome 125+ Manifest 
 
 Consumers may be:
 
-- a Vite DevTools or Devframe integration using `birpc`;
+- an application-owned `birpc` integration;
 - a generic browser or Node application using JSON-RPC over WebSocket;
 - a standalone local application embedding the broker;
 - an MCP server using an in-process client and Streamable HTTP at its external boundary;
@@ -37,7 +37,7 @@ The package is not a browser automation product, an MCP-specific implementation,
 | --- | --- | --- |
 | Bridge toolkit | The complete set of published primitives and adapters. | A mandatory deployment topology or UI. |
 | Extension agent | Runs inside an MV3 service worker, owns `chrome.debugger`, raw Chrome identifiers, target publication, and final authorization. | Client routing policy or an external server listener. |
-| Broker core | Runtime-neutral state machine for agents, opaque targets, clients, leases, subscriptions, routing, and lifecycle. | `chrome.*`, HTTP, WebSocket, MCP, Devframe, files, or UI. |
+| Broker core | Runtime-neutral state machine for agents, opaque targets, clients, leases, subscriptions, routing, and lifecycle. | `chrome.*`, HTTP, WebSocket, MCP, custom birpc, files, or UI. |
 | Host adapter | Embeds a broker into an existing process and exposes selected transports. | Chrome target authority. |
 | Client | Uses the broker's public target, lease, CDP, subscription, and artifact APIs. | Raw Chrome tab, target, window, group, or CDP session IDs. |
 | Bootstrap adapter | Carries a non-secret broker connection offer from a page to the extension agent so it can open a direct connection. | Commands, events, artifacts, durable credentials, or the data plane. |
@@ -65,13 +65,13 @@ flowchart LR
     AgentWs["Agent WebSocket adapter"]
     Broker["Broker core"]
     ClientWs["JSON-RPC WebSocket adapter"]
-    DevframeHost["Devframe/birpc host adapter"]
+    BirpcHost["Application-owned birpc host adapter"]
     McpHost["MCP Streamable HTTP adapter"]
     ArtifactHost["Artifact HTTP adapter"]
 
     AgentWs <--> Broker
     ClientWs <--> Broker
-    DevframeHost <--> Broker
+    BirpcHost <--> Broker
     McpHost <--> Broker
     ArtifactHost <--> Broker
   end
@@ -79,7 +79,7 @@ flowchart LR
   Agent <-->|"direct authenticated WebSocket"| AgentWs
 
   GenericClient["Generic web or Node client"] <--> ClientWs
-  DevframeUi["Vite DevTools / Devframe UI"] <--> DevframeHost
+  BirpcUi["Application-owned birpc UI"] <--> BirpcHost
   McpClient["MCP client"] <--> McpHost
   GenericClient -.->|"authenticated fetch"| ArtifactHost
 ```
@@ -88,9 +88,9 @@ flowchart LR
 
 The same broker core must work in all of these topologies:
 
-1. **Embedded Devframe host**
-   - A Vite/Devframe plugin mounts the agent WebSocket endpoint on its existing HTTP server.
-   - The Devframe UI talks to the host through its existing `birpc` environment.
+1. **Embedded application-owned birpc host**
+   - An application-owned HTTP server mounts the agent WebSocket endpoint.
+   - Its UI talks to the host through its existing `birpc` environment.
    - A bootstrap adapter passes the connection offer to the extension.
 
 2. **Standalone host**
@@ -115,16 +115,16 @@ Dependencies point inward toward domain contracts:
 flowchart BT
   Extension["extension"] --> Core["core"]
   WebSocket["websocket"] --> Core
-  Devframe["devframe"] --> Core
-  Devframe --> WebSocket
+  Birpc["birpc"] --> Core
+  Birpc --> WebSocket
   MCP["mcp"] --> Core
   Examples["private examples and fixtures"] --> Extension
   Examples --> WebSocket
-  Examples --> Devframe
+  Examples --> Birpc
   Examples --> MCP
 ```
 
-`core` must not import another workspace package. `extension` must not import a Node-only module. `mcp` and `devframe` must not import `chrome.*` implementations.
+`core` must not import another workspace package. `extension` must not import a Node-only module. `mcp` and `birpc` must not import `chrome.*` implementations.
 
 ## 4. Repository and package layout
 
@@ -141,7 +141,7 @@ Use a pnpm 11 workspace with Turbo as the only task graph. Use tsdown for publis
 │       └── codeql.yml
 ├── examples/
 │   ├── browser-client/
-│   ├── devframe/
+│   ├── birpc/
 │   ├── embedded/
 │   ├── extension/
 │   ├── mcp/
@@ -151,7 +151,7 @@ Use a pnpm 11 workspace with Turbo as the only task graph. Use tsdown for publis
 │   └── README.md
 ├── packages/
 │   ├── core/
-│   ├── devframe/
+│   ├── birpc/
 │   ├── extension/
 │   ├── mcp/
 │   └── websocket/
@@ -179,7 +179,7 @@ The package names below are the proposed naming baseline:
 | `packages/core` | `@dvcol/chrome-debugger-bridge` | Neutral | Protocol types and validation contracts, broker state machine, client facade, policies, errors, and test contracts. |
 | `packages/extension` | `@dvcol/chrome-debugger-bridge-extension` | Browser extension | MV3 agent, `chrome.debugger` port, target/session mapping, extension-side security kernel, and bootstrap contracts. |
 | `packages/websocket` | `@dvcol/chrome-debugger-bridge-websocket` | Browser and Node subpaths | Direct agent transport, generic client transport, JSON-RPC codec, WebSocket host mounting, heartbeat, reconnect, and binary artifact frames. |
-| `packages/devframe` | `@dvcol/chrome-debugger-bridge-devframe` | Browser and Node subpaths | Vite/Devframe host integration, `birpc` facade, and one-shot page/content bootstrap adapters. |
+| `packages/birpc` | `@dvcol/cdb-birpc` | Browser and Node subpaths | Application-owned `birpc` host integration, `birpc` facade, and one-shot page/content bootstrap adapters. |
 | `packages/mcp` | `@dvcol/chrome-debugger-bridge-mcp` | Node | MCP tools and Streamable HTTP adapter backed by the core client facade. |
 
 Private examples demonstrate composition and remain outside the fixed publication group.
@@ -194,7 +194,7 @@ Every public adapter, client, and host composition must have a runnable example.
 | `examples/standalone-host` | Standalone Node broker host, agent/client WebSocket mounting, client authentication, diagnostics, and authenticated artifact HTTP reads. |
 | `examples/browser-client` | Generic browser JSON-RPC WebSocket client, target watch, leases, CDP events, cancellation, and artifact fetch. |
 | `examples/node-client` | Generic Node JSON-RPC WebSocket client and reconnect/cancellation behavior. |
-| `examples/devframe` | Vite/Devframe embedded broker host, `birpc` client facade, connection-offer generation, and one-shot injected/content bootstrap. |
+| `examples/birpc` | Application-owned `birpc` embedded broker host, `birpc` client facade, connection-offer generation, and one-shot injected/content bootstrap. |
 | `examples/mcp` | MCP Streamable HTTP host, semantic tools, raw-CDP escape hatch configuration, artifact mapping, and a sample MCP client. |
 | `examples/embedded` | Broker core and client facade in one process using in-memory transport, custom policy adapters, and a custom artifact store without a network client endpoint. |
 
@@ -219,8 +219,8 @@ Prefer explicit subpath exports over broad barrel files when runtimes differ:
 @dvcol/chrome-debugger-bridge-websocket/node
 @dvcol/chrome-debugger-bridge-websocket/testing
 
-@dvcol/chrome-debugger-bridge-devframe/client
-@dvcol/chrome-debugger-bridge-devframe/node
+@dvcol/cdb-birpc/client
+@dvcol/cdb-birpc/node
 
 @dvcol/chrome-debugger-bridge-mcp
 ```
@@ -250,7 +250,7 @@ No core type may expose `chrome.tabs.Tab`, `chrome.debugger.Debuggee`, Node requ
 
 - Define each public request, result, notification, and error once.
 - Derive static TypeScript types from the runtime definitions rather than maintaining parallel handwritten shapes.
-- Expose validators through the Standard Schema interface so Devframe can consume them without making `birpc` canonical.
+- Expose validators through the Standard Schema interface so custom birpc can consume them without making `birpc` canonical.
 - Generate or publish JSON Schema artifacts for non-TypeScript client authors.
 - Keep the concrete schema library behind core exports; select it during the protocol workstream based on Standard Schema support, JSON Schema output, browser size, and discriminated-union performance.
 - Reject unknown protocol envelope fields where ambiguity would weaken security. Domain payloads may opt into forward-compatible unknown fields explicitly.
@@ -420,7 +420,7 @@ Every opinionated surface is replaceable behind a narrow adapter.
 | Adapter | Input | Output/decision |
 | --- | --- | --- |
 | `BrokerLocator` | Extension context or bootstrap offer | Candidate broker endpoint and non-secret identity metadata. |
-| `BootstrapAdapter` | Page/Devframe connection offer | One-shot delivery to the service worker. |
+| `BootstrapAdapter` | Page/application-owned `birpc` connection offer | One-shot delivery to the service worker. |
 | `PairingPolicy` | Broker identity, origin, fingerprint, prior pairing | Reject, request user approval, or accept. |
 | `PairingStore` | Broker identity and credential material | Persist, rotate, retrieve, and revoke. |
 | `ConsentAdapter` | Pairing, exposure, or capability escalation prompt | Explicit user decision. |
@@ -438,12 +438,12 @@ Adapters are capability-oriented. Avoid broad `platform` objects that leak unrel
 
 ## 8. Bootstrap and pairing
 
-### 8.1 Devframe/Vite bootstrap
+### 8.1 Application-owned birpc bootstrap
 
 The content/injected path is used only to establish the direct transport:
 
-1. The Devframe host creates a short-lived connection offer containing endpoint, broker identity, protocol range, nonce, expiry, and optional display metadata.
-2. The Devframe page makes that non-secret offer available to its injected bootstrap adapter.
+1. The application-owned `birpc` host creates a short-lived connection offer containing endpoint, broker identity, protocol range, nonce, expiry, and optional display metadata.
+2. The application page makes that non-secret offer available to its injected bootstrap adapter.
 3. The injected adapter sends it to an isolated content script using a one-shot, origin-bound channel.
 4. The content script forwards it to the extension service worker through `chrome.runtime` messaging.
 5. The service worker validates the offer through `BrokerLocator` and `PairingPolicy`.
@@ -475,7 +475,7 @@ The exact proof mechanism and credential storage backend are refined in the secu
 Core defines operations and schemas. Adapters map those operations to their environment:
 
 - JSON-RPC 2.0 is the default interoperable WebSocket codec.
-- `birpc` maps the same client facade into Devframe's RPC environment.
+- `birpc` maps the same client facade into an application-owned RPC environment.
 - In-process calls invoke the client facade directly.
 - MCP maps a curated tool surface to the same facade.
 
@@ -798,22 +798,22 @@ Run the same transport behavior suite against:
 - in-memory duplex transport;
 - browser-to-Node WebSocket;
 - generic JSON-RPC client WebSocket;
-- Devframe `birpc` facade.
+- application-owned `birpc` facade.
 
-## 16. Devframe package
+## 16. Application-owned birpc package
 
-Use Vite DevTools and Devframe as integration references while retaining the bridge's own domain boundary.
+Use `birpc` as an application-owned integration boundary while retaining the bridge's own domain boundary.
 
 ### 16.1 Node adapter
 
 Provide a composable integration that:
 
-- receives an existing Devframe/Vite server;
+- receives an existing application-owned HTTP server and `birpc` channel;
 - creates or receives a broker instance;
 - mounts the agent WebSocket path;
 - registers a typed `birpc` facade backed by the core client;
 - generates short-lived connection offers for inspected pages;
-- exposes lifecycle and diagnostics to the Devframe host;
+- exposes lifecycle and diagnostics to the application-owned host;
 - disposes routes, connections, and broker resources with the host.
 
 ### 16.2 Client adapter
@@ -827,7 +827,7 @@ Provide typed client helpers for:
 - resolving artifacts;
 - initiating the one-shot extension bootstrap.
 
-`birpc` streaming conventions are isolated here. The bridge protocol remains usable without Devframe.
+`birpc` streaming conventions are isolated here. The bridge protocol remains usable without this adapter.
 
 ### 16.3 Bootstrap entries
 
@@ -891,7 +891,7 @@ Model package builds after Vite DevTools' runtime split:
 - `core`: neutral ESM, declarations, source maps, multiple subpath entries.
 - `extension`: browser ESM library entries; test utilities in a separate export.
 - `websocket`: separate neutral/browser and Node builds so Node dependencies cannot enter browser output.
-- `devframe`: separate client, Node, content, and injected builds; injected output uses IIFE.
+- `birpc`: separate client, Node, content, and injected builds; injected output uses IIFE.
 - `mcp`: Node ESM and declarations.
 
 Set package exports from build entries and validate them with `publint`. Bundle only code that must be self-contained for the extension bootstrap; keep ordinary library dependencies external unless package analysis proves inlining is required.
@@ -900,7 +900,7 @@ Set package exports from build entries and validate them with `publint`. Bundle 
 
 Use Vite 8 for interactive examples:
 
-- Devframe example;
+- application-owned `birpc` example;
 - generic browser-client example;
 - any reference extension popup/options UI;
 - inspector or protocol viewer.
@@ -1108,7 +1108,7 @@ Playwright is a test harness only and is never a product runtime dependency.
 - Install packed packages into clean consumers.
 - Compile a TypeScript consumer against each public subpath.
 - Run a browser client without workspace source aliases.
-- Exercise the Devframe `birpc` integration.
+- Exercise the application-owned `birpc` integration.
 - Exercise the MCP adapter with the official SDK test client/inspector.
 - Exercise JSON-RPC from a non-TypeScript fixture using generated JSON Schema.
 - Build and smoke-test every private example against packed packages rather than workspace source aliases in at least one CI job.
@@ -1255,8 +1255,8 @@ This catalogue is intentionally unprioritized. Each group can be refined into it
 
 - transport-neutral TypeScript client.
 - generic browser/Node JSON-RPC WebSocket client.
-- Devframe host and `birpc` client adapters.
-- Vite connection-offer/bootstrap adapter.
+- application-owned `birpc` host and client adapters.
+- application connection-offer/bootstrap adapter.
 - standalone host composition.
 - MCP Streamable HTTP adapter and semantic tools.
 - optional thin stdio MCP adapter.
@@ -1267,7 +1267,7 @@ This catalogue is intentionally unprioritized. Each group can be refined into it
 - runnable extension-agent example.
 - standalone and embedded broker-host examples.
 - browser and Node generic-client examples.
-- Devframe host/client/bootstrap example.
+- application-owned `birpc` host/client/bootstrap example.
 - MCP host/client example.
 - machine-validated example coverage manifest.
 - latest stable Vitest Node and jsdom projects.
@@ -1288,7 +1288,7 @@ These are architectural slices, not priority order or release assignments.
 | WebSocket transport | browser/Node endpoints, JSON-RPC, reconnect, binary frames | Frame formats, endpoint mounting API, limits, transport contract suite. |
 | CDP policy | capability presets, method/parameter classification | Generated/reviewed catalogue, unknown-method behavior, restricted-domain tests. |
 | Artifacts | descriptors, stores, streaming, HTTP | Store contract, quota/expiry policy, binary framing, authorization. |
-| Devframe integration | Vite host, `birpc`, page bootstrap | Plugin lifecycle, RPC facade, offer injection, cleanup, playground. |
+| Application-owned birpc integration | HTTP host, `birpc`, page bootstrap | Host lifecycle, RPC facade, offer injection, cleanup, playground. |
 | MCP integration | tools, Streamable HTTP, stdio compatibility | Tool schemas, lease behavior, cancellation, artifact mapping, SDK compatibility. |
 | Examples | every public adapter, client, and host composition | Runnable private workspaces, coverage manifest, concise READMEs, smoke tests against packed packages. |
 | End-to-end verification | real extension/Chrome and clean consumers | Test topology, fixtures, browser matrix, security and recovery scenarios. |
@@ -1303,8 +1303,8 @@ The architecture is realized when all of the following are true:
 1. An arbitrary Chrome 125+ MV3 extension can import the extension package, supply its own adapters/UI, and expose a selected tab.
 2. Bootstrap through a content/injected adapter ends after the service worker establishes its direct WebSocket.
 3. No page script, broker, or client receives a raw Chrome tab/window/group/session ID.
-4. A host can embed the broker in Devframe, a standalone Node server, or an application without changing core.
-5. Vite DevTools can use a `birpc` adapter while a generic web client uses JSON-RPC WebSocket against the same broker state.
+4. A host can embed the broker in an application-owned `birpc` channel, a standalone Node server, or an application without changing core.
+5. An application-owned `birpc` client can use the same broker state as a generic web client using JSON-RPC WebSocket.
 6. An MCP adapter can call the same broker in process without owning Chrome lifecycle.
 7. Multiple readers can observe one target and one controller can hold exclusive mutation rights.
 8. The extension rejects a broker command outside the target's grant even if broker-side validation is bypassed.
@@ -1325,10 +1325,10 @@ The architecture is realized when all of the following are true:
 - named pnpm catalogs and `workspace:` references enforced everywhere.
 - `@dvcol/eslint-config` pnpm rules as the main manifest policy gate.
 - modular Lerna-Lite version/publish fixed release train; no full Lerna, Lerna-Lite task runner, or Nx layer.
-- runtime-boundary packages: core, extension, WebSocket, Devframe, and MCP.
+- runtime-boundary packages: core, extension, WebSocket, application-owned `birpc`, and MCP.
 - broker is embeddable core, not necessarily a standalone daemon.
 - WebSocket is the direct extension data transport and is bidirectional.
-- `birpc` is a Devframe adapter, not the canonical public protocol.
+- `birpc` is an application-owned adapter, not the canonical public protocol.
 - content/injected messaging is a bootstrap adapter only.
 - all opinionated integration surfaces are adapters.
 - extension-side target/capability authorization is mandatory and deny-by-default.

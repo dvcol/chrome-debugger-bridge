@@ -13,20 +13,20 @@ import type { BirpcOptions } from 'birpc';
 import { createChromeDebuggerBridgeClient } from '@dvcol/chrome-debugger-bridge';
 import { createBirpc } from 'birpc';
 
-export interface DevframeRpcChannel {
+export interface BirpcRpcChannel {
   off?: (listener: (message: unknown) => void) => void;
   on: (listener: (message: unknown) => void) => void;
   post: (message: unknown) => void;
 }
 
-export interface DevframeSubscriptionDescriptor {
+export interface BirpcSubscriptionDescriptor {
   readonly id: string;
   readonly targetGeneration: number;
   readonly targetId: string;
 }
 
-/** The Devframe-only RPC surface called by the browser-side facade. */
-export interface DevframeBridgeHostRpc {
+/** Application-owned custom birpc RPC surface called by the browser-side facade. */
+export interface BirpcBridgeHostRpc {
   acquireLease: (request: AcquireLeaseRequest) => Promise<Lease>;
   cancelCommand: (request: Pick<CdpCommand, 'operationId' | 'targetGeneration' | 'targetId'>) => Promise<void>;
   executeCommand: (command: CdpCommand) => Promise<CdpCommandResult>;
@@ -38,12 +38,12 @@ export interface DevframeBridgeHostRpc {
   startSubscription: (subscriptionId: string) => Promise<void>;
   startTargetWatch: () => Promise<void>;
   stopTargetWatch: () => Promise<void>;
-  subscribe: (request: CdpSubscriptionRequest) => Promise<DevframeSubscriptionDescriptor>;
+  subscribe: (request: CdpSubscriptionRequest) => Promise<BirpcSubscriptionDescriptor>;
   unsubscribe: (subscriptionId: string) => Promise<void>;
 }
 
-/** Stream callbacks kept in the Devframe package rather than the core protocol. */
-export interface DevframeBridgeClientRpc {
+/** Stream callbacks kept in the custom birpc package rather than the core protocol. */
+export interface BirpcBridgeClientRpc {
   cdpEvent: (event: CdpEvent) => void;
   subscriptionClosed: (subscriptionId: string) => void;
   subscriptionOverflow: (input: {
@@ -54,20 +54,20 @@ export interface DevframeBridgeClientRpc {
   targetChange: (change: TargetChange) => void;
 }
 
-export interface DevframeChromeDebuggerBridgeClient extends ChromeDebuggerBridgeClient {
+export interface BirpcChromeDebuggerBridgeClient extends ChromeDebuggerBridgeClient {
   cancelCommand: (request: Pick<CdpCommand, 'operationId' | 'targetGeneration' | 'targetId'>) => Promise<void>;
-  diagnostics: () => DevframeClientDiagnostics;
+  diagnostics: () => BirpcClientDiagnostics;
   dispose: () => void;
 }
 
 /** Contains only lifecycle counters and flags; it deliberately excludes transport and Chrome data. */
-export interface DevframeClientDiagnostics {
+export interface BirpcClientDiagnostics {
   readonly disposed: boolean;
   readonly subscriptionCount: number;
   readonly watchingTargets: boolean;
 }
 
-interface DevframeSubscriptionState {
+interface BirpcSubscriptionState {
   readonly events: AsyncQueue<CdpEvent>;
   readonly targetGeneration: number;
   readonly targetId: string;
@@ -107,7 +107,7 @@ function createAsyncQueue<Value>(maximumValues: number): AsyncQueue<Value> {
         receiver.resolve({ done: false, value });
         return;
       }
-      if (values.length >= maximumValues) throw new Error('The Devframe subscription queue overflowed.');
+      if (values.length >= maximumValues) throw new Error('The custom birpc subscription queue overflowed.');
       values.push(value);
     },
     [Symbol.asyncIterator]() {
@@ -124,7 +124,7 @@ function createAsyncQueue<Value>(maximumValues: number): AsyncQueue<Value> {
   };
 }
 
-function createBirpcChannelOptions(channel: DevframeRpcChannel): Pick<BirpcOptions, 'off' | 'on' | 'post'> {
+function createBirpcChannelOptions(channel: BirpcRpcChannel): Pick<BirpcOptions, 'off' | 'on' | 'post'> {
   return {
     on(listener: (message: unknown) => void) {
       channel.on(listener);
@@ -140,13 +140,13 @@ function createBirpcChannelOptions(channel: DevframeRpcChannel): Pick<BirpcOptio
   };
 }
 
-/** Adapts an isolated Devframe birpc channel to the stable transport-neutral client facade. */
-export function createDevframeBridgeClient(channel: DevframeRpcChannel): DevframeChromeDebuggerBridgeClient {
-  const subscriptions = new Map<string, DevframeSubscriptionState>();
+/** Adapts an application-owned birpc channel to the stable transport-neutral client facade. */
+export function createBirpcBridgeClient(channel: BirpcRpcChannel): BirpcChromeDebuggerBridgeClient {
+  const subscriptions = new Map<string, BirpcSubscriptionState>();
   const targetChanges = createAsyncQueue<TargetChange>(32);
   let disposed = false;
   let targetWatchStarted: Promise<void> | undefined;
-  const rpc = createBirpc<DevframeBridgeHostRpc, DevframeBridgeClientRpc>({
+  const rpc = createBirpc<BirpcBridgeHostRpc, BirpcBridgeClientRpc>({
     cdpEvent(event) {
       const subscription = subscriptions.get(event.subscriptionId);
       if (subscription === undefined || subscription.closed) return;
@@ -196,7 +196,7 @@ export function createDevframeBridgeClient(channel: DevframeRpcChannel): Devfram
     },
     async subscribe(request) {
       const descriptor = await rpc.subscribe(request);
-      const subscription: DevframeSubscriptionState = {
+      const subscription: BirpcSubscriptionState = {
         closed: false,
         droppedCount: 0,
         events: createAsyncQueue(request.buffer.capacity),
@@ -211,7 +211,7 @@ export function createDevframeBridgeClient(channel: DevframeRpcChannel): Devfram
         await rpc.startSubscription(subscription.id);
       } catch (error) {
         subscriptions.delete(subscription.id);
-        subscription.events.close(error instanceof Error ? error : new Error('Unable to start the Devframe subscription.'));
+        subscription.events.close(error instanceof Error ? error : new Error('Unable to start the Birpc subscription.'));
         throw error;
       }
       return {

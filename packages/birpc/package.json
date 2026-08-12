@@ -1,13 +1,13 @@
 {
-  "name": "@dvcol/chrome-debugger-bridge-devframe",
+  "name": "@dvcol/cdb-birpc",
   "type": "module",
   "version": "0.0.0",
-  "description": "Devframe and Vite adapters for Chrome Debugger Bridge.",
+  "description": "CDB (Chrome Debugger Bridge) application-owned birpc adapters.",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dvcol/chrome-debugger-bridge.git",
-    "directory": "packages/devframe"
+    "directory": "packages/birpc"
   },
   "sideEffects": false,
   "exports": {
