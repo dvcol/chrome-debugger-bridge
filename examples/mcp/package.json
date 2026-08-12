@@ -4,12 +4,11 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "smoke": "node --input-type=module --eval \"await import('@dvcol/chrome-debugger-bridge-mcp')\""
+    "smoke": "node smoke.mjs"
   },
   "dependencies": {
     "@dvcol/chrome-debugger-bridge": "workspace:*",
-    "@dvcol/chrome-debugger-bridge-extension": "workspace:*",
     "@dvcol/chrome-debugger-bridge-mcp": "workspace:*",
-    "@dvcol/chrome-debugger-bridge-websocket": "workspace:*"
+    "@modelcontextprotocol/client": "2.0.0"
   }
 }
