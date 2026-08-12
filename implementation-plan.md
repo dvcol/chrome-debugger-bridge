@@ -786,9 +786,9 @@ The broker depends only on `ArtifactStore`; memory, filesystem, and host-managed
 Suggested configurable default paths:
 
 ```text
-/__chrome_debugger_bridge/agent
-/__chrome_debugger_bridge/client
-/__chrome_debugger_bridge/artifacts/:id
+/cdb/agent
+/cdb/client
+/cdb/artifacts/:id
 ```
 
 ### 15.3 Contract tests

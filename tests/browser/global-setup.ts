@@ -199,12 +199,12 @@ export default async function setup(project: TestProject): Promise<() => Promise
   const artifactAddress = artifactServer.address();
   if (artifactAddress === null || typeof artifactAddress === 'string') throw new Error('Artifact test server did not expose a TCP address.');
   project.provide('websocketBrowserTest', {
-    agentEndpoint: `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`,
+    agentEndpoint: `ws://${bridge.host}:${bridge.port}/cdb/agent`,
     brokerId,
-    artifactEndpoint: `http://127.0.0.1:${artifactAddress.port}/__chrome_debugger_bridge/artifacts/`,
+    artifactEndpoint: `http://127.0.0.1:${artifactAddress.port}/cdb/artifacts/`,
     artifactId,
-    clientEndpoint: `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/client`,
-    immediateAgentEndpoint: `ws://${immediateBridge.host}:${immediateBridge.port}/__chrome_debugger_bridge/agent`,
+    clientEndpoint: `ws://${bridge.host}:${bridge.port}/cdb/client`,
+    immediateAgentEndpoint: `ws://${immediateBridge.host}:${immediateBridge.port}/cdb/agent`,
     immediateBrokerId,
     immediatePairingCode,
     pairingCode,

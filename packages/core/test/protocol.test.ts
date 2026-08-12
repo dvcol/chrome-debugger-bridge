@@ -386,7 +386,7 @@ describe('protocol schemas', () => {
       parameters: {
         agentId: agentInstanceId,
         clientNonce: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-        endpointPath: '/__chrome_debugger_bridge/agent',
+        endpointPath: '/cdb/agent',
         origin: 'chrome-extension://abcdefghijklmnop',
         protocolVersions: { maximum: 1, minimum: 1 },
         role: 'agent',

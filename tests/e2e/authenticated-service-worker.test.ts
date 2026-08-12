@@ -163,7 +163,7 @@ it('runs the authenticated browser transport inside an MV3 service worker', asyn
     };
     return serviceWorkerGlobal.runAuthenticatedBridgeTest({ endpoint, pairingCode: code });
   }, {
-    endpoint: `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`,
+    endpoint: `ws://${bridge.host}:${bridge.port}/cdb/agent`,
     pairingCode,
   });
 
@@ -219,7 +219,7 @@ it('validates a Devframe offer in a real MV3 worker before direct broker traffic
   const serviceWorker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
   const result = await serviceWorker.evaluate(async ({ endpoint, pairingCode: code }) => (globalThis as unknown as {
     runDevframeBootstrapTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<{ readonly brokerId: string; readonly malformedRejected: boolean; readonly responseMethod: string; readonly wrongOriginRejected: boolean }>;
-  }).runDevframeBootstrapTest({ endpoint, pairingCode: code }), { endpoint: `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`, pairingCode });
+  }).runDevframeBootstrapTest({ endpoint, pairingCode: code }), { endpoint: `ws://${bridge.host}:${bridge.port}/cdb/agent`, pairingCode });
 
   expect(result.brokerId).toBe(brokerId);
   expect(result.malformedRejected).toBe(true);
@@ -329,9 +329,9 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   const page = await context.newPage();
   await page.goto(`http://127.0.0.1:${address.port}/target`);
   const serviceWorker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
-  const target = await serviceWorker.evaluate(async ({ endpoint, pairingCode: code }) => (globalThis as unknown as { runPublishedTargetAgentTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<{ readonly generation: number; readonly id: string }> }).runPublishedTargetAgentTest({ endpoint, pairingCode: code }), { endpoint: `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`, pairingCode });
+  const target = await serviceWorker.evaluate(async ({ endpoint, pairingCode: code }) => (globalThis as unknown as { runPublishedTargetAgentTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<{ readonly generation: number; readonly id: string }> }).runPublishedTargetAgentTest({ endpoint, pairingCode: code }), { endpoint: `ws://${bridge.host}:${bridge.port}/cdb/agent`, pairingCode });
   const publication = await targetWatcher.next();
-  const clientEndpoint = `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/client`;
+  const clientEndpoint = `ws://${bridge.host}:${bridge.port}/cdb/client`;
   const firstReader = await connectNodeClientWebSocket({ authorization: 'Bearer mv3-agent-test-client', endpoint: clientEndpoint });
   const secondReader = await connectNodeClientWebSocket({ authorization: 'Bearer mv3-agent-test-client', endpoint: clientEndpoint });
   const controller = await connectNodeClientWebSocket({ authorization: 'Bearer mv3-agent-test-client', endpoint: clientEndpoint });
@@ -364,7 +364,7 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   await new Promise(resolve => setTimeout(resolve, 2_000));
   currentTime += 5_000;
   const expiredCommand = await sendClientRequest(controller, { kind: 'request', method: 'cdp.send', parameters: { leaseId: lease!.id, method: 'Runtime.evaluate', operationId: crypto.randomUUID(), parameters: { expression: 'document.title' }, targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
-  const renewedTarget = await serviceWorker.evaluate(async ({ endpoint, pairingCode: code }) => (globalThis as unknown as { recoverPublishedTargetAgentTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<{ readonly generation: number; readonly id: string }> }).recoverPublishedTargetAgentTest({ endpoint, pairingCode: code }), { endpoint: `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`, pairingCode });
+  const renewedTarget = await serviceWorker.evaluate(async ({ endpoint, pairingCode: code }) => (globalThis as unknown as { recoverPublishedTargetAgentTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<{ readonly generation: number; readonly id: string }> }).recoverPublishedTargetAgentTest({ endpoint, pairingCode: code }), { endpoint: `ws://${bridge.host}:${bridge.port}/cdb/agent`, pairingCode });
   const revocation = await targetWatcher.next();
   const renewedPublication = await targetWatcher.next();
   const staleTargetAfterRecovery = await sendClientRequest(firstReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
@@ -441,7 +441,7 @@ it('reissues fresh target authority after a broker restart on the same endpoint'
   const page = await context.newPage();
   await page.goto(`http://127.0.0.1:${address.port}/target`);
   const serviceWorker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
-  const endpoint = `ws://${firstBridge.host}:${firstBridge.port}/__chrome_debugger_bridge/agent`;
+  const endpoint = `ws://${firstBridge.host}:${firstBridge.port}/cdb/agent`;
   const initialTarget = await serviceWorker.evaluate(async ({ endpoint: agentEndpoint, pairingCode: code }) => (globalThis as unknown as { runPublishedTargetAgentTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<{ readonly generation: number; readonly id: string }> }).runPublishedTargetAgentTest({ endpoint: agentEndpoint, pairingCode: code }), { endpoint, pairingCode });
   await firstBridge.close();
   const secondBroker = createTargetBroker();
@@ -449,7 +449,7 @@ it('reissues fresh target authority after a broker restart on the same endpoint'
   cleanupTasks.push(async () => secondBridge.close());
   const secondTargetWatcher = secondBroker.watchTargets()[Symbol.asyncIterator]();
   await secondTargetWatcher.next();
-  const renewedTarget = await serviceWorker.evaluate(async ({ endpoint: agentEndpoint, pairingCode: code }) => (globalThis as unknown as { recoverPublishedTargetAgentTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<{ readonly generation: number; readonly id: string }> }).recoverPublishedTargetAgentTest({ endpoint: agentEndpoint, pairingCode: code }), { endpoint: `ws://${secondBridge.host}:${secondBridge.port}/__chrome_debugger_bridge/agent`, pairingCode });
+  const renewedTarget = await serviceWorker.evaluate(async ({ endpoint: agentEndpoint, pairingCode: code }) => (globalThis as unknown as { recoverPublishedTargetAgentTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<{ readonly generation: number; readonly id: string }> }).recoverPublishedTargetAgentTest({ endpoint: agentEndpoint, pairingCode: code }), { endpoint: `ws://${secondBridge.host}:${secondBridge.port}/cdb/agent`, pairingCode });
   const recoveredPublication = await secondTargetWatcher.next();
   await serviceWorker.evaluate(async () => (globalThis as unknown as { interruptPublishedTargetAgentTest: () => Promise<void> }).interruptPublishedTargetAgentTest());
 

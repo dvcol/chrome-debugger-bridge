@@ -13,7 +13,7 @@ type IndexedDbStoreSatisfiesBrowserStore = Expect<IndexedDbPairingStore extends 
 const pairingStore = createIndexedDbPairingStore({ databaseName: 'packed-consumer' });
 const browserConnectionPromise: Promise<BrowserAgentConnection> = connectAgentWebSocket({
   credentialStore: pairingStore,
-  endpoint: 'ws://127.0.0.1:9222/__chrome_debugger_bridge/agent',
+  endpoint: 'ws://127.0.0.1:9222/cdb/agent',
   origin: 'chrome-extension://packed-consumer',
 });
 

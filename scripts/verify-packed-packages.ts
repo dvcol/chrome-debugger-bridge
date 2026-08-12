@@ -252,7 +252,7 @@ try {
     .join('\n');
   await writeFile(
     join(packedExampleRoot, 'pnpm-workspace.yaml'),
-    `packages:\n  - examples/*\noverrides:\n${packedPackageOverrides}\n`,
+    `packages:\n  - examples/*\ncatalog:\n  '@modelcontextprotocol/client': 2.0.0\noverrides:\n${packedPackageOverrides}\n`,
     'utf8',
   );
 

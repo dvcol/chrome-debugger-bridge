@@ -5,7 +5,7 @@ import type { AuthenticatedPrincipal, ClientAuthenticationAdapter, TransportClai
 
 import { createHash } from 'node:crypto';
 
-export const defaultArtifactHttpPath = '/__chrome_debugger_bridge/artifacts/';
+export const defaultArtifactHttpPath = '/cdb/artifacts/';
 const rangePattern = /^bytes=(\d*)-(\d*)$/u;
 
 export interface MountedAuthenticatedArtifactHttpEndpoint {

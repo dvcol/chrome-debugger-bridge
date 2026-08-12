@@ -353,7 +353,7 @@ function createMcpServer(client: McpChromeDebuggerBridgeClient, enableRawCdp = f
 
 /** Mounts the official MCP SDK Streamable HTTP transport without taking ownership of the broker or HTTP server. */
 export function mountMcpStreamableHttp(options: MountMcpStreamableHttpOptions): MountedMcpStreamableHttp {
-  const path = options.path ?? '/mcp';
+  const path = options.path ?? '/cdb/mcp';
   const handler = createMcpHandler(() => createMcpServer(options.client, options.enableRawCdp), { legacy: 'reject', responseMode: 'sse' });
   const nodeHandler = toNodeHandler(handler);
   let closed = false;

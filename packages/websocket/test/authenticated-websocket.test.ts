@@ -161,7 +161,7 @@ async function waitForTestStage<Value>(promise: Promise<Value>, stage: string): 
 
 async function openAgentWebSocket(bridge: StandaloneAuthenticatedWebSocketBridge, origin: string): Promise<WebSocket> {
   const webSocket = new WebSocket(
-    `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`,
+    `ws://${bridge.host}:${bridge.port}/cdb/agent`,
     agentWebSocketProtocol,
     { headers: { origin } },
   );
@@ -180,7 +180,7 @@ function createAuthenticationBegin(credentialId?: string): string {
       agentId: crypto.randomUUID(),
       clientNonce: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
       ...(credentialId === undefined ? {} : { credentialId }),
-      endpointPath: '/__chrome_debugger_bridge/agent',
+      endpointPath: '/cdb/agent',
       origin: 'chrome-extension://limit-test',
       protocolVersions: { maximum: 1, minimum: 1 },
       role: 'agent',
@@ -205,7 +205,7 @@ async function authenticateStoredAgentWebSocket(webSocket: WebSocket, input: {
       agentId: input.agentId,
       clientNonce,
       credentialId: input.credentialId,
-      endpointPath: '/__chrome_debugger_bridge/agent',
+      endpointPath: '/cdb/agent',
       expectedBrokerId: input.brokerId,
       origin: input.origin,
       protocolVersions: { maximum: 1, minimum: 1 },
@@ -231,7 +231,7 @@ async function authenticateStoredAgentWebSocket(webSocket: WebSocket, input: {
     clientNonce,
     connectionId: beginResponse.result.connectionId,
     credentialId: input.credentialId,
-    endpointPath: '/__chrome_debugger_bridge/agent',
+    endpointPath: '/cdb/agent',
     expiresAt: beginResponse.result.expiresAt,
     origin: input.origin,
     protocolVersion: 1,
@@ -273,7 +273,7 @@ it('authenticates a generic Node client separately and completes a validated rou
       receivedPrincipalId = principalId;
     },
   });
-  const endpoint = `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/client`;
+  const endpoint = `ws://${bridge.host}:${bridge.port}/cdb/client`;
   const connection = await connectNodeClientWebSocket({
     authorization: 'Bearer valid-client-token',
     endpoint,
@@ -299,7 +299,7 @@ it('rejects invalid client authority without creating a client connection', asyn
   const bridge = await createTestBridge();
   await expect(connectNodeClientWebSocket({
     authorization: 'Bearer invalid-client-token',
-    endpoint: `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/client`,
+    endpoint: `ws://${bridge.host}:${bridge.port}/cdb/client`,
   })).rejects.toThrow('401');
 });
 
@@ -309,7 +309,7 @@ it('times out pending generic client authentication', async () => {
 
   await expect(connectNodeClientWebSocket({
     authorization: 'Bearer valid-client-token',
-    endpoint: `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/client`,
+    endpoint: `ws://${bridge.host}:${bridge.port}/cdb/client`,
   })).rejects.toThrow('408');
 });
 
@@ -317,7 +317,7 @@ it('rejects malformed frames from an authenticated generic client', async () => 
   expect.assertions(1);
   const bridge = await createTestBridge();
   const webSocket = new WebSocket(
-    `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/client`,
+    `ws://${bridge.host}:${bridge.port}/cdb/client`,
     clientWebSocketProtocol,
     { headers: { authorization: 'Bearer valid-client-token' } },
   );
@@ -336,7 +336,7 @@ it('does not deliver valid generic-client frames queued after a fatal frame', as
   let deliveredMessages = 0;
   const bridge = await createTestBridge({ onClientMessage: () => deliveredMessages += 1 });
   const webSocket = new WebSocket(
-    `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/client`,
+    `ws://${bridge.host}:${bridge.port}/cdb/client`,
     clientWebSocketProtocol,
     { headers: { authorization: 'Bearer valid-client-token' } },
   );
@@ -362,7 +362,7 @@ it('rejects a client subprotocol on the agent endpoint before authentication', a
   expect.assertions(1);
   const bridge = await createTestBridge();
   const webSocket = new WebSocket(
-    `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`,
+    `ws://${bridge.host}:${bridge.port}/cdb/agent`,
     clientWebSocketProtocol,
   );
 
@@ -373,7 +373,7 @@ it('applies the host origin policy before agent authentication', async () => {
   expect.assertions(1);
   const bridge = await createTestBridge({ originPolicy: origin => origin === 'chrome-extension://allowed' });
   const webSocket = new WebSocket(
-    `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`,
+    `ws://${bridge.host}:${bridge.port}/cdb/agent`,
     agentWebSocketProtocol,
     { headers: { origin: 'chrome-extension://denied' } },
   );
@@ -393,7 +393,7 @@ it('bounds and times out sockets while the host origin policy is pending', async
       return new Promise<boolean>(() => {});
     },
   });
-  const endpoint = `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`;
+  const endpoint = `ws://${bridge.host}:${bridge.port}/cdb/agent`;
   const firstWebSocket = new WebSocket(endpoint, agentWebSocketProtocol);
   const firstRejection = waitForRejectedUpgrade(firstWebSocket);
   await policyStarted;
@@ -412,7 +412,7 @@ it('rejects client-plane role confusion on the agent endpoint', async () => {
     },
   });
   const webSocket = new WebSocket(
-    `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`,
+    `ws://${bridge.host}:${bridge.port}/cdb/agent`,
     agentWebSocketProtocol,
     {
       headers: { origin: 'chrome-extension://role-confusion' },
@@ -451,7 +451,7 @@ it('closes stalled unauthenticated agent connections at the handshake deadline',
   expect.assertions(1);
   const bridge = await createTestBridge({ handshakeTimeoutMilliseconds: 25 });
   const webSocket = new WebSocket(
-    `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`,
+    `ws://${bridge.host}:${bridge.port}/cdb/agent`,
     agentWebSocketProtocol,
     {
       headers: { origin: 'chrome-extension://timeout' },
@@ -665,7 +665,7 @@ it('revokes every connection that races with activation of a new credential', as
     parameters: {
       agentId,
       clientNonce,
-      endpointPath: '/__chrome_debugger_bridge/agent',
+      endpointPath: '/cdb/agent',
       origin,
       protocolVersions: { maximum: 1, minimum: 1 },
       role: 'agent',
@@ -697,7 +697,7 @@ it('revokes every connection that races with activation of a new credential', as
     clientNonce,
     connectionId: beginResponse.result.connectionId,
     credentialId: pairingResponse.result.credentialId,
-    endpointPath: '/__chrome_debugger_bridge/agent',
+    endpointPath: '/cdb/agent',
     expiresAt: beginResponse.result.expiresAt,
     origin,
     protocolVersion: 1,
@@ -766,7 +766,7 @@ it('rejects malformed and oversized unauthenticated frames', async () => {
   expect.assertions(2);
   const bridge = await createTestBridge({ maximumMessageBytes: 128 });
   const malformedSocket = new WebSocket(
-    `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`,
+    `ws://${bridge.host}:${bridge.port}/cdb/agent`,
     agentWebSocketProtocol,
     {
       headers: { origin: 'chrome-extension://malformed' },
@@ -781,7 +781,7 @@ it('rejects malformed and oversized unauthenticated frames', async () => {
   expect(await malformedClose).toBe(1008);
 
   const oversizedSocket = new WebSocket(
-    `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/agent`,
+    `ws://${bridge.host}:${bridge.port}/cdb/agent`,
     agentWebSocketProtocol,
     {
       headers: { origin: 'chrome-extension://oversized' },
@@ -801,7 +801,7 @@ it('closes authenticated generic clients during broker cleanup', async () => {
   const bridge = await createTestBridge();
   const connection = await connectNodeClientWebSocket({
     authorization: 'Bearer valid-client-token',
-    endpoint: `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/client`,
+    endpoint: `ws://${bridge.host}:${bridge.port}/cdb/client`,
   });
 
   await bridge.close();

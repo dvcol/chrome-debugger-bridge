@@ -20,7 +20,7 @@ const transcript: AgentAuthenticationTranscript = {
   clientNonce: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
   connectionId: '30000000-0000-4000-8000-000000000001',
   credentialId: '40000000-0000-4000-8000-000000000001',
-  endpointPath: '/__chrome_debugger_bridge/agent',
+  endpointPath: '/cdb/agent',
   expiresAt: '2026-08-03T12:05:00.000Z',
   origin: 'chrome-extension://abcdefghijklmnop',
   protocolVersion: 1,

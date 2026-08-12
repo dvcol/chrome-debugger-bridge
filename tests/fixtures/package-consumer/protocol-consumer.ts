@@ -63,7 +63,7 @@ void agentAuthenticationMessageSchema['~standard'].validate({
   parameters: {
     agentId: '10000000-0000-4000-8000-000000000001',
     clientNonce: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-    endpointPath: '/__chrome_debugger_bridge/agent',
+    endpointPath: '/cdb/agent',
     origin: 'chrome-extension://package-consumer',
     protocolVersions: { maximum: 1, minimum: 1 },
     role: 'agent',

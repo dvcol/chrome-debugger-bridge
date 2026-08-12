@@ -119,14 +119,14 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       };
     },
   } as unknown as McpChromeDebuggerBridgeClient;
-  const mounted = mountMcpStreamableHttp({ client: bridgeClient, path: '/bridge-mcp', server });
+  const mounted = mountMcpStreamableHttp({ client: bridgeClient, server });
   await new Promise<void>((resolve, reject) => {
     server.listen(0, '127.0.0.1', resolve);
     server.once('error', reject);
   });
   const address = server.address();
   if (address === null || typeof address === 'string') throw new Error('Expected a TCP address.');
-  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/bridge-mcp`));
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/cdb/mcp`));
   const client = new Client(
     { name: 'mcp-test-client', version: '0.0.0' },
     { versionNegotiation: { mode: { pin: '2026-07-28' } } },

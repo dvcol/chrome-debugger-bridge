@@ -2,7 +2,7 @@
   "name": "@dvcol/chrome-debugger-bridge",
   "type": "module",
   "version": "0.0.0",
-  "description": "Runtime-neutral broker, protocol, and client primitives for Chrome Debugger Bridge.",
+  "description": "CDB (Chrome Debugger Bridge) runtime-neutral broker, protocol, and client primitives.",
   "license": "MIT",
   "repository": {
     "type": "git",

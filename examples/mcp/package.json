@@ -9,6 +9,6 @@
   "dependencies": {
     "@dvcol/chrome-debugger-bridge": "workspace:*",
     "@dvcol/chrome-debugger-bridge-mcp": "workspace:*",
-    "@modelcontextprotocol/client": "2.0.0"
+    "@modelcontextprotocol/client": "catalog:"
   }
 }

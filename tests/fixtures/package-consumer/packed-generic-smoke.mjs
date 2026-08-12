@@ -118,8 +118,8 @@ async function main() {
   await new Promise((resolve, reject) => artifactServer.listen(0, '127.0.0.1', error => error === undefined ? resolve() : reject(error)));
   const artifactAddress = artifactServer.address();
   if (artifactAddress === null || typeof artifactAddress === 'string') throw new Error('Artifact server did not expose a TCP port.');
-  const clientEndpoint = `ws://${bridge.host}:${bridge.port}/__chrome_debugger_bridge/client`;
-  const artifactEndpoint = `http://127.0.0.1:${artifactAddress.port}/__chrome_debugger_bridge/artifacts/`;
+  const clientEndpoint = `ws://${bridge.host}:${bridge.port}/cdb/client`;
+  const artifactEndpoint = `http://127.0.0.1:${artifactAddress.port}/cdb/artifacts/`;
 
   try {
     const browserClient = await createBrowserChromeDebuggerBridgeClient({ artifactEndpoint, authorization, endpoint: clientEndpoint, reconnect: { initialDelayMilliseconds: 1, maximumDelayMilliseconds: 5 } });

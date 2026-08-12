@@ -2,7 +2,7 @@
   "name": "@dvcol/chrome-debugger-bridge-extension",
   "type": "module",
   "version": "0.0.0",
-  "description": "Manifest V3 Chrome debugger agent primitives for Chrome Debugger Bridge.",
+  "description": "CDB (Chrome Debugger Bridge) Manifest V3 debugger agent primitives.",
   "license": "MIT",
   "repository": {
     "type": "git",

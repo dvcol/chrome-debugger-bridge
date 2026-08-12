@@ -54,8 +54,8 @@ export {
   streamArtifact,
 } from './artifacts.js';
 
-export const defaultAgentWebSocketPath = '/__chrome_debugger_bridge/agent';
-export const defaultClientWebSocketPath = '/__chrome_debugger_bridge/client';
+export const defaultAgentWebSocketPath = '/cdb/agent';
+export const defaultClientWebSocketPath = '/cdb/client';
 export { agentWebSocketProtocol, clientWebSocketProtocol } from './protocols.js';
 const maximumPendingAuthenticatedMessages = 32;
 const base64PaddingPattern = /=+$/u;
