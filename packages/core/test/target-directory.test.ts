@@ -24,6 +24,23 @@ async function artifactId(value: unknown): Promise<string> {
   return result.value.artifact.id;
 }
 
+function completeAgentHello(listener: ((message: AgentToBrokerMessage) => void) | undefined): void {
+  listener?.({
+    kind: 'request',
+    method: 'agent.hello',
+    parameters: {
+      connectionGeneration: 1,
+      features: [],
+      heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 },
+      implementation: { instanceId: '60000000-0000-4000-8000-000000000099', name: 'target-directory-test', role: 'agent', version: '0.0.0' },
+      limits: { maximumArtifactBytes: 16_777_216, maximumInlineResultBytes: 65_536, maximumMessageBytes: 16_384 },
+      protocolVersions: { maximum: 1, minimum: 1 },
+    },
+    protocolVersion: 1,
+    requestId: '60000000-0000-4000-8000-000000000098',
+  });
+}
+
 it('lists only opaque targets published by the agent', async () => {
   expect.assertions(3);
   const broker = createTargetBroker();
@@ -124,9 +141,34 @@ it('applies authenticated agent lifecycle notifications to the broker', () => {
     return () => listener = undefined;
   } }, broker);
 
+  completeAgentHello(listener);
   listener?.({ kind: 'notification', method: 'targets.publish', parameters: { target }, protocolVersion: 1 });
   expect(broker.listTargets()).toEqual([target]);
   listener?.({ kind: 'notification', method: 'targets.reconcile', parameters: { targets: [] }, protocolVersion: 1 });
+  expect(broker.listTargets()).toEqual([]);
+  disconnect();
+});
+
+it('rejects agent traffic until one matching hello completes', () => {
+  expect.assertions(3);
+  const broker = createTargetBroker();
+  let listener: ((message: AgentToBrokerMessage) => void) | undefined;
+  let closeCode: number | undefined;
+  const disconnect = connectAgentTargetBroker({
+    close(code) {
+      closeCode = code;
+    },
+    onMessage(receivedListener) {
+      listener = receivedListener;
+      return () => listener = undefined;
+    },
+  }, broker);
+
+  listener?.({ kind: 'notification', method: 'targets.publish', parameters: { target }, protocolVersion: 1 });
+  expect(broker.listTargets()).toEqual([]);
+  expect(closeCode).toBe(1008);
+  completeAgentHello(listener);
+  listener?.({ kind: 'notification', method: 'targets.publish', parameters: { target }, protocolVersion: 1 });
   expect(broker.listTargets()).toEqual([]);
   disconnect();
 });
@@ -147,6 +189,7 @@ it('revokes every target when its authenticated agent connection closes', async 
     },
   }, broker);
 
+  completeAgentHello(listener);
   listener?.({ kind: 'notification', method: 'targets.publish', parameters: { target }, protocolVersion: 1 });
   expect(broker.listTargets()).toEqual([target]);
   closeConnection?.();
@@ -169,6 +212,7 @@ it('relays broker commands and agent events through opaque published targets', a
     },
   }, broker);
 
+  completeAgentHello(listener);
   listener?.({ kind: 'notification', method: 'targets.publish', parameters: { target }, protocolVersion: 1 });
   const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate', 'Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
   const subscription = await broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });

@@ -1,14 +1,51 @@
 import type { TargetBroker } from './broker.js';
-import type { AgentToBrokerMessage, BrokerToAgentMessage, CdpCommand, JsonObject, Lease, PublishedTarget } from './protocol.js';
+import type { AgentToBrokerMessage, BrokerToAgentMessage, CdpCommand, ConnectionLimits, HeartbeatParameters, JsonObject, Lease, PublishedTarget } from './protocol.js';
 
 export interface AgentTargetConnection {
   readonly closed?: Promise<unknown>;
+  close?: (code?: number, reason?: string) => void;
   onMessage: (listener: (message: AgentToBrokerMessage) => void) => () => void;
   send?: (message: BrokerToAgentMessage) => Promise<void>;
 }
 
+export interface ConnectAgentTargetBrokerOptions {
+  /** Values negotiated with every authenticated agent before it can publish targets. */
+  readonly connectionLimits?: ConnectionLimits;
+  readonly connectionGeneration?: number;
+  readonly features?: readonly string[];
+  readonly handshakeTimeoutMilliseconds?: number;
+  readonly heartbeat?: HeartbeatParameters;
+  readonly implementation?: {
+    readonly instanceId: string;
+    readonly name: string;
+    readonly role: 'broker';
+    readonly version: string;
+  };
+}
+
+const defaultConnectionLimits: ConnectionLimits = {
+  maximumArtifactBytes: 16_777_216,
+  maximumInlineResultBytes: 65_536,
+  maximumMessageBytes: 16_384,
+};
+const defaultHeartbeat: HeartbeatParameters = { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 };
+
 /** Connects one authenticated agent's opaque target lifecycle, commands, and events to a broker. */
-export function connectAgentTargetBroker(connection: AgentTargetConnection, broker: TargetBroker): () => void {
+export function connectAgentTargetBroker(
+  connection: AgentTargetConnection,
+  broker: TargetBroker,
+  options: ConnectAgentTargetBrokerOptions = {},
+): () => void {
+  const connectionGeneration = options.connectionGeneration ?? 1;
+  const handshakeTimeoutMilliseconds = options.handshakeTimeoutMilliseconds ?? 5_000;
+  const heartbeat = options.heartbeat ?? defaultHeartbeat;
+  const connectionLimits = options.connectionLimits ?? defaultConnectionLimits;
+  const implementation = options.implementation ?? {
+    instanceId: globalThis.crypto.randomUUID(),
+    name: 'chrome-debugger-bridge',
+    role: 'broker' as const,
+    version: '0.0.0',
+  };
   const publishedTargets = new Map<string, PublishedTarget>();
   const pendingCommands = new Map<string, {
     readonly reject: (reason: Error) => void;
@@ -36,7 +73,62 @@ export function connectAgentTargetBroker(connection: AgentTargetConnection, brok
     }
   }
 
+  let handshakeComplete = false;
+  let handshakeFailed = false;
+  let disconnected = false;
+  const handshakeTimeout = setTimeout(() => {
+    if (!handshakeComplete) {
+      handshakeFailed = true;
+      connection.close?.(1008, 'Agent hello timed out');
+    }
+  }, handshakeTimeoutMilliseconds);
+
   const disconnect = connection.onMessage((message) => {
+    if (handshakeFailed) return;
+    if (!handshakeComplete) {
+      if (message.kind !== 'request' || message.method !== 'agent.hello') {
+        handshakeFailed = true;
+        connection.close?.(1008, 'Agent hello required');
+        return;
+      }
+      if (
+        message.protocolVersion !== 1
+        || message.parameters.connectionGeneration !== connectionGeneration
+        || message.parameters.protocolVersions.minimum > 1
+        || message.parameters.protocolVersions.maximum < 1
+      ) {
+        handshakeFailed = true;
+        void Promise.resolve(connection.send?.({
+          error: { code: 'CAPABILITY_DENIED', message: 'Agent hello negotiation failed.', retryable: false },
+          kind: 'error',
+          method: 'agent.hello',
+          protocolVersion: 1,
+          requestId: message.requestId,
+        })).finally(() => connection.close?.(1008, 'Agent hello negotiation failed'));
+        return;
+      }
+      handshakeComplete = true;
+      clearTimeout(handshakeTimeout);
+      void connection.send?.({
+        kind: 'response',
+        method: 'agent.hello',
+        protocolVersion: 1,
+        requestId: message.requestId,
+        result: {
+          broker: implementation,
+          connectionGeneration,
+          features: [...(options.features ?? [])],
+          heartbeat,
+          limits: connectionLimits,
+          protocolVersion: 1,
+        },
+      });
+      return;
+    }
+    if (message.kind === 'request' && message.method === 'agent.hello') {
+      connection.close?.(1008, 'Agent hello already completed');
+      return;
+    }
     if (message.kind === 'response' && message.method === 'cdp.execute') {
       pendingCommands.get(message.requestId)?.resolve(message.result.value);
       return;
@@ -84,10 +176,16 @@ export function connectAgentTargetBroker(connection: AgentTargetConnection, brok
     for (const target of publishedTargets.values()) broker.revokeTarget(target.id, target.generation, 'detached');
     publishedTargets.clear();
   };
-  void connection.closed?.then(revokePublishedTargets, revokePublishedTargets);
+  const closeConnection = (): void => {
+    if (disconnected) return;
+    disconnected = true;
+    clearTimeout(handshakeTimeout);
+    revokePublishedTargets();
+  };
+  void connection.closed?.then(closeConnection, closeConnection);
   return () => {
     disconnect();
-    revokePublishedTargets();
+    closeConnection();
     for (const pendingCommand of pendingCommands.values()) pendingCommand.reject(new Error('The agent connection closed.'));
     pendingCommands.clear();
   };

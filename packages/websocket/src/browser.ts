@@ -89,6 +89,8 @@ export interface BrowserAgentConnection {
 export interface ConnectAgentWebSocketOptions {
   readonly credentialStore: PairedAgentCredentialStore;
   readonly endpoint: string;
+  /** Identifies the agent during the mandatory post-authentication protocol handshake. */
+  readonly implementation?: { readonly instanceId?: string; readonly name?: string; readonly version?: string };
   readonly handshakeTimeoutMilliseconds?: number;
   readonly origin?: string;
   readonly protocolVersions?: ProtocolVersionRange;
@@ -501,7 +503,7 @@ export async function connectAgentWebSocket(
       pendingApplicationMessages.length = 0;
     }, { once: true });
 
-    return {
+    const connection: BrowserAgentConnection = {
       agentId,
       brokerId: transcript.brokerId,
       connectionId: transcript.connectionId,
@@ -537,6 +539,47 @@ export async function connectAgentWebSocket(
         await pendingSend;
       },
     };
+    const helloResponse = new Promise<BrokerToAgentMessage>((resolve, reject) => {
+      const removeListener = connection.onMessage((message) => {
+        if (message.method !== 'agent.hello') return;
+        removeListener();
+        if (message.kind === 'error') {
+          reject(new Error(message.error.message));
+          return;
+        }
+        resolve(message);
+      });
+    });
+    await connection.send({
+      kind: 'request',
+      method: 'agent.hello',
+      parameters: {
+        connectionGeneration: finishResponse.result.connectionGeneration,
+        features: [],
+        heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 },
+        implementation: {
+          instanceId: options.implementation?.instanceId ?? createRandomIdentifier(),
+          name: options.implementation?.name ?? 'chrome-debugger-bridge-agent',
+          role: 'agent',
+          version: options.implementation?.version ?? '0.0.0',
+        },
+        limits: { maximumArtifactBytes: 16_777_216, maximumInlineResultBytes: 65_536, maximumMessageBytes: 16_384 },
+        protocolVersions: options.protocolVersions ?? { maximum: 1, minimum: 1 },
+      },
+      protocolVersion: 1,
+      requestId: createRandomIdentifier(),
+    });
+    const negotiatedHello = await helloResponse;
+    if (
+      negotiatedHello.kind !== 'response'
+      || negotiatedHello.method !== 'agent.hello'
+      || negotiatedHello.protocolVersion !== 1
+      || negotiatedHello.result.connectionGeneration !== finishResponse.result.connectionGeneration
+      || negotiatedHello.result.protocolVersion !== 1
+    ) {
+      throw new Error('Broker agent hello response is invalid');
+    }
+    return connection;
   } catch (error) {
     webSocket.close(4001, 'Authentication failed');
     throw error;
