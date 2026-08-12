@@ -93,6 +93,22 @@ it('keeps raw download behavior parameter-sensitive in the extension security ke
   expect(sendCommand).toHaveBeenCalledWith({ tabId: 42 }, 'Page.setDownloadBehavior', { behavior: 'deny' });
 });
 
+it('denies profile-wide cookie commands even with unsafe authority', async () => {
+  expect.assertions(2);
+  const sendCommand = vi.fn(async () => ({ result: 'safe' }));
+  const publisher = createSelectedTabPublisher({
+    capabilities: { level: 'unsafe' },
+    chromeDebugger: { attach() {}, detach() {}, sendCommand },
+    publishTarget() {},
+    revokeTarget() {},
+    scopeId,
+    updateTarget() {},
+  });
+  const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+  await expect(publisher.executeCommand({ leaseId: '20000000-0000-4000-8000-000000000001', method: 'Network.getAllCookies', operationId: '30000000-0000-4000-8000-000000000003', targetGeneration: target.generation, targetId: target.id }, new AbortController().signal, { expiresAt: '2030-01-01T00:00:00.000Z', id: '20000000-0000-4000-8000-000000000001', issuedAt: '2026-08-12T00:00:00.000Z', methods: ['Network.getAllCookies'], mode: 'exclusive-control', targetGeneration: target.generation, targetId: target.id })).rejects.toThrow('not permitted');
+  expect(sendCommand).not.toHaveBeenCalledWith({ tabId: 42 }, 'Network.getAllCookies', undefined);
+});
+
 it('forwards only an opaque published target with a CDP event', async () => {
   expect.assertions(3);
   const events: unknown[] = [];
