@@ -98,11 +98,15 @@ async function withLease<Value>(client: McpChromeDebuggerBridgeClient, input: { 
   try {
     return await action(lease);
   } finally {
-    await client.releaseLease({
-      leaseId: lease.id,
-      targetGeneration: input.targetGeneration,
-      targetId: input.targetId,
-    });
+    try {
+      await client.releaseLease({
+        leaseId: lease.id,
+        targetGeneration: input.targetGeneration,
+        targetId: input.targetId,
+      });
+    } catch {
+      /** Navigation can fence this short-lived lease before cleanup; expiry remains the fallback. */
+    }
   }
 }
 
@@ -164,12 +168,17 @@ async function executeArtifactCommand(client: McpChromeDebuggerBridgeClient, inp
     retainLease = true;
     return { artifact, lease };
   } finally {
-    if (!retainLease)
-      await client.releaseLease({
-        leaseId: lease.id,
-        targetGeneration: input.targetGeneration,
-        targetId: input.targetId,
-      });
+    if (!retainLease) {
+      try {
+        await client.releaseLease({
+          leaseId: lease.id,
+          targetGeneration: input.targetGeneration,
+          targetId: input.targetId,
+        });
+      } catch {
+        /** A fenced or disconnected temporary lease expires without replacing the command result. */
+      }
+    }
   }
 }
 

@@ -4,10 +4,10 @@ import { createServer } from 'node:http';
 
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { InMemoryTransport, McpServer } from '@modelcontextprotocol/server';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 
-import { mountMcpStdio, mountMcpStreamableHttp, registerCdbTools, supportedMcpProtocolVersions, supportedMcpSdkVersion } from '../src/index.js';
+import { createCdbToolDefinitions, mountMcpStdio, mountMcpStreamableHttp, registerCdbTools, supportedMcpProtocolVersions, supportedMcpSdkVersion } from '../src/index.js';
 
 const target = {
   availability: 'available',
@@ -80,6 +80,46 @@ it('rejects a conflicting CDB registration before adding any CDB tools', () => {
       )._registeredTools,
     ),
   ).toEqual(['browser.navigate']);
+});
+
+it('preserves a successful navigation when its temporary lease was fenced during navigation', async () => {
+  expect.assertions(3);
+  const releaseLease = vi.fn(async () => {
+    throw Object.assign(new Error('The target generation is stale.'), { code: 'TARGET_GENERATION_STALE' });
+  });
+  const commandResult = {
+    operationId: '30000000-0000-4000-8000-000000000001',
+    value: { frameId: 'frame-1' },
+  };
+  const bridgeClient = {
+    async acquireLease() {
+      return {
+        expiresAt: '2030-01-01T00:00:00.000Z',
+        id: '017c10a7-e0af-40ec-879f-cd87dffaf036',
+        issuedAt: '2026-08-26T00:00:00.000Z',
+        methods: ['Page.navigate'],
+        mode: 'exclusive-control' as const,
+        targetGeneration: target.generation,
+        targetId: target.id,
+      };
+    },
+    async executeCommand() {
+      return commandResult;
+    },
+    releaseLease,
+  } as unknown as McpChromeDebuggerBridgeClient;
+  const navigate = createCdbToolDefinitions({ client: bridgeClient }).find(definition => definition.name === 'browser.navigate');
+  if (navigate === undefined) throw new Error('browser.navigate was not registered');
+
+  const result = await navigate.invoke({
+    targetGeneration: target.generation,
+    targetId: target.id,
+    url: 'https://staging-app.contentsquare.com/#/benchmark/dashboard?project=1814',
+  });
+
+  expect(releaseLease).toHaveBeenCalledOnce();
+  expect(result.isError).toBeUndefined();
+  expect(result.content).toEqual([{ text: JSON.stringify(commandResult), type: 'text' }]);
 });
 
 it('serves target discovery through the official SDK Streamable HTTP client', async () => {
