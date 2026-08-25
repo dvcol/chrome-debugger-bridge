@@ -133,6 +133,39 @@ it('forwards only an opaque published target with a CDP event', async () => {
   expect(events[0]).toMatchObject({ method: 'Runtime.consoleAPICalled', parameters: { type: 'log' } });
 });
 
+it('forwards debugger events only while an exact broker demand is active', async () => {
+  expect.assertions(4);
+  const events: unknown[] = [];
+  const sendCommand = vi.fn(async () => ({}));
+  let setSubscriptionDemand: ((methodPrefix: string, active: boolean, sessionId?: string) => Promise<void>) | undefined;
+  const publisher = createSelectedTabPublisher({
+    capabilities: { level: 'unsafe' },
+    chromeDebugger: { attach() {}, detach() {}, sendCommand },
+    publishEvent(_target, method, parameters) {
+      events.push({ method, parameters });
+    },
+    publishTarget() {},
+    registerTargetExecutor(_target, executor) {
+      setSubscriptionDemand = executor.setSubscriptionDemand;
+    },
+    revokeTarget() {},
+    scopeId,
+    updateTarget() {},
+  });
+  await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+  sendCommand.mockClear();
+  publisher.debuggerEvent({ tabId: 42 }, 'Debugger.scriptParsed', { scriptId: '1' });
+  await setSubscriptionDemand?.('Debugger.paused', true);
+  publisher.debuggerEvent({ tabId: 42 }, 'Debugger.scriptParsed', { scriptId: '2' });
+  publisher.debuggerEvent({ tabId: 42 }, 'Debugger.paused', { reason: 'other' });
+  await setSubscriptionDemand?.('Debugger.paused', false);
+
+  expect(events).toEqual([{ method: 'Debugger.paused', parameters: { reason: 'other' } }]);
+  expect(sendCommand).toHaveBeenNthCalledWith(1, { tabId: 42 }, 'Debugger.enable');
+  expect(sendCommand).toHaveBeenNthCalledWith(2, { tabId: 42 }, 'Debugger.disable');
+  expect(sendCommand).toHaveBeenCalledTimes(2);
+});
+
 it('denies incognito and unsupported pages before attaching', async () => {
   expect.assertions(4);
   const attach = vi.fn();
@@ -271,7 +304,7 @@ it('invalidates child-session routing when the published root is revoked', async
   expect(() => publisher.attachChildSession('private-child-session')).toThrow('not available');
 });
 
-it('renews a published target with fresh opaque authority and no child sessions', async () => {
+it('renews a published target with stable logical identity, a higher generation, and no child sessions', async () => {
   expect.assertions(7);
   const publishedTargets: unknown[] = [];
   const revokedTargets: unknown[] = [];
@@ -293,8 +326,8 @@ it('renews a published target with fresh opaque authority and no child sessions'
   const child = publisher.attachChildSession('private-child-session');
   const renewedTarget = await publisher.renewAuthority();
 
-  expect(renewedTarget.id).not.toBe(target.id);
-  expect(renewedTarget.generation).toBe(1);
+  expect(renewedTarget.id).toBe(target.id);
+  expect(renewedTarget.generation).toBe(2);
   expect(revokedTargets).toEqual([{ reason: 'explicit', target }]);
   expect(publishedTargets).toEqual([target, renewedTarget]);
   await expect(publisher.executeCommand({ leaseId: '20000000-0000-4000-8000-000000000001', method: 'Runtime.evaluate', operationId: '30000000-0000-4000-8000-000000000001', targetGeneration: target.generation, targetId: target.id }, new AbortController().signal)).rejects.toThrow('not permitted');

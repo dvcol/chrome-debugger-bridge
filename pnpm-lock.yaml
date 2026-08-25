@@ -110,6 +110,12 @@ importers:
       '@dvcol/eslint-config':
         specifier: catalog:build
         version: 1.8.6(@prettier/plugin-xml@3.4.2(prettier@3.9.6))(@typescript-eslint/typescript-estree@8.65.0(supports-color@7.2.0)(typescript@5.9.3))(@typescript-eslint/utils@8.65.0(eslint@10.8.0(jiti@2.7.0)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3))(@vue/compiler-sfc@3.5.40)(eslint-plugin-format@2.0.1(eslint@10.8.0(jiti@2.7.0)(supports-color@7.2.0)))(eslint@10.8.0(jiti@2.7.0)(supports-color@7.2.0))(prettier@3.9.6)(supports-color@7.2.0)(typescript@5.9.3)(vitest@4.1.10)
+      '@modelcontextprotocol/client':
+        specifier: 'catalog:'
+        version: 2.0.0
+      '@modelcontextprotocol/server':
+        specifier: 'catalog:'
+        version: 2.0.0
       '@prettier/plugin-xml':
         specifier: catalog:build
         version: 3.4.2(prettier@3.9.6)

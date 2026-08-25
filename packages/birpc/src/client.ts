@@ -10,7 +10,7 @@ import type {
 import type { CdpCommand, CdpCommandResult, CdpEvent, CdpSubscriptionRequest, Lease, PublishedTarget } from '@dvcol/cdb/protocol';
 import type { BirpcOptions } from 'birpc';
 
-import { createChromeDebuggerBridgeClient } from '@dvcol/cdb';
+import { createChromeDebuggerBridgeClient, createClientFacadeAdapter } from '@dvcol/cdb';
 import { createBirpc } from 'birpc';
 
 export interface BirpcRpcChannel {
@@ -172,7 +172,7 @@ export function createBirpcBridgeClient(channel: BirpcRpcChannel): BirpcChromeDe
     },
   }, createBirpcChannelOptions(channel));
 
-  const facade = createChromeDebuggerBridgeClient({
+  const facade = createChromeDebuggerBridgeClient(createClientFacadeAdapter({
     async acquireLease(request) {
       return rpc.acquireLease(request);
     },
@@ -251,7 +251,7 @@ export function createBirpcBridgeClient(channel: BirpcRpcChannel): BirpcChromeDe
       }
       return targetChanges;
     },
-  });
+  }));
 
   return {
     ...facade,

@@ -65,7 +65,9 @@ it('does not reconnect after revoked authority', async () => {
     async connect() {
       return connection;
     },
-    async reconcile() {},
+    async reconcile() {
+      return { intervalMilliseconds: 1, timeoutMilliseconds: 1 };
+    },
   });
 
   recovery.start();
@@ -90,7 +92,9 @@ it('closes a live connection when its scheduled heartbeat fails', async () => {
     async heartbeat() {
       throw new Error('network loss');
     },
-    async reconcile() {},
+    async reconcile() {
+      return { intervalMilliseconds: 1, timeoutMilliseconds: 1 };
+    },
     schedule(task) {
       scheduledTasks.push(task);
       return 0 as never;

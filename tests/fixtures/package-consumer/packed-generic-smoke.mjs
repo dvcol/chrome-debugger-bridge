@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 
 import { createBrowserChromeDebuggerBridgeClient } from '@dvcol/cdb-websocket/browser';
 import {
-  connectNodeClientWebSocket,
+  createNodeChromeDebuggerBridgeClient,
   createStandaloneAuthenticatedWebSocketBridge,
   mountAuthenticatedArtifactHttpEndpoint,
 } from '@dvcol/cdb-websocket/node';
@@ -32,22 +32,6 @@ async function main() {
 
   function response(connection, message, method, result) {
     return connection.send({ kind: 'response', method, protocolVersion: 1, requestId: message.requestId, result });
-  }
-
-  function waitForMessage(connection, predicate) {
-    return new Promise((resolve, reject) => {
-      let unsubscribe = () => {};
-      const timeout = setTimeout(() => {
-        unsubscribe();
-        reject(new Error('Timed out waiting for a generic client message.'));
-      }, 2_000);
-      unsubscribe = connection.onMessage((message) => {
-        if (!predicate(message)) return;
-        clearTimeout(timeout);
-        unsubscribe();
-        resolve(message);
-      });
-    });
   }
 
   const brokerId = crypto.randomUUID();
@@ -139,19 +123,22 @@ async function main() {
     browserClient.close();
     await browserClient.closed;
 
-    const nodeConnection = await connectNodeClientWebSocket({ authorization, endpoint: clientEndpoint });
-    const event = waitForMessage(nodeConnection, message => message.kind === 'notification' && message.method === 'cdp.event');
-    const subscribeResponse = waitForMessage(nodeConnection, message => message.kind === 'response' && message.method === 'cdp.subscribe');
-    await nodeConnection.send({ kind: 'request', method: 'cdp.subscribe', parameters: { buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: crypto.randomUUID(), match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
-    await subscribeResponse;
-    assert.equal((await event).method, 'cdp.event');
-    const cancellation = waitForMessage(nodeConnection, message => message.kind === 'response' && message.method === 'cdp.cancel');
-    await nodeConnection.send({ kind: 'request', method: 'cdp.cancel', parameters: { operationId: crypto.randomUUID(), targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
-    await cancellation;
-    const artifactResponse = await fetch(`${artifactEndpoint}${artifactId}`, { headers: { authorization } });
-    assert.equal(artifactResponse.status, 200);
-    assert.deepEqual(new Uint8Array(await artifactResponse.arrayBuffer()), artifactBytes);
-    nodeConnection.close();
+    const nodeClient = await createNodeChromeDebuggerBridgeClient({ artifactEndpoint, authorization, endpoint: clientEndpoint, reconnect: { initialDelayMilliseconds: 1, maximumDelayMilliseconds: 5 } });
+    const nodeTarget = (await nodeClient.listTargets())[0];
+    assert.equal(nodeTarget?.id, target.id);
+    const nodeWatch = nodeClient.watchTargets()[Symbol.asyncIterator]();
+    assert.equal((await nodeWatch.next()).value.kind, 'snapshot');
+    const nodeLease = await nodeClient.acquireLease({ durationMilliseconds: 30_000, requestedMethods: ['Runtime.evaluate', 'Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
+    const nodeSubscription = await nodeClient.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: nodeLease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });
+    assert.equal((await nodeSubscription[Symbol.asyncIterator]().next()).value.method, 'Runtime.consoleAPICalled');
+    assert.deepEqual(await nodeClient.readArtifact({ artifactId, leaseId: nodeLease.id, targetGeneration: target.generation, targetId: target.id }), artifactBytes);
+    await nodeClient.cancelCommand({ operationId: crypto.randomUUID(), targetGeneration: target.generation, targetId: target.id });
+    await assert.rejects(nodeClient.executeCommand({ leaseId: nodeLease.id, method: 'Runtime.evaluate', operationId: crypto.randomUUID(), parameters: { expression: 'disconnect' }, targetGeneration: target.generation, targetId: target.id }), disconnectedErrorPattern);
+    assert.equal((await nodeClient.listTargets())[0]?.id, target.id);
+    assert.equal((await nodeWatch.next()).value.kind, 'snapshot');
+    assert.equal((await nodeSubscription[Symbol.asyncIterator]().next()).value.method, 'Runtime.consoleAPICalled');
+    nodeClient.dispose();
+    await nodeClient.closed;
   } finally {
     mountedArtifacts.close();
     await Promise.all([

@@ -52,6 +52,15 @@ const agentHelloRequestSchemaDefinition = z.strictObject({
   requestId: requestIdSchemaDefinition,
 });
 
+/** A control-plane liveness probe; it does not carry target or CDP authority. */
+const agentHeartbeatRequestSchemaDefinition = z.strictObject({
+  kind: z.literal('request'),
+  method: z.literal('agent.heartbeat'),
+  parameters: z.strictObject({ connectionGeneration: positiveIntegerSchemaDefinition }),
+  protocolVersion: protocolVersionSchemaDefinition,
+  requestId: requestIdSchemaDefinition,
+});
+
 const cdpExecuteRequestSchemaDefinition = z.strictObject({
   kind: z.literal('request'),
   method: z.literal('cdp.execute'),
@@ -73,6 +82,14 @@ const agentHelloResponseSchemaDefinition = z.strictObject({
     limits: connectionLimitsSchemaDefinition,
     protocolVersion: protocolVersionSchemaDefinition,
   }),
+});
+
+const agentHeartbeatResponseSchemaDefinition = z.strictObject({
+  kind: z.literal('response'),
+  method: z.literal('agent.heartbeat'),
+  protocolVersion: protocolVersionSchemaDefinition,
+  requestId: requestIdSchemaDefinition,
+  result: z.strictObject({ connectionGeneration: positiveIntegerSchemaDefinition }),
 });
 
 const cdpExecuteResponseSchemaDefinition = z.strictObject({
@@ -169,6 +186,7 @@ const cdpEventNotificationSchemaDefinition = z.strictObject({
 
 export const agentToBrokerMessageSchemaDefinition = z.union([
   agentHelloRequestSchemaDefinition,
+  agentHeartbeatRequestSchemaDefinition,
   cdpExecuteResponseSchemaDefinition,
   cdpExecuteErrorResponseSchemaDefinition,
   z.discriminatedUnion('method', [
@@ -182,6 +200,7 @@ export const agentToBrokerMessageSchemaDefinition = z.union([
 
 export const brokerToAgentMessageSchemaDefinition = z.union([
   agentHelloResponseSchemaDefinition,
+  agentHeartbeatResponseSchemaDefinition,
   agentHelloErrorResponseSchemaDefinition,
   cdpExecuteRequestSchemaDefinition,
   cdpCancelledNotificationSchemaDefinition,

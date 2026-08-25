@@ -1,3 +1,4 @@
+export { type HeartbeatAgentConnection, sendAgentHeartbeat } from './agent-heartbeat.js';
 export { type AgentRecovery, type AgentRecoveryState, createAgentRecovery, type CreateAgentRecoveryOptions, type RecoverableAgentConnection } from './agent-recovery.js';
 export {
   type BirpcAgentBootstrap,

@@ -25,6 +25,8 @@
   },
   "devDependencies": {
     "@dvcol/eslint-config": "catalog:build",
+    "@modelcontextprotocol/client": "catalog:",
+    "@modelcontextprotocol/server": "catalog:",
     "@prettier/plugin-xml": "catalog:build",
     "@types/node": "catalog:types",
     "@vitest/browser-playwright": "catalog:testing",

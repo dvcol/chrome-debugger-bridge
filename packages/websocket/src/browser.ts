@@ -24,7 +24,7 @@ import type {
 
 import type { AgentAuthenticationTranscript, AuthenticatedFrame } from './authentication.js';
 
-import { createChromeDebuggerBridgeClient } from '@dvcol/cdb';
+import { createChromeDebuggerBridgeClient, createClientFacadeAdapter } from '@dvcol/cdb';
 import {
   agentAuthenticationMessageSchema,
   agentToBrokerMessageSchema,
@@ -77,6 +77,7 @@ export interface PairedAgentCredentialStore {
 export interface BrowserAgentConnection {
   readonly agentId: string;
   readonly brokerId: string;
+  readonly connectionGeneration: number;
   readonly connectionId: string;
   readonly credentialId: string;
   readonly principalId: string;
@@ -92,6 +93,8 @@ export interface ConnectAgentWebSocketOptions {
   /** Identifies the agent during the mandatory post-authentication protocol handshake. */
   readonly implementation?: { readonly instanceId?: string; readonly name?: string; readonly version?: string };
   readonly handshakeTimeoutMilliseconds?: number;
+  /** Bounds authenticated frames held while a newly paired credential is persisted. */
+  readonly maximumPendingAuthenticatedMessages?: number;
   readonly origin?: string;
   readonly protocolVersions?: ProtocolVersionRange;
   readonly requestPairingCode?: (challenge: {
@@ -103,11 +106,12 @@ export interface ConnectAgentWebSocketOptions {
 }
 
 interface BufferedWebSocketMessages {
+  awaitWhileOpen: <Value>(operation: Promise<Value>) => Promise<Value>;
   forwardTo: (listener: (event: MessageEvent<unknown>) => void) => void;
   receiveText: (timeoutMilliseconds: number) => Promise<string>;
 }
 
-function bufferWebSocketMessages(webSocket: WebSocket): BufferedWebSocketMessages {
+function bufferWebSocketMessages(webSocket: WebSocket, maximumPendingMessages: number): BufferedWebSocketMessages {
   const queuedEvents: MessageEvent<unknown>[] = [];
   let forwardListener: ((event: MessageEvent<unknown>) => void) | undefined;
   let pendingReceiver: {
@@ -115,6 +119,7 @@ function bufferWebSocketMessages(webSocket: WebSocket): BufferedWebSocketMessage
     readonly resolve: (source: string) => void;
   } | undefined;
   let terminalError: Error | undefined;
+  const terminalRejectors = new Set<(error: Error) => void>();
 
   const resolveEvent = (event: MessageEvent<unknown>): void => {
     const receiver = pendingReceiver;
@@ -126,10 +131,13 @@ function bufferWebSocketMessages(webSocket: WebSocket): BufferedWebSocketMessage
     receiver?.resolve(event.data);
   };
   const fail = (error: Error): void => {
+    if (terminalError !== undefined) return;
     terminalError = error;
     const receiver = pendingReceiver;
     pendingReceiver = undefined;
     receiver?.reject(error);
+    for (const reject of terminalRejectors) reject(error);
+    terminalRejectors.clear();
   };
 
   webSocket.addEventListener('message', (event: MessageEvent<unknown>) => {
@@ -142,7 +150,7 @@ function bufferWebSocketMessages(webSocket: WebSocket): BufferedWebSocketMessage
       return;
     }
     queuedEvents.push(event);
-    if (queuedEvents.length > maximumPendingAuthenticatedMessages) {
+    if (queuedEvents.length > maximumPendingMessages) {
       fail(new Error('Too many messages arrived before authentication completed'));
       webSocket.close(4003, 'Too many pending messages');
     }
@@ -151,10 +159,35 @@ function bufferWebSocketMessages(webSocket: WebSocket): BufferedWebSocketMessage
   webSocket.addEventListener('close', () => fail(new Error('WebSocket closed during authentication')), { once: true });
 
   return {
+    async awaitWhileOpen<Value>(operation: Promise<Value>): Promise<Value> {
+      if (terminalError !== undefined) throw terminalError;
+      return new Promise<Value>((resolve, reject) => {
+        let settled = false;
+        const rejectTerminal = (error: Error): void => {
+          if (settled) return;
+          settled = true;
+          terminalRejectors.delete(rejectTerminal);
+          reject(error);
+        };
+        terminalRejectors.add(rejectTerminal);
+        void operation.then((value) => {
+          if (settled) return;
+          settled = true;
+          terminalRejectors.delete(rejectTerminal);
+          resolve(value);
+        }, (error) => {
+          if (settled) return;
+          settled = true;
+          terminalRejectors.delete(rejectTerminal);
+          reject(error);
+        });
+      });
+    },
     forwardTo(listener) {
       if (pendingReceiver !== undefined || forwardListener !== undefined) {
         throw new Error('WebSocket message dispatcher is already in use');
       }
+      if (terminalError !== undefined) throw terminalError;
       forwardListener = listener;
       for (const event of queuedEvents.splice(0)) {
         listener(event);
@@ -287,6 +320,10 @@ export async function connectAgentWebSocket(
   options: ConnectAgentWebSocketOptions,
 ): Promise<BrowserAgentConnection> {
   const timeoutMilliseconds = options.handshakeTimeoutMilliseconds ?? 5_000;
+  const maximumPendingMessages = options.maximumPendingAuthenticatedMessages ?? maximumPendingAuthenticatedMessages;
+  if (!Number.isSafeInteger(maximumPendingMessages) || maximumPendingMessages < 1) {
+    throw new Error('The maximum pending authenticated messages must be a positive integer');
+  }
   const endpointUrl = new URL(options.endpoint);
   validateWebSocketEndpointSecurity(endpointUrl);
   if (endpointUrl.username || endpointUrl.password || endpointUrl.search || endpointUrl.hash) {
@@ -295,11 +332,15 @@ export async function connectAgentWebSocket(
 
   const origin = resolveOrigin(options.origin);
   const storedCredential = await options.credentialStore.load(endpointUrl.href);
-  const agentId = storedCredential?.agentId ?? createRandomIdentifier();
+  const configuredAgentId = options.implementation?.instanceId;
+  if (configuredAgentId !== undefined && storedCredential !== undefined && configuredAgentId !== storedCredential.agentId) {
+    throw new Error('The configured agent identity does not match the stored pairing');
+  }
+  const agentId = configuredAgentId ?? storedCredential?.agentId ?? createRandomIdentifier();
   const clientNonce = generateRandomBase64Url(32);
   const beginRequestId = createRandomIdentifier();
   const webSocket = new globalThis.WebSocket(endpointUrl.href, agentWebSocketProtocol);
-  const messageBuffer = bufferWebSocketMessages(webSocket);
+  const messageBuffer = bufferWebSocketMessages(webSocket, maximumPendingMessages);
   const closed = new Promise<{ readonly code: number; readonly reason: string }>((resolve) => {
     webSocket.addEventListener('close', event => resolve({ code: event.code, reason: event.reason }), { once: true });
   });
@@ -438,7 +479,16 @@ export async function connectAgentWebSocket(
       throw new Error('Broker authentication proof is invalid');
     }
     if (pendingCredential !== undefined) {
-      await options.credentialStore.save(pendingCredential);
+      const credentialSave = options.credentialStore.save(pendingCredential);
+      try {
+        await messageBuffer.awaitWhileOpen(credentialSave);
+      } catch (error) {
+        void credentialSave.then(
+          async () => options.credentialStore.remove(pendingCredential.credentialId),
+          () => {},
+        );
+        throw error;
+      }
     }
 
     const messageListeners = new Set<(message: BrokerToAgentMessage) => void>();
@@ -461,7 +511,7 @@ export async function connectAgentWebSocket(
       }
       const messageText = event.data;
       pendingMessages += 1;
-      if (pendingMessages > maximumPendingAuthenticatedMessages) {
+      if (pendingMessages > maximumPendingMessages) {
         receiveFailed = true;
         webSocket.close(4003, 'Too many pending messages');
         return;
@@ -484,7 +534,7 @@ export async function connectAgentWebSocket(
         }
         inboundSequence += 1;
         if (messageListeners.size === 0) {
-          if (pendingApplicationMessages.length >= maximumPendingAuthenticatedMessages) {
+          if (pendingApplicationMessages.length >= maximumPendingMessages) {
             throw new Error('Too many messages are waiting for an agent listener');
           }
           pendingApplicationMessages.push(result.value);
@@ -506,6 +556,7 @@ export async function connectAgentWebSocket(
     const connection: BrowserAgentConnection = {
       agentId,
       brokerId: transcript.brokerId,
+      connectionGeneration: finishResponse.result.connectionGeneration,
       connectionId: transcript.connectionId,
       credentialId,
       principalId: finishResponse.result.principalId,
@@ -539,46 +590,6 @@ export async function connectAgentWebSocket(
         await pendingSend;
       },
     };
-    const helloResponse = new Promise<BrokerToAgentMessage>((resolve, reject) => {
-      const removeListener = connection.onMessage((message) => {
-        if (message.method !== 'agent.hello') return;
-        removeListener();
-        if (message.kind === 'error') {
-          reject(new Error(message.error.message));
-          return;
-        }
-        resolve(message);
-      });
-    });
-    await connection.send({
-      kind: 'request',
-      method: 'agent.hello',
-      parameters: {
-        connectionGeneration: finishResponse.result.connectionGeneration,
-        features: [],
-        heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 },
-        implementation: {
-          instanceId: options.implementation?.instanceId ?? createRandomIdentifier(),
-          name: options.implementation?.name ?? 'chrome-debugger-bridge-agent',
-          role: 'agent',
-          version: options.implementation?.version ?? '0.0.0',
-        },
-        limits: { maximumArtifactBytes: 16_777_216, maximumInlineResultBytes: 65_536, maximumMessageBytes: 16_384 },
-        protocolVersions: options.protocolVersions ?? { maximum: 1, minimum: 1 },
-      },
-      protocolVersion: 1,
-      requestId: createRandomIdentifier(),
-    });
-    const negotiatedHello = await helloResponse;
-    if (
-      negotiatedHello.kind !== 'response'
-      || negotiatedHello.method !== 'agent.hello'
-      || negotiatedHello.protocolVersion !== 1
-      || negotiatedHello.result.connectionGeneration !== finishResponse.result.connectionGeneration
-      || negotiatedHello.result.protocolVersion !== 1
-    ) {
-      throw new Error('Broker agent hello response is invalid');
-    }
     return connection;
   } catch (error) {
     webSocket.close(4001, 'Authentication failed');
@@ -877,7 +888,7 @@ export async function createBrowserChromeDebuggerBridgeClient(
     });
   }
 
-  const facade = createChromeDebuggerBridgeClient({
+  const facade = createChromeDebuggerBridgeClient(createClientFacadeAdapter({
     async acquireLease(requestInput: AcquireLeaseRequest): Promise<Lease> {
       const response = await request({ kind: 'request', method: 'leases.acquire', parameters: { ...requestInput, mode: requestInput.mode ?? 'shared-read', requestedMethods: [...requestInput.requestedMethods] }, protocolVersion: 1, requestId: crypto.randomUUID() });
       if (response.method !== 'leases.acquire') throw new Error('Received an unexpected lease response');
@@ -962,7 +973,7 @@ export async function createBrowserChromeDebuggerBridgeClient(
     watchTargets() {
       return targetChanges;
     },
-  });
+  }));
   return {
     ...facade,
     cancelCommand: async (requestInput) => {

@@ -1,7 +1,7 @@
 import type { ArtifactAuthority, ArtifactByteRange, InlineOrArtifactResult, MemoryArtifactStore } from './artifact-store.js';
 import type { TargetChange, TargetRevocationReason } from './client.js';
 import type { DiagnosticCode, DiagnosticTraceStore } from './diagnostic-trace.js';
-import type { CdpCommand, CdpEvent, CdpSubscriptionRequest, JsonObject, JsonValue, Lease, PublishedTarget } from './protocol.js';
+import type { BridgeErrorCode, CapabilityGrant, CdpCommand, CdpEvent, CdpSubscriptionRequest, JsonObject, JsonValue, Lease, PublishedTarget } from './protocol.js';
 
 import { createMemoryArtifactStore, externalizeJsonResult } from './artifact-store.js';
 import { isCdpNameAllowed, isKnownCdpEventName, requiredLeaseMode } from './cdp-authorization.js';
@@ -44,12 +44,27 @@ export interface ArtifactAccessRequest {
 }
 
 /** Authenticated caller identity. Principal ownership survives a transport reconnect; connection ownership does not. */
+export interface ClientTargetGrant {
+  readonly capabilities: CapabilityGrant;
+  readonly targetId: string;
+}
+
 export interface ClientAuthority {
   readonly connectionId: string;
+  /** Human-facing diagnostic label. It is never used for authorization. */
+  readonly displayName?: string;
   readonly principalId: string;
+  /** Omitted for a trusted in-process caller. An empty list authorizes no target. */
+  readonly targetGrants?: readonly ClientTargetGrant[];
 }
 
 const localClientAuthority: ClientAuthority = { connectionId: 'local', principalId: 'local' };
+
+export interface AgentAuthority {
+  readonly principalId: string;
+}
+
+const localAgentAuthority: AgentAuthority = { principalId: 'local-agent' };
 
 export interface TargetCommandExecutor {
   execute: (command: CdpCommand, abortSignal: AbortSignal, lease: Lease) => Promise<JsonObject>;
@@ -76,8 +91,23 @@ interface SubscriptionState {
 }
 
 export class TargetBrokerError extends Error {
-  constructor(readonly code: 'CAPABILITY_DENIED' | 'CDP_COMMAND_FAILED' | 'LEASE_CONFLICT' | 'LEASE_EXPIRED' | 'LEASE_REQUIRED' | 'REQUEST_CANCELLED' | 'TARGET_GENERATION_STALE' | 'TARGET_NOT_FOUND') {
-    super(code === 'CDP_COMMAND_FAILED' ? 'The debugger command failed.' : 'The requested target operation is not available.');
+  constructor(
+    readonly code: Extract<BridgeErrorCode, 'CAPABILITY_DENIED' | 'CDP_COMMAND_FAILED' | 'LEASE_CONFLICT' | 'LEASE_EXPIRED' | 'LEASE_REQUIRED' | 'REQUEST_CANCELLED' | 'TARGET_GENERATION_STALE' | 'TARGET_NOT_FOUND'>,
+    readonly options: { readonly details?: JsonObject; readonly message?: string; readonly retryAfterMs?: number; readonly retryable?: boolean } = {},
+  ) {
+    super(options.message ?? (code === 'CDP_COMMAND_FAILED' ? 'The debugger command failed.' : 'The requested target operation is not available.'));
+  }
+
+  get details(): JsonObject | undefined {
+    return this.options.details;
+  }
+
+  get retryAfterMs(): number | undefined {
+    return this.options.retryAfterMs;
+  }
+
+  get retryable(): boolean {
+    return this.options.retryable ?? this.code === 'LEASE_CONFLICT';
   }
 }
 
@@ -104,13 +134,15 @@ export interface TargetBroker {
   /** Stops all broker work and releases broker-owned resources. */
   dispose: () => void;
   executeCommand: (command: CdpCommand, authority?: ClientAuthority) => Promise<{ readonly operationId: string; readonly value: InlineOrArtifactResult<JsonObject> }>;
-  listTargets: () => readonly PublishedTarget[];
-  publishTarget: (target: PublishedTarget) => void;
-  registerTargetExecutor: (target: Pick<PublishedTarget, 'generation' | 'id'>, executor: TargetCommandExecutor) => void;
-  reconcileTargets: (targets: readonly PublishedTarget[]) => void;
-  revokeTarget: (targetId: string, generation: number, reason?: TargetRevocationReason) => void;
-  updateTarget: (target: PublishedTarget) => void;
-  watchTargets: () => AsyncIterable<TargetChange>;
+  getTargetAgentPrincipalId: (targetId: string) => string | undefined;
+  listTargets: (authority?: ClientAuthority) => readonly PublishedTarget[];
+  publishTarget: (target: PublishedTarget, authority?: AgentAuthority) => void;
+  registerTargetExecutor: (target: Pick<PublishedTarget, 'generation' | 'id'>, executor: TargetCommandExecutor, authority?: AgentAuthority) => void;
+  reconcileTargets: (targets: readonly PublishedTarget[], authority?: AgentAuthority) => void;
+  revokeAgentTargets: (authority: AgentAuthority, reason?: TargetRevocationReason) => void;
+  revokeTarget: (targetId: string, generation: number, reason?: TargetRevocationReason, authority?: AgentAuthority) => void;
+  updateTarget: (target: PublishedTarget, authority?: AgentAuthority) => void;
+  watchTargets: (authority?: ClientAuthority) => AsyncIterable<TargetChange>;
   publishEvent: (target: Pick<PublishedTarget, 'generation' | 'id'>, method: string, parameters: JsonObject, sessionId?: string) => void;
   releaseLease: (request: ReleaseLeaseRequest, authority?: ClientAuthority) => void;
   readArtifact: (request: ArtifactAccessRequest, authority?: ClientAuthority) => Uint8Array;
@@ -131,6 +163,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   const now = options.now ?? Date.now;
   const artifactStore = options.artifactStore ?? createMemoryArtifactStore(maximumArtifactBytes, now);
   const targetsById = new Map<string, PublishedTarget>();
+  const targetAgentPrincipalIdsById = new Map<string, string>();
   const highestGenerationByTargetId = new Map<string, number>();
   const leasesById = new Map<string, Lease>();
   const leasePrincipalIdsById = new Map<string, string>();
@@ -177,6 +210,41 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     return target;
   }
 
+  function minimumCapabilityLevel(left: CapabilityGrant['level'], right: CapabilityGrant['level']): NonNullable<CapabilityGrant['level']> {
+    const levels = ['observe', 'inspect', 'interact', 'debug', 'unsafe'] as const;
+    const leftIndex = levels.indexOf(left ?? 'observe');
+    const rightIndex = levels.indexOf(right ?? 'observe');
+    return levels[Math.min(leftIndex, rightIndex)]!;
+  }
+
+  function intersectCapabilities(targetCapabilities: CapabilityGrant, grantedCapabilities: CapabilityGrant): CapabilityGrant {
+    const targetAllowed = new Set(targetCapabilities.allow ?? []);
+    const allow = (grantedCapabilities.allow ?? []).filter(method => targetAllowed.has(method));
+    return {
+      level: minimumCapabilityLevel(targetCapabilities.level, grantedCapabilities.level),
+      ...(allow.length === 0 ? {} : { allow }),
+    };
+  }
+
+  function getAuthorizedTarget(targetId: string, generation: number, authority: ClientAuthority): PublishedTarget {
+    const target = getCurrentTarget(targetId, generation);
+    if (authority.targetGrants === undefined) return target;
+    const grant = authority.targetGrants.find(candidate => candidate.targetId === targetId);
+    if (grant === undefined) {
+      recordDiagnostic('CAPABILITY_DENIED');
+      throw new TargetBrokerError('CAPABILITY_DENIED');
+    }
+    return { ...target, capabilities: intersectCapabilities(target.capabilities, grant.capabilities) };
+  }
+
+  function assertAgentOwnsTarget(targetId: string, authority: AgentAuthority): void {
+    const ownerPrincipalId = targetAgentPrincipalIdsById.get(targetId);
+    if (ownerPrincipalId !== undefined && ownerPrincipalId !== authority.principalId) {
+      recordDiagnostic('CAPABILITY_DENIED');
+      throw new TargetBrokerError('CAPABILITY_DENIED');
+    }
+  }
+
   function eventMatchesSubscription(request: CdpSubscriptionRequest, method: string, parameters: JsonObject, sessionId: string | undefined): boolean {
     const matches = 'domain' in request.match
       ? method.startsWith(`${request.match.domain}.`)
@@ -193,10 +261,10 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     return JSON.stringify(value) === JSON.stringify(request.predicate.equals);
   }
 
-  function getSubscriptionDemand(authorizedMethods: ReadonlySet<string>): string {
-    const method = authorizedMethods.values().next().value;
-    if (method === undefined) throw new TargetBrokerError('CAPABILITY_DENIED');
-    return method;
+  function getSubscriptionDemand(request: CdpSubscriptionRequest): string {
+    if ('method' in request.match) return request.match.method;
+    if ('domain' in request.match) return `${request.match.domain}.`;
+    return request.match.methodPrefix;
   }
 
   function getAuthorizedSubscriptionMethods(request: CdpSubscriptionRequest, lease: Lease, target: PublishedTarget): ReadonlySet<string> {
@@ -211,7 +279,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   }
 
   function getSubscriptionDemandKey(target: Pick<PublishedTarget, 'generation' | 'id'>, request: CdpSubscriptionRequest, demand: string): string {
-    return `${getTargetKey(target.id, target.generation)}:${request.sessionId ?? 'root'}:${demand.split('.', 1)[0]}`;
+    return `${getTargetKey(target.id, target.generation)}:${request.sessionId ?? 'root'}:${demand}`;
   }
 
   function hasStatefulSubscriptionDemand(demand: string): boolean {
@@ -227,9 +295,11 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     try {
       if (request.sessionId === undefined) await executor?.setSubscriptionDemand?.(demand, true);
       else await executor?.setSubscriptionDemand?.(demand, true, request.sessionId);
-    } catch {
+    } catch (error) {
       subscriptionDemandCountsByKey.delete(demandKey);
-      throw new TargetBrokerError('CDP_COMMAND_FAILED');
+      throw new TargetBrokerError('CDP_COMMAND_FAILED', {
+        ...(error instanceof Error ? { message: error.message } : {}),
+      });
     }
   }
 
@@ -279,7 +349,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   }
 
   function getArtifactAuthority(request: ArtifactAccessRequest, authority: ClientAuthority): ArtifactAuthority {
-    getCurrentTarget(request.targetId, request.targetGeneration);
+    getAuthorizedTarget(request.targetId, request.targetGeneration, authority);
     const lease = getActiveLease(request, authority);
     return { ownerId: lease.id, targetGeneration: request.targetGeneration, targetId: request.targetId };
   }
@@ -292,7 +362,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
   return targetBroker = {
     acquireLease(request, authority = localClientAuthority) {
       ensureActive();
-      const target = getCurrentTarget(request.targetId, request.targetGeneration);
+      const target = getAuthorizedTarget(request.targetId, request.targetGeneration, authority);
       const mode = request.mode ?? 'shared-read';
       if (
         !Number.isSafeInteger(request.durationMilliseconds)
@@ -308,9 +378,22 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         recordDiagnostic('CAPABILITY_DENIED');
         throw new TargetBrokerError('CAPABILITY_DENIED');
       }
-      if (mode === 'exclusive-control' && [...leasesById.values()].some(lease => lease.targetId === target.id && lease.targetGeneration === target.generation && lease.mode === 'exclusive-control')) {
+      const conflictingLease = mode === 'exclusive-control'
+        ? [...leasesById.values()].find(lease => lease.targetId === target.id && lease.targetGeneration === target.generation && lease.mode === 'exclusive-control')
+        : undefined;
+      if (conflictingLease !== undefined) {
         recordDiagnostic('LEASE_CONFLICT');
-        throw new TargetBrokerError('LEASE_CONFLICT');
+        const controllerPrincipalId = leasePrincipalIdsById.get(conflictingLease.id);
+        const retryAfterMs = Math.max(0, Date.parse(conflictingLease.expiresAt) - now());
+        throw new TargetBrokerError('LEASE_CONFLICT', {
+          details: {
+            controller: controllerPrincipalId ?? 'unknown',
+            expiresAt: conflictingLease.expiresAt,
+          },
+          message: 'Another client currently holds the exclusive controller lease.',
+          retryAfterMs,
+          retryable: true,
+        });
       }
       const issuedAt = new Date(now()).toISOString();
       const lease: Lease = {
@@ -379,7 +462,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     },
     async executeCommand(command, authority = localClientAuthority) {
       ensureActive();
-      const target = getCurrentTarget(command.targetId, command.targetGeneration);
+      const target = getAuthorizedTarget(command.targetId, command.targetGeneration, authority);
       let lease: Lease;
       try {
         lease = getActiveLease(command, authority);
@@ -428,7 +511,9 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
           throw new TargetBrokerError('REQUEST_CANCELLED');
         }
         recordDiagnostic('CDP_COMMAND_FAILED');
-        throw new TargetBrokerError('CDP_COMMAND_FAILED');
+        throw new TargetBrokerError('CDP_COMMAND_FAILED', {
+          ...(error instanceof Error ? { message: error.message } : {}),
+        });
       } finally {
         clearTimeout(timeout);
         cancellationsByOperationId.delete(command.operationId);
@@ -436,46 +521,70 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         if (operationIds.size === 0) commandOperationIdsByTargetKey.delete(targetKey);
       }
     },
-    listTargets() {
+    getTargetAgentPrincipalId(targetId) {
       ensureActive();
-      return [...targetsById.values()];
+      return targetAgentPrincipalIdsById.get(targetId);
     },
-    publishTarget(target) {
+    listTargets(authority = localClientAuthority) {
       ensureActive();
+      if (authority.targetGrants === undefined) return [...targetsById.values()];
+      return [...targetsById.values()].flatMap((target) => {
+        const grant = authority.targetGrants?.find(candidate => candidate.targetId === target.id);
+        return grant === undefined ? [] : [{ ...target, capabilities: intersectCapabilities(target.capabilities, grant.capabilities) }];
+      });
+    },
+    publishTarget(target, authority = localAgentAuthority) {
+      ensureActive();
+      assertAgentOwnsTarget(target.id, authority);
       const highestGeneration = highestGenerationByTargetId.get(target.id);
       if (highestGeneration !== undefined && target.generation <= highestGeneration) {
         throw new TargetBrokerError('TARGET_GENERATION_STALE');
       }
       targetsById.set(target.id, target);
+      targetAgentPrincipalIdsById.set(target.id, authority.principalId);
       highestGenerationByTargetId.set(target.id, target.generation);
       publishTargetChange({ kind: 'published', target });
     },
-    registerTargetExecutor(target, executor) {
+    registerTargetExecutor(target, executor, authority = localAgentAuthority) {
       ensureActive();
+      assertAgentOwnsTarget(target.id, authority);
       executorsByTargetKey.set(getTargetKey(target.id, target.generation), executor);
     },
-    reconcileTargets(targets) {
+    reconcileTargets(targets, authority = localAgentAuthority) {
       ensureActive();
       const targetIds = new Set(targets.map(target => target.id));
       for (const target of [...targetsById.values()]) {
-        if (!targetIds.has(target.id)) targetBroker.revokeTarget(target.id, target.generation, 'detached');
+        if (targetAgentPrincipalIdsById.get(target.id) === authority.principalId && !targetIds.has(target.id)) {
+          targetBroker.revokeTarget(target.id, target.generation, 'detached', authority);
+        }
       }
       for (const target of targets) {
+        assertAgentOwnsTarget(target.id, authority);
         const currentTarget = targetsById.get(target.id);
-        if (currentTarget === undefined) targetBroker.publishTarget(target);
-        else if (currentTarget.generation === target.generation) targetBroker.updateTarget(target);
+        if (currentTarget === undefined) targetBroker.publishTarget(target, authority);
+        else if (currentTarget.generation === target.generation) targetBroker.updateTarget(target, authority);
         else if (currentTarget.generation < target.generation) {
-          targetBroker.revokeTarget(currentTarget.id, currentTarget.generation, 'detached');
-          targetBroker.publishTarget(target);
+          targetBroker.revokeTarget(currentTarget.id, currentTarget.generation, 'detached', authority);
+          targetBroker.publishTarget(target, authority);
         }
       }
     },
-    revokeTarget(targetId, generation, reason = 'explicit') {
+    revokeAgentTargets(authority, reason = 'detached') {
       ensureActive();
+      for (const target of [...targetsById.values()]) {
+        if (targetAgentPrincipalIdsById.get(target.id) === authority.principalId) {
+          targetBroker.revokeTarget(target.id, target.generation, reason, authority);
+        }
+      }
+    },
+    revokeTarget(targetId, generation, reason = 'explicit', authority) {
+      ensureActive();
+      if (authority !== undefined) assertAgentOwnsTarget(targetId, authority);
       const target = targetsById.get(targetId);
       if (target?.generation === generation) {
         recordDiagnostic('TARGET_REVOKED');
         targetsById.delete(targetId);
+        targetAgentPrincipalIdsById.delete(targetId);
         for (const operationId of commandOperationIdsByTargetKey.get(getTargetKey(targetId, generation)) ?? []) cancellationsByOperationId.get(operationId)?.abortController.abort();
         for (const [leaseId, lease] of leasesById) {
           if (lease.targetId === targetId && lease.targetGeneration === generation) {
@@ -489,8 +598,9 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         publishTargetChange({ kind: 'revoked', reason, targetGeneration: generation, targetId });
       }
     },
-    updateTarget(target) {
+    updateTarget(target, authority = localAgentAuthority) {
       ensureActive();
+      assertAgentOwnsTarget(target.id, authority);
       const currentTarget = getCurrentTarget(target.id, target.generation);
       targetsById.set(target.id, target);
       highestGenerationByTargetId.set(target.id, currentTarget.generation);
@@ -502,9 +612,9 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
       }
       publishTargetChange({ kind: 'updated', target });
     },
-    watchTargets() {
+    watchTargets(authority = localClientAuthority) {
       ensureActive();
-      const changes: TargetChange[] = [{ kind: 'snapshot', sequence: targetChangeSequence, targets: [...targetsById.values()] }];
+      const changes: TargetChange[] = [{ kind: 'snapshot', sequence: targetChangeSequence, targets: [...targetBroker.listTargets(authority)] }];
       let resolver: ((result: IteratorResult<TargetChange>) => void) | undefined;
       let closed = false;
       const watcher = {
@@ -517,11 +627,26 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
         },
         offer(change: TargetChange) {
           if (closed) return;
+          let authorizedChange: TargetChange | undefined;
+          if (change.kind === 'snapshot') {
+            authorizedChange = { ...change, targets: change.targets.flatMap((target) => {
+              const grant = authority.targetGrants?.find(candidate => candidate.targetId === target.id);
+              if (authority.targetGrants !== undefined && grant === undefined) return [];
+              return grant === undefined ? [target] : [{ ...target, capabilities: intersectCapabilities(target.capabilities, grant.capabilities) }];
+            }) };
+          } else if (change.kind === 'published' || change.kind === 'updated') {
+            const grant = authority.targetGrants?.find(candidate => candidate.targetId === change.target.id);
+            if (authority.targetGrants !== undefined && grant === undefined) return;
+            authorizedChange = grant === undefined ? change : { ...change, target: { ...change.target, capabilities: intersectCapabilities(change.target.capabilities, grant.capabilities) } };
+          } else {
+            if (authority.targetGrants !== undefined && !authority.targetGrants.some(candidate => candidate.targetId === change.targetId)) return;
+            authorizedChange = change;
+          }
           if (resolver !== undefined) {
             const resolve = resolver;
             resolver = undefined;
-            resolve({ done: false, value: change });
-          } else changes.push(change);
+            resolve({ done: false, value: authorizedChange });
+          } else changes.push(authorizedChange);
         },
       };
       targetWatchers.add(watcher);
@@ -550,7 +675,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     },
     releaseLease(request, authority = localClientAuthority) {
       ensureActive();
-      getCurrentTarget(request.targetId, request.targetGeneration);
+      getAuthorizedTarget(request.targetId, request.targetGeneration, authority);
       const lease = getActiveLease(request, authority);
       deleteLease(lease.id);
       closeSubscriptionsUsingLease(lease.id);
@@ -565,7 +690,7 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     },
     renewLease(request, authority = localClientAuthority) {
       ensureActive();
-      getCurrentTarget(request.targetId, request.targetGeneration);
+      getAuthorizedTarget(request.targetId, request.targetGeneration, authority);
       if (!Number.isSafeInteger(request.durationMilliseconds) || request.durationMilliseconds < 1 || request.durationMilliseconds > maximumLeaseMilliseconds) throw new TargetBrokerError('CAPABILITY_DENIED');
       const lease = getActiveLease(request, authority);
       const renewedLease: Lease = { ...lease, expiresAt: new Date(now() + request.durationMilliseconds).toISOString() };
@@ -577,10 +702,10 @@ export function createTargetBroker(options: CreateTargetBrokerOptions = {}): Tar
     },
     async subscribe(request, authority = localClientAuthority) {
       ensureActive();
-      const target = getCurrentTarget(request.targetId, request.targetGeneration);
+      const target = getAuthorizedTarget(request.targetId, request.targetGeneration, authority);
       const lease = getActiveLease(request, authority);
       const authorizedMethods = getAuthorizedSubscriptionMethods(request, lease, target);
-      const demand = getSubscriptionDemand(authorizedMethods);
+      const demand = getSubscriptionDemand(request);
       if ((request.batch !== undefined && request.batch.maximumEvents > request.buffer.capacity) || (hasStatefulSubscriptionDemand(demand) && request.buffer.capacity > 16)) throw new TargetBrokerError('CAPABILITY_DENIED');
       const id = generateId();
       const buffer: CdpEvent[] = [];

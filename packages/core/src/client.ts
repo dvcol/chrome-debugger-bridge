@@ -21,6 +21,18 @@ export interface TargetDirectory {
   subscribe?: (request: CdpSubscriptionRequest) => CdpSubscription | Promise<CdpSubscription>;
 }
 
+const clientFacadeAdapterBrand = Symbol('clientFacadeAdapter');
+
+/**
+ * Explicit boundary between a transport adapter and the public client facade.
+ * The private brand prevents authority-bearing broker instances from being used
+ * as a public facade adapter through structural typing.
+ */
+export interface ClientFacadeAdapter {
+  readonly [clientFacadeAdapterBrand]: true;
+  readonly directory: TargetDirectory;
+}
+
 export interface ChromeDebuggerBridgeClient {
   acquireLease: (request: AcquireLeaseRequest) => Promise<Lease>;
   executeCommand: (command: CdpCommand) => Promise<CdpCommandResult>;
@@ -33,8 +45,14 @@ export interface ChromeDebuggerBridgeClient {
   watchTargets: () => AsyncIterable<TargetChange>;
 }
 
-/** Creates a transport-neutral client facade; Node and browser adapters supply the directory. */
-export function createChromeDebuggerBridgeClient(directory: TargetDirectory): ChromeDebuggerBridgeClient {
+/** Wraps a transport-neutral directory for use by the public client facade. */
+export function createClientFacadeAdapter(directory: TargetDirectory): ClientFacadeAdapter {
+  return { [clientFacadeAdapterBrand]: true, directory };
+}
+
+/** Creates the public client facade from an explicit transport adapter. */
+export function createChromeDebuggerBridgeClient(adapter: ClientFacadeAdapter): ChromeDebuggerBridgeClient {
+  const { directory } = adapter;
   return {
     async acquireLease(request) {
       if (directory.acquireLease === undefined) {

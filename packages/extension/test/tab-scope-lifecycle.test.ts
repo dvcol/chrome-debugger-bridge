@@ -30,6 +30,7 @@ function createPublisher(): SelectedTabPublisher {
     refresh: vi.fn(async () => {}),
     renewAuthority: vi.fn(),
     revoke: vi.fn(async () => {}),
+    setSubscriptionDemand: vi.fn(),
     tabClosed: vi.fn(async () => {}),
   };
 }

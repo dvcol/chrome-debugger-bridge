@@ -1,7 +1,7 @@
-import type { AgentToBrokerMessage, BrokerToAgentMessage, JsonObject, PublishedTarget } from '../../../packages/core/src/protocol.js';
+import type { BrokerToAgentMessage, JsonObject, PublishedTarget } from '../../../packages/core/src/protocol.js';
 import type { BrowserAgentConnection } from '../../../packages/websocket/src/browser.js';
 
-import { createAgentRecovery, createBirpcAgentBootstrap, createIndexedDbPairingStore, createSelectedTabLifecycle, createSelectedTabPublisher } from '../../../packages/extension/src/index.js';
+import { createAgentRecovery, createBirpcAgentBootstrap, createIndexedDbPairingStore, createSelectedTabLifecycle, createSelectedTabPublisher, sendAgentHeartbeat } from '../../../packages/extension/src/index.js';
 import { connectAgentWebSocket } from '../../../packages/websocket/src/browser.js';
 
 interface ServiceWorkerTestInput {
@@ -26,6 +26,7 @@ interface BirpcBootstrapTestResult {
 
 interface BridgeTestGlobal {
   runAuthenticatedBridgeTest: (input: ServiceWorkerTestInput) => Promise<ServiceWorkerTestResult>;
+  runIdleHeartbeatTest: (input: ServiceWorkerTestInput) => Promise<void>;
   runBirpcBootstrapTest: (input: ServiceWorkerTestInput) => Promise<BirpcBootstrapTestResult>;
   runDebuggerLifecycleTest: () => Promise<{ readonly revoked: boolean; readonly value: string }>;
   runPublishedTargetLifecycleTest: (updatedUrl: string) => Promise<readonly { readonly kind: 'published' | 'revoked' | 'updated'; readonly reason?: string }[]>;
@@ -73,6 +74,7 @@ let publishedTargetAgent: {
 
 bridgeTestGlobal.runAuthenticatedBridgeTest = async (input) => {
   let connection: BrowserAgentConnection | undefined;
+  let helloResponse: Extract<BrokerToAgentMessage, { readonly kind: 'response'; readonly method: 'agent.hello' }> | undefined;
   let resolveReady: (() => void) | undefined;
   const ready = new Promise<void>(resolve => resolveReady = resolve);
   const recovery = createAgentRecovery({
@@ -85,46 +87,46 @@ bridgeTestGlobal.runAuthenticatedBridgeTest = async (input) => {
         },
       });
     },
-    async reconcile(connectedAgent) {
+    async heartbeat(connectedAgent, connectionGeneration, heartbeat) {
+      await sendAgentHeartbeat(connectedAgent, connectionGeneration, heartbeat.timeoutMilliseconds);
+    },
+    async reconcile(connectedAgent, connectionGeneration) {
+      const response = new Promise<BrokerToAgentMessage>((resolve) => {
+        const removeListener = connectedAgent.onMessage((message) => {
+          removeListener();
+          resolve(message);
+        });
+      });
+      await connectedAgent.send({
+        kind: 'request',
+        method: 'agent.hello',
+        parameters: {
+          connectionGeneration,
+          features: ['bridge.cdp.read'],
+          heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 },
+          implementation: { instanceId: crypto.randomUUID(), name: 'mv3-service-worker-test', role: 'agent', version: '0.0.0' },
+          limits: { maximumArtifactBytes: 16_777_216, maximumInlineResultBytes: 65_536, maximumMessageBytes: 16_384 },
+          protocolVersions: { maximum: 1, minimum: 1 },
+        },
+        protocolVersion: 1,
+        requestId: crypto.randomUUID(),
+      });
+      const message = await response;
+      if (message.kind !== 'response' || message.method !== 'agent.hello' || message.result.connectionGeneration !== connectionGeneration) {
+        throw new Error('The recovery broker hello response is invalid.');
+      }
+      helloResponse = message;
       connection = connectedAgent;
       resolveReady?.();
+      return message.result.heartbeat;
     },
   });
   recovery.start();
   await ready;
   if (connection === undefined) throw new Error('The recovering agent did not establish a connection.');
   const activeConnection = connection;
-  const response = new Promise<BrokerToAgentMessage>((resolve) => {
-    const removeListener = activeConnection.onMessage((message) => {
-      removeListener();
-      resolve(message);
-    });
-  });
-  const hello: Extract<AgentToBrokerMessage, { kind: 'request'; method: 'agent.hello' }> = {
-    kind: 'request',
-    method: 'agent.hello',
-    parameters: {
-      connectionGeneration: 1,
-      features: ['bridge.cdp.read'],
-      heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 },
-      implementation: {
-        instanceId: crypto.randomUUID(),
-        name: 'mv3-service-worker-test',
-        role: 'agent',
-        version: '0.0.0',
-      },
-      limits: {
-        maximumArtifactBytes: 16_777_216,
-        maximumInlineResultBytes: 65_536,
-        maximumMessageBytes: 16_384,
-      },
-      protocolVersions: { maximum: 1, minimum: 1 },
-    },
-    protocolVersion: 1,
-    requestId: crypto.randomUUID(),
-  };
-  await activeConnection.send(hello);
-  const message = await response;
+  const message = helloResponse;
+  if (message === undefined) throw new Error('The recovering agent did not negotiate agent hello.');
   activeConnection.close(3001, 'MV3 recovery test interruption');
   await activeConnection.closed;
   const resumedConnection = await new Promise<BrowserAgentConnection>((resolve, reject) => {
@@ -139,18 +141,7 @@ bridgeTestGlobal.runAuthenticatedBridgeTest = async (input) => {
     };
     waitForReconnect();
   });
-  const resumedResponse = new Promise<BrokerToAgentMessage>((resolve) => {
-    const removeListener = resumedConnection.onMessage((receivedMessage) => {
-      removeListener();
-      resolve(receivedMessage);
-    });
-  });
-  await resumedConnection.send({
-    ...hello,
-    parameters: { ...hello.parameters, connectionGeneration: 2 },
-    requestId: crypto.randomUUID(),
-  });
-  await resumedResponse;
+  if (helloResponse?.result.connectionGeneration !== 2) throw new Error('The resumed agent did not negotiate a fresh generation.');
   recovery.stop();
   await resumedConnection.closed;
   return {
@@ -160,6 +151,69 @@ bridgeTestGlobal.runAuthenticatedBridgeTest = async (input) => {
     responseKind: message.kind,
     responseMethod: message.method,
   };
+};
+
+bridgeTestGlobal.runIdleHeartbeatTest = async (input) => {
+  let connectedAgent: BrowserAgentConnection | undefined;
+  let resolveReady: (() => void) | undefined;
+  const ready = new Promise<void>(resolve => resolveReady = resolve);
+  const recovery = createAgentRecovery({
+    async connect() {
+      return connectAgentWebSocket({
+        credentialStore: createIndexedDbPairingStore({ databaseName: 'mv3-idle-heartbeat-test' }),
+        endpoint: input.endpoint,
+        async requestPairingCode() {
+          return input.pairingCode;
+        },
+      });
+    },
+    async heartbeat(connection, connectionGeneration, heartbeat) {
+      await sendAgentHeartbeat(connection, connectionGeneration, heartbeat.timeoutMilliseconds);
+    },
+    async reconcile(connection, connectionGeneration) {
+      const response = new Promise<BrokerToAgentMessage>((resolve) => {
+        const removeListener = connection.onMessage((message) => {
+          if (message.kind !== 'response' || message.method !== 'agent.hello') return;
+          removeListener();
+          resolve(message);
+        });
+      });
+      await connection.send({
+        kind: 'request',
+        method: 'agent.hello',
+        parameters: {
+          connectionGeneration,
+          features: [],
+          heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 },
+          implementation: { instanceId: crypto.randomUUID(), name: 'mv3-idle-heartbeat-test', role: 'agent', version: '0.0.0' },
+          limits: { maximumArtifactBytes: 16_777_216, maximumInlineResultBytes: 65_536, maximumMessageBytes: 16_384 },
+          protocolVersions: { maximum: 1, minimum: 1 },
+        },
+        protocolVersion: 1,
+        requestId: crypto.randomUUID(),
+      });
+      const message = await response;
+      if (message.kind !== 'response' || message.method !== 'agent.hello' || message.result.connectionGeneration !== connectionGeneration) {
+        throw new Error('The idle heartbeat generation is invalid.');
+      }
+      connectedAgent = connection;
+      resolveReady?.();
+      return message.result.heartbeat;
+    },
+  });
+  recovery.start();
+  await ready;
+  await new Promise<void>(resolve => globalThis.setTimeout(resolve, 31_000));
+  if (recovery.connection !== connectedAgent || connectedAgent === undefined) throw new Error('The idle MV3 agent did not remain connected.');
+  await connectedAgent.send({
+    kind: 'notification',
+    method: 'targets.publish',
+    parameters: { target: { availability: 'available', capabilities: { level: 'observe' }, generation: 1, id: crypto.randomUUID(), scopeId: crypto.randomUUID(), type: 'page' } },
+    protocolVersion: 1,
+  });
+  await new Promise<void>(resolve => globalThis.setTimeout(resolve, 100));
+  recovery.stop();
+  await connectedAgent.closed;
 };
 
 bridgeTestGlobal.runBirpcBootstrapTest = async (input) => {
@@ -278,6 +332,44 @@ bridgeTestGlobal.runPublishedTargetLifecycleTest = async (updatedUrl) => {
   }
 };
 
+async function negotiatePublishedTargetAgent(connection: BrowserAgentConnection): Promise<void> {
+  const requestId = crypto.randomUUID();
+  const response = new Promise<Extract<BrokerToAgentMessage, { readonly kind: 'response'; readonly method: 'agent.hello' }>>((resolve, reject) => {
+    let removeListener: (() => void) | undefined;
+    const timeout = setTimeout(() => {
+      removeListener?.();
+      reject(new Error('The published target agent hello response timed out.'));
+    }, 5_000);
+    removeListener = connection.onMessage((message) => {
+      if ((message.kind !== 'response' && message.kind !== 'error') || message.requestId !== requestId || message.method !== 'agent.hello') return;
+      clearTimeout(timeout);
+      removeListener?.();
+      if (message.kind === 'error') {
+        reject(new Error(message.error.message));
+        return;
+      }
+      if (message.kind !== 'response') return;
+      resolve(message);
+    });
+  });
+  await connection.send({
+    kind: 'request',
+    method: 'agent.hello',
+    parameters: {
+      connectionGeneration: 1,
+      features: ['bridge.cdp.read'],
+      heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 },
+      implementation: { instanceId: crypto.randomUUID(), name: 'mv3-published-target-agent-test', role: 'agent', version: '0.0.0' },
+      limits: { maximumArtifactBytes: 16_777_216, maximumInlineResultBytes: 65_536, maximumMessageBytes: 16_384 },
+      protocolVersions: { maximum: 1, minimum: 1 },
+    },
+    protocolVersion: 1,
+    requestId,
+  });
+  const message = await response;
+  if (message.result.connectionGeneration !== 1) throw new Error('The published target agent hello generation is invalid.');
+}
+
 bridgeTestGlobal.runPublishedTargetAgentTest = async (input) => {
   const [tab] = await chrome.tabs.query({ active: true });
   if (tab?.id === undefined) throw new Error('No active tab is available.');
@@ -288,6 +380,7 @@ bridgeTestGlobal.runPublishedTargetAgentTest = async (input) => {
       return input.pairingCode;
     },
   });
+  await negotiatePublishedTargetAgent(connection);
   let setSubscriptionDemand: ((methodPrefix: string, active: boolean, sessionId?: string) => Promise<void>) | undefined;
   const publisher = createSelectedTabPublisher({
     capabilities: { level: 'unsafe' },
@@ -359,6 +452,7 @@ bridgeTestGlobal.recoverPublishedTargetAgentTest = async (input) => {
       return input.pairingCode;
     },
   });
+  await negotiatePublishedTargetAgent(recoveredConnection);
   activeAgent.bindConnection(recoveredConnection);
   activeAgent.connection = recoveredConnection;
   return activeAgent.publisher.renewAuthority();

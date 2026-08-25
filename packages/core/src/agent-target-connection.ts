@@ -1,4 +1,4 @@
-import type { TargetBroker } from './broker.js';
+import type { AgentAuthority, TargetBroker } from './broker.js';
 import type { AgentToBrokerMessage, BrokerToAgentMessage, CdpCommand, ConnectionLimits, HeartbeatParameters, JsonObject, Lease, PublishedTarget } from './protocol.js';
 
 export interface AgentTargetConnection {
@@ -9,6 +9,8 @@ export interface AgentTargetConnection {
 }
 
 export interface ConnectAgentTargetBrokerOptions {
+  /** Stable authenticated provider identity used to isolate reconciliation from other agents. */
+  readonly authority?: AgentAuthority;
   /** Values negotiated with every authenticated agent before it can publish targets. */
   readonly connectionLimits?: ConnectionLimits;
   readonly connectionGeneration?: number;
@@ -21,6 +23,8 @@ export interface ConnectAgentTargetBrokerOptions {
     readonly role: 'broker';
     readonly version: string;
   };
+  /** Defaults to true. Recovery-aware hosts can retain targets and revoke them after their own deadline. */
+  readonly revokeTargetsOnDisconnect?: boolean;
 }
 
 const defaultConnectionLimits: ConnectionLimits = {
@@ -46,6 +50,8 @@ export function connectAgentTargetBroker(
     role: 'broker' as const,
     version: '0.0.0',
   };
+  const authority = options.authority ?? { principalId: 'local-agent' };
+  const revokeTargetsOnDisconnect = options.revokeTargetsOnDisconnect ?? true;
   const publishedTargets = new Map<string, PublishedTarget>();
   const pendingCommands = new Map<string, {
     readonly reject: (reason: Error) => void;
@@ -71,6 +77,21 @@ export function connectAgentTargetBroker(
       abortSignal.removeEventListener('abort', cancelCommand);
       pendingCommands.delete(requestId);
     }
+  }
+
+  function registerExecutor(target: PublishedTarget): void {
+    if (connection.send === undefined) return;
+    broker.registerTargetExecutor(target, {
+      execute: executeCommand,
+      async setSubscriptionDemand(methodPrefix, active, sessionId) {
+        await connection.send?.({
+          kind: 'notification',
+          method: 'cdp.subscription-demand',
+          parameters: { active, methodPrefix, ...(sessionId === undefined ? {} : { sessionId }), targetGeneration: target.generation, targetId: target.id },
+          protocolVersion: 1,
+        });
+      },
+    }, authority);
   }
 
   let handshakeComplete = false;
@@ -129,6 +150,20 @@ export function connectAgentTargetBroker(
       connection.close?.(1008, 'Agent hello already completed');
       return;
     }
+    if (message.kind === 'request' && message.method === 'agent.heartbeat') {
+      if (message.protocolVersion !== 1 || message.parameters.connectionGeneration !== connectionGeneration) {
+        connection.close?.(1008, 'Agent heartbeat generation is invalid');
+        return;
+      }
+      void connection.send?.({
+        kind: 'response',
+        method: 'agent.heartbeat',
+        protocolVersion: 1,
+        requestId: message.requestId,
+        result: { connectionGeneration },
+      });
+      return;
+    }
     if (message.kind === 'response' && message.method === 'cdp.execute') {
       pendingCommands.get(message.requestId)?.resolve(message.result.value);
       return;
@@ -139,31 +174,21 @@ export function connectAgentTargetBroker(
     }
     if (message.kind !== 'notification') return;
     if (message.method === 'targets.publish') {
-      broker.publishTarget(message.parameters.target);
+      broker.publishTarget(message.parameters.target, authority);
       publishedTargets.set(message.parameters.target.id, message.parameters.target);
-      if (connection.send !== undefined) {
-        const target = message.parameters.target;
-        broker.registerTargetExecutor(target, {
-          execute: executeCommand,
-          async setSubscriptionDemand(methodPrefix, active, sessionId) {
-            await connection.send?.({
-              kind: 'notification',
-              method: 'cdp.subscription-demand',
-              parameters: { active, methodPrefix, ...(sessionId === undefined ? {} : { sessionId }), targetGeneration: target.generation, targetId: target.id },
-              protocolVersion: 1,
-            });
-          },
-        });
-      }
+      registerExecutor(message.parameters.target);
     } else if (message.method === 'targets.reconcile') {
-      broker.reconcileTargets(message.parameters.targets);
+      broker.reconcileTargets(message.parameters.targets, authority);
       publishedTargets.clear();
-      for (const target of message.parameters.targets) publishedTargets.set(target.id, target);
+      for (const target of message.parameters.targets) {
+        publishedTargets.set(target.id, target);
+        registerExecutor(target);
+      }
     } else if (message.method === 'targets.revoke') {
-      broker.revokeTarget(message.parameters.targetId, message.parameters.targetGeneration, message.parameters.reason);
+      broker.revokeTarget(message.parameters.targetId, message.parameters.targetGeneration, message.parameters.reason, authority);
       publishedTargets.delete(message.parameters.targetId);
     } else if (message.method === 'targets.update') {
-      broker.updateTarget(message.parameters.target);
+      broker.updateTarget(message.parameters.target, authority);
       publishedTargets.set(message.parameters.target.id, message.parameters.target);
     } else if (message.method === 'cdp.event') broker.publishEvent(
       { generation: message.parameters.targetGeneration, id: message.parameters.targetId },
@@ -173,7 +198,7 @@ export function connectAgentTargetBroker(
     );
   });
   const revokePublishedTargets = (): void => {
-    for (const target of publishedTargets.values()) broker.revokeTarget(target.id, target.generation, 'detached');
+    if (revokeTargetsOnDisconnect) broker.revokeAgentTargets(authority, 'detached');
     publishedTargets.clear();
   };
   const closeConnection = (): void => {

@@ -185,6 +185,7 @@ export const bridgeErrorSchemaDefinition = z.strictObject({
   code: bridgeErrorCodeSchemaDefinition,
   details: z.optional(jsonObjectSchemaDefinition),
   message: shortTextSchemaDefinition,
+  retryAfterMs: z.optional(z.int().check(z.gte(0))),
   retryable: z.boolean(),
 });
 

@@ -5,12 +5,15 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
+import { Client } from '@modelcontextprotocol/client';
+import { InMemoryTransport, McpServer } from '@modelcontextprotocol/server';
 import { chromium } from 'playwright';
 import { build } from 'vite';
 import { afterEach, expect, it } from 'vitest';
 
 import { connectAgentTargetBroker, connectClientTargetBroker, createTargetBroker } from '../../packages/core/src/index.js';
-import { connectNodeClientWebSocket, createStandaloneAuthenticatedWebSocketBridge } from '../../packages/websocket/src/node.js';
+import { registerCdbTools } from '../../packages/mcp/src/index.js';
+import { connectNodeClientWebSocket, createNodeChromeDebuggerBridgeClient, createStandaloneAuthenticatedWebSocketBridge } from '../../packages/websocket/src/node.js';
 import {
   createMemoryAgentAuthenticationAdapter,
   createStaticClientAuthenticationAdapter,
@@ -75,6 +78,16 @@ it('runs the authenticated browser transport inside an MV3 service worker', asyn
     ),
     onAgentConnection({ connection }) {
       connection.onMessage((message) => {
+        if (message.kind === 'request' && message.method === 'agent.heartbeat') {
+          void connection.send({
+            kind: 'response',
+            method: 'agent.heartbeat',
+            protocolVersion: 1,
+            requestId: message.requestId,
+            result: { connectionGeneration: message.parameters.connectionGeneration },
+          });
+          return;
+        }
         if (message.kind !== 'request' || message.method !== 'agent.hello') {
           return;
         }
@@ -90,7 +103,7 @@ it('runs the authenticated browser transport inside an MV3 service worker', asyn
               role: 'broker',
               version: '0.0.0',
             },
-            connectionGeneration: 1,
+            connectionGeneration: message.parameters.connectionGeneration,
             features: ['bridge.cdp.read'],
             heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 },
             limits: {
@@ -173,7 +186,7 @@ it('runs the authenticated browser transport inside an MV3 service worker', asyn
   expect(result.resumedConnectionId).not.toBe(result.connectionId);
   expect(result.responseKind).toBe('response');
   expect(result.responseMethod).toBe('agent.hello');
-}, 20_000);
+}, 60_000);
 
 it('validates a Birpc offer in a real MV3 worker before direct broker traffic', async () => {
   expect.assertions(5);
@@ -277,7 +290,7 @@ it('publishes, updates, and revokes a target through real Chrome lifecycle event
 }, 20_000);
 
 it('arbitrates authenticated clients and routes shared real-Chrome events through the MV3 agent', async () => {
-  expect.assertions(27);
+  expect.assertions(33);
   const brokerId = crypto.randomUUID();
   const pairingCode = '147258';
   const server = createServer((_request, response) => {
@@ -332,6 +345,28 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   const target = await serviceWorker.evaluate(async ({ endpoint, pairingCode: code }) => (globalThis as unknown as { runPublishedTargetAgentTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<{ readonly generation: number; readonly id: string }> }).runPublishedTargetAgentTest({ endpoint, pairingCode: code }), { endpoint: `ws://${bridge.host}:${bridge.port}/cdb/agent`, pairingCode });
   const publication = await targetWatcher.next();
   const clientEndpoint = `ws://${bridge.host}:${bridge.port}/cdb/client`;
+  const nodeFacade = await createNodeChromeDebuggerBridgeClient({ artifactEndpoint: 'http://127.0.0.1/cdb/artifacts/', authorization: 'Bearer mv3-agent-test-client', endpoint: clientEndpoint });
+  cleanupTasks.push(async () => {
+    nodeFacade.dispose();
+    await nodeFacade.closed;
+  });
+  const applicationMcpServer = new McpServer({ name: 'real-chrome-host', version: '0.0.0' });
+  applicationMcpServer.registerTool('application.health', { description: 'Return host health.' }, async () => ({ content: [{ text: 'healthy', type: 'text' }] }));
+  registerCdbTools(applicationMcpServer, { client: nodeFacade });
+  const [mcpClientTransport, mcpServerTransport] = InMemoryTransport.createLinkedPair();
+  const mcpClient = new Client({ name: 'real-chrome-mcp-client', version: '0.0.0' });
+  await applicationMcpServer.connect(mcpServerTransport);
+  await mcpClient.connect(mcpClientTransport);
+  cleanupTasks.push(async () => {
+    await mcpClient.close();
+    await applicationMcpServer.close();
+  });
+  const mcpTools = await mcpClient.listTools();
+  const mcpTargetList = await mcpClient.callTool({ arguments: {}, name: 'browser.list_targets' });
+  const mcpHealth = await mcpClient.callTool({ arguments: {}, name: 'application.health' });
+  const mcpLease = await nodeFacade.acquireLease({ durationMilliseconds: 5_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
+  const mcpInspection = await mcpClient.callTool({ arguments: { expression: 'document.title', leaseId: mcpLease.id, targetGeneration: target.generation, targetId: target.id }, name: 'browser.inspect' });
+  await nodeFacade.releaseLease({ leaseId: mcpLease.id, targetGeneration: target.generation, targetId: target.id });
   const firstReader = await connectNodeClientWebSocket({ authorization: 'Bearer mv3-agent-test-client', endpoint: clientEndpoint });
   const secondReader = await connectNodeClientWebSocket({ authorization: 'Bearer mv3-agent-test-client', endpoint: clientEndpoint });
   const controller = await connectNodeClientWebSocket({ authorization: 'Bearer mv3-agent-test-client', endpoint: clientEndpoint });
@@ -368,10 +403,16 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   const revocation = await targetWatcher.next();
   const renewedPublication = await targetWatcher.next();
   const staleTargetAfterRecovery = await sendClientRequest(firstReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
+  const staleMcpAccess = await mcpClient.callTool({ arguments: { targetGeneration: target.generation, targetId: target.id }, name: 'browser.snapshot' });
   await serviceWorker.evaluate(async () => (globalThis as unknown as { interruptPublishedTargetAgentTest: () => Promise<void> }).interruptPublishedTargetAgentTest());
   const renewedRevocation = await targetWatcher.next();
 
   expect(publication).toMatchObject({ done: false, value: { kind: 'published', target: { generation: target.generation, id: target.id } } });
+  expect(mcpTools.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['application.health', 'browser.list_targets', 'browser.inspect']));
+  expect(JSON.stringify(mcpTargetList)).toContain(target.id);
+  expect(mcpHealth).toEqual({ content: [{ text: 'healthy', type: 'text' }] });
+  expect(JSON.stringify(mcpInspection)).toContain('Broker command target');
+  expect(mcpTools.tools.map(tool => tool.name)).not.toContain('browser.raw_cdp');
   expect(firstReaderTargets).toMatchObject({ kind: 'response', method: 'targets.list', result: { targets: [{ id: target.id }] } });
   expect(secondReaderTargets).toMatchObject({ kind: 'response', method: 'targets.list', result: { targets: [{ id: target.id }] } });
   expect(unexposedTarget).toMatchObject({ kind: 'error', method: 'leases.acquire', error: { code: 'TARGET_NOT_FOUND' } });
@@ -394,11 +435,12 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   expect(JSON.stringify(result)).not.toContain('tabId');
   expect(revocation).toMatchObject({ done: false, value: { kind: 'revoked', reason: 'detached', targetGeneration: target.generation, targetId: target.id } });
   expect(renewedPublication).toMatchObject({ done: false, value: { kind: 'published', target: { generation: renewedTarget.generation, id: renewedTarget.id } } });
-  expect(renewedTarget.id).not.toBe(target.id);
-  expect(staleTargetAfterRecovery).toMatchObject({ kind: 'error', method: 'leases.acquire', error: { code: 'TARGET_NOT_FOUND' } });
+  expect(renewedTarget).toMatchObject({ generation: target.generation + 1, id: target.id });
+  expect(staleTargetAfterRecovery).toMatchObject({ kind: 'error', method: 'leases.acquire', error: { code: 'TARGET_GENERATION_STALE' } });
+  expect(staleMcpAccess).toMatchObject({ content: [{ text: JSON.stringify({ code: 'TARGET_GENERATION_STALE', message: 'The requested target operation is not available.', retryable: false }), type: 'text' }], isError: true });
   expect(renewedRevocation).toMatchObject({ done: false, value: { kind: 'revoked', reason: 'detached', targetGeneration: renewedTarget.generation, targetId: renewedTarget.id } });
   expect(targetBroker.listTargets()).toEqual([]);
-}, 20_000);
+}, 45_000);
 
 it('reissues fresh target authority after a broker restart on the same endpoint', async () => {
   expect.assertions(6);
@@ -454,9 +496,46 @@ it('reissues fresh target authority after a broker restart on the same endpoint'
   await serviceWorker.evaluate(async () => (globalThis as unknown as { interruptPublishedTargetAgentTest: () => Promise<void> }).interruptPublishedTargetAgentTest());
 
   expect(firstBroker.listTargets()).toEqual([]);
-  expect(renewedTarget.id).not.toBe(initialTarget.id);
+  expect(renewedTarget.id).toBe(initialTarget.id);
   expect(recoveredPublication).toMatchObject({ done: false, value: { kind: 'published', target: { generation: renewedTarget.generation, id: renewedTarget.id } } });
   expect(secondBroker.listTargets()).toEqual([]);
   expect(initialTarget.generation).toBe(1);
-  expect(renewedTarget.generation).toBe(1);
-}, 20_000);
+  expect(renewedTarget.generation).toBe(2);
+}, 45_000);
+
+it('keeps an idle authenticated MV3 agent connected past the service-worker idle window', async () => {
+  expect.assertions(1);
+  const brokerId = crypto.randomUUID();
+  const pairingCode = '654321';
+  let published = false;
+  const bridge = await createStandaloneAuthenticatedWebSocketBridge({
+    agentAuthentication: createMemoryAgentAuthenticationAdapter({ brokerId, pairingCode, pairingCodeExpiresAt: Date.now() + 300_000, principal: { id: crypto.randomUUID(), role: 'agent' as const } }),
+    brokerId,
+    clientAuthentication: createStaticClientAuthenticationAdapter('Bearer idle-test-client', { id: crypto.randomUUID(), role: 'client' as const }),
+    onAgentConnection({ connection }) {
+      connection.onMessage((message) => {
+        if (message.kind === 'request' && message.method === 'agent.heartbeat') {
+          void connection.send({ kind: 'response', method: 'agent.heartbeat', protocolVersion: 1, requestId: message.requestId, result: { connectionGeneration: message.parameters.connectionGeneration } });
+        } else if (message.kind === 'request' && message.method === 'agent.hello') {
+          void connection.send({ kind: 'response', method: 'agent.hello', protocolVersion: 1, requestId: message.requestId, result: { broker: { instanceId: brokerId, name: 'idle-heartbeat-broker', role: 'broker', version: '0.0.0' }, connectionGeneration: message.parameters.connectionGeneration, features: [], heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 }, limits: { maximumArtifactBytes: 16_777_216, maximumInlineResultBytes: 65_536, maximumMessageBytes: 16_384 }, protocolVersion: 1 } });
+        } else if (message.kind === 'notification' && message.method === 'targets.publish') published = true;
+      });
+    },
+    onClientConnection() {},
+    originPolicy({ origin }) {
+      return origin?.startsWith('chrome-extension://') === true;
+    },
+  });
+  cleanupTasks.push(async () => bridge.close());
+  const extensionDirectory = await mkdtemp(join(tmpdir(), 'chrome-debugger-bridge-idle-extension-'));
+  const userDataDirectory = await mkdtemp(join(tmpdir(), 'chrome-debugger-bridge-idle-profile-'));
+  cleanupTasks.push(async () => rm(extensionDirectory, { force: true, recursive: true }));
+  cleanupTasks.push(async () => rm(userDataDirectory, { force: true, recursive: true }));
+  await build({ build: { emptyOutDir: true, lib: { entry: resolve('tests/e2e/fixtures/authenticated-service-worker.ts'), fileName: () => 'service-worker.js', formats: ['es'] }, outDir: extensionDirectory }, configFile: false, logLevel: 'silent' });
+  await writeFile(join(extensionDirectory, 'manifest.json'), `${JSON.stringify({ background: { service_worker: 'service-worker.js', type: 'module' }, manifest_version: 3, name: 'Chrome Debugger Bridge Idle Heartbeat Test', permissions: ['storage'], version: '0.0.0' }, null, 2)}\n`, 'utf8');
+  const context = await chromium.launchPersistentContext(userDataDirectory, { args: [`--disable-extensions-except=${extensionDirectory}`, `--load-extension=${extensionDirectory}`], channel: 'chromium', headless: true });
+  cleanupTasks.push(async () => context.close());
+  const serviceWorker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
+  await serviceWorker.evaluate(async ({ endpoint, code }) => (globalThis as unknown as { runIdleHeartbeatTest: (input: { readonly endpoint: string; readonly pairingCode: string }) => Promise<void> }).runIdleHeartbeatTest({ endpoint, pairingCode: code }), { code: pairingCode, endpoint: `ws://${bridge.host}:${bridge.port}/cdb/agent` });
+  expect(published).toBe(true);
+}, 60_000);

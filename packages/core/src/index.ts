@@ -24,7 +24,9 @@ export {
 export { type ClientTargetConnection, connectClientTargetBroker } from './client-target-connection.js';
 export {
   type ChromeDebuggerBridgeClient,
+  type ClientFacadeAdapter,
   createChromeDebuggerBridgeClient,
+  createClientFacadeAdapter,
   type TargetChange,
   type TargetDirectory,
 } from './client.js';

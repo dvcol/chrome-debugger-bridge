@@ -56,6 +56,8 @@ export interface SelectedTabPublisherOptions {
   readonly scopeId: string;
   /** An extension-only selector; it is evaluated before every publication and refresh. */
   readonly tabScopeSelector?: TabScopeSelector;
+  /** Restores one logical target during provider recovery while advancing its generation. */
+  readonly targetIdentity?: Pick<PublishedTarget, 'generation' | 'id'>;
   readonly updateTarget: (target: PublishedTarget) => Promise<void> | void;
 }
 
@@ -68,6 +70,7 @@ export interface SelectedTabPublisher {
   publish: (tab: SelectedTab) => Promise<PublishedTarget>;
   refresh: (tab: SelectedTab) => Promise<void>;
   renewAuthority: () => Promise<PublishedTarget>;
+  setSubscriptionDemand: (methodPrefix: string, active: boolean, sessionId?: string) => Promise<void>;
   revoke: (reason?: 'closed' | 'detached' | 'explicit' | 'policy-invalid') => Promise<void>;
   tabClosed: (tabId: number) => Promise<void>;
   debuggerDetached: (tabId: number) => Promise<void>;
@@ -100,6 +103,8 @@ function isSupportedPage(url: string | undefined): boolean {
 export function createSelectedTabPublisher(options: SelectedTabPublisherOptions): SelectedTabPublisher {
   const childSessionRouter = createChildSessionRouter();
   const activeRootSubscriptionDomains = new Set<string>();
+  const activeRootSubscriptionDemands = new Set<string>();
+  const activeChildSubscriptionDemands = new Map<string, Set<string>>();
   let selectedTabId: number | undefined;
   let publishedTarget: PublishedTarget | undefined;
 
@@ -175,7 +180,9 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
   }
 
   function handleDetachedChild(parameters: JsonObject): void {
-    if (typeof parameters.sessionId === 'string') childSessionRouter.detach(parameters.sessionId);
+    if (typeof parameters.sessionId !== 'string') return;
+    const detachedSession = childSessionRouter.detach(parameters.sessionId);
+    if (detachedSession !== undefined) activeChildSubscriptionDemands.delete(detachedSession.id);
   }
 
   function invalidateChildrenOnRootNavigation(method: string, parameters: JsonObject): void {
@@ -183,6 +190,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     const frame = parameters.frame;
     if (frame === null || typeof frame !== 'object' || Array.isArray(frame) || frame.parentId !== undefined) return;
     childSessionRouter.revoke();
+    activeChildSubscriptionDemands.clear();
   }
 
   async function revoke(reason: 'closed' | 'detached' | 'explicit' | 'policy-invalid' = 'explicit'): Promise<void> {
@@ -195,6 +203,8 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     selectedTabId = undefined;
     childSessionRouter.revoke();
     activeRootSubscriptionDomains.clear();
+    activeRootSubscriptionDemands.clear();
+    activeChildSubscriptionDemands.clear();
     await options.revokeTarget(targetToRevoke, reason);
     try {
       await options.chromeDebugger.detach({ tabId: tabIdToDetach });
@@ -241,8 +251,8 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
         throw new Error('The requested command was cancelled.');
       }
       return value;
-    } catch {
-      throw new Error('The debugger command failed.');
+    } catch (error) {
+      throw new Error(error instanceof Error ? `The debugger command failed: ${error.message}` : 'The debugger command failed.');
     }
   }
 
@@ -251,21 +261,47 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     options.publishEvent?.(publishedTarget, method, parameters, sessionId);
   }
 
+  function isEventDemanded(method: string, sessionId?: string): boolean {
+    if ([...activeRootSubscriptionDemands].some(demand => method.startsWith(demand))) return true;
+    return sessionId !== undefined
+      && [...(activeChildSubscriptionDemands.get(sessionId) ?? [])].some(demand => method.startsWith(demand));
+  }
+
   async function setSubscriptionDemand(methodPrefix: string, active: boolean, sessionId?: string): Promise<void> {
     if (selectedTabId === undefined) throw new Error('The requested target is not available.');
     const domain = methodPrefix.split('.', 1)[0];
     if (domain === undefined || !domainNamePattern.test(domain)) throw new Error('The subscription method is invalid.');
-    const command = `${domain}.${active ? 'enable' : 'disable'}`;
     const chromeSessionId = sessionId === undefined ? undefined : childSessionRouter.resolve(sessionId);
     if (sessionId !== undefined && chromeSessionId === undefined) throw new Error('The requested session is not available.');
+    const demands = sessionId === undefined
+      ? activeRootSubscriptionDemands
+      : activeChildSubscriptionDemands.get(sessionId) ?? new Set<string>();
+    if (active === demands.has(methodPrefix)) return;
+    const hadDomainDemand = [...demands].some(demand => demand.startsWith(`${domain}.`));
+    if (active) demands.add(methodPrefix);
+    else demands.delete(methodPrefix);
+    const hasDomainDemand = [...demands].some(demand => demand.startsWith(`${domain}.`));
+    if (sessionId !== undefined) {
+      if (demands.size === 0) activeChildSubscriptionDemands.delete(sessionId);
+      else activeChildSubscriptionDemands.set(sessionId, demands);
+    }
+    if (hadDomainDemand === hasDomainDemand) return;
+    const command = `${domain}.${hasDomainDemand ? 'enable' : 'disable'}`;
     try {
       await options.chromeDebugger.sendCommand({ tabId: selectedTabId, ...(chromeSessionId === undefined ? {} : { sessionId: chromeSessionId }) }, command);
       if (sessionId === undefined) {
-        if (active) activeRootSubscriptionDomains.add(domain);
+        if (hasDomainDemand) activeRootSubscriptionDomains.add(domain);
         else activeRootSubscriptionDomains.delete(domain);
       }
-    } catch {
-      throw new Error('The debugger subscription setup failed.');
+    } catch (error) {
+      if (active) {
+        demands.delete(methodPrefix);
+        if (sessionId !== undefined && demands.size === 0) activeChildSubscriptionDemands.delete(sessionId);
+      } else {
+        demands.add(methodPrefix);
+        if (sessionId !== undefined) activeChildSubscriptionDemands.set(sessionId, demands);
+      }
+      throw new Error(error instanceof Error ? `The debugger subscription setup failed: ${error.message}` : 'The debugger subscription setup failed.');
     }
   }
 
@@ -276,11 +312,12 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     const priorTarget = publishedTarget;
     const renewedTarget: PublishedTarget = {
       ...priorTarget,
-      generation: 1,
-      id: globalThis.crypto.randomUUID(),
+      generation: priorTarget.generation + 1,
     };
     childSessionRouter.revoke();
     activeRootSubscriptionDomains.clear();
+    activeRootSubscriptionDemands.clear();
+    activeChildSubscriptionDemands.clear();
     publishedTarget = renewedTarget;
     try {
       await options.revokeTarget(priorTarget, 'explicit');
@@ -317,7 +354,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       }
       const publicSession = source.sessionId === undefined ? undefined : childSessionRouter.resolve(source.sessionId);
       if (source.sessionId !== undefined && publicSession === undefined) return;
-      publishEvent(method, parameters, publicSession);
+      if (isEventDemanded(method, publicSession)) publishEvent(method, parameters, publicSession);
     },
     async publish(tab) {
       if (!Number.isSafeInteger(tab.tabId) || tab.tabId < 0) {
@@ -344,8 +381,8 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       const target: PublishedTarget = {
         availability: 'available',
         capabilities: options.capabilities,
-        generation: 1,
-        id: globalThis.crypto.randomUUID(),
+        generation: options.targetIdentity?.generation ?? 1,
+        id: options.targetIdentity?.id ?? globalThis.crypto.randomUUID(),
         scopeId: options.scopeId,
         type: 'page',
         ...(metadata.title === undefined ? {} : { title: metadata.title }),
@@ -405,5 +442,6 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     publishEvent,
     revoke,
     renewAuthority,
+    setSubscriptionDemand,
   };
 }

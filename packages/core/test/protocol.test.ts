@@ -106,7 +106,7 @@ describe('protocol schemas', () => {
   });
 
   it('validates the minimal handshake, target, lease, CDP, cancellation, revocation, and error envelopes', async () => {
-    expect.assertions(14);
+    expect.assertions(16);
 
     const messages = [
       {
@@ -133,6 +133,20 @@ describe('protocol schemas', () => {
         requestId: '70000000-0000-4000-8000-000000000001',
       },
       agentHelloResponse,
+      {
+        kind: 'request',
+        method: 'agent.heartbeat',
+        parameters: { connectionGeneration: 1 },
+        protocolVersion: 1,
+        requestId: '70000000-0000-4000-8000-000000000014',
+      },
+      {
+        kind: 'response',
+        method: 'agent.heartbeat',
+        protocolVersion: 1,
+        requestId: '70000000-0000-4000-8000-000000000014',
+        result: { connectionGeneration: 1 },
+      },
       {
         kind: 'notification',
         method: 'targets.publish',
@@ -219,6 +233,8 @@ describe('protocol schemas', () => {
     ];
 
     const schemas = [
+      agentPlaneMessageSchema,
+      agentPlaneMessageSchema,
       agentPlaneMessageSchema,
       agentPlaneMessageSchema,
       agentPlaneMessageSchema,

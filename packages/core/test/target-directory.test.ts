@@ -1,9 +1,10 @@
+import type { TargetBroker } from '../src/broker.js';
 import type { AgentToBrokerMessage, BrokerToAgentMessage, BrokerToClientMessage, CdpCommand, ClientToBrokerMessage, PublishedTarget } from '../src/protocol.js';
 
 import { expect, it, vi } from 'vitest';
 
 import { createTargetBroker } from '../src/broker.js';
-import { createChromeDebuggerBridgeClient } from '../src/client.js';
+import { createChromeDebuggerBridgeClient, createClientFacadeAdapter } from '../src/client.js';
 import { connectAgentTargetBroker, connectClientTargetBroker } from '../src/index.js';
 import { artifactResultSchema } from '../src/protocol.js';
 
@@ -41,10 +42,28 @@ function completeAgentHello(listener: ((message: AgentToBrokerMessage) => void) 
   });
 }
 
+function createLocalClientFacadeAdapter(broker: TargetBroker) {
+  return createClientFacadeAdapter({
+    acquireLease: request => broker.acquireLease(request),
+    async executeCommand(command) {
+      return broker.executeCommand(command);
+    },
+    listTargets: () => broker.listTargets(),
+    readArtifact: request => broker.readArtifact(request),
+    releaseArtifact: request => broker.releaseArtifact(request),
+    releaseLease: request => broker.releaseLease(request),
+    renewLease: request => broker.renewLease(request),
+    async subscribe(request) {
+      return broker.subscribe(request);
+    },
+    watchTargets: () => broker.watchTargets(),
+  });
+}
+
 it('lists only opaque targets published by the agent', async () => {
   expect.assertions(3);
   const broker = createTargetBroker();
-  const client = createChromeDebuggerBridgeClient(broker);
+  const client = createChromeDebuggerBridgeClient(createLocalClientFacadeAdapter(broker));
 
   broker.publishTarget(target);
   const targets = await client.listTargets();
@@ -53,6 +72,52 @@ it('lists only opaque targets published by the agent', async () => {
   expect(targets).toEqual([target]);
   expect(Object.keys(targets[0] ?? {})).not.toContain('tabId');
   expect(await client.listTargets()).toEqual([]);
+});
+
+it('projects only granted targets and intersects their capabilities for one client authority', async () => {
+  expect.assertions(5);
+  const broker = createTargetBroker();
+  const secondTarget = { ...target, id: '60000000-0000-4000-8000-000000000002', title: 'Other target' };
+  const authority = {
+    connectionId: 'client-1',
+    principalId: 'principal-1',
+    targetGrants: [{ capabilities: { level: 'debug' as const }, targetId: target.id }],
+  };
+  broker.publishTarget(target);
+  broker.publishTarget(secondTarget);
+  const watcher = broker.watchTargets(authority)[Symbol.asyncIterator]();
+
+  expect(broker.listTargets(authority)).toEqual([{ ...target, capabilities: { level: 'debug' } }]);
+  expect(await watcher.next()).toEqual({
+    done: false,
+    value: { kind: 'snapshot', sequence: 2, targets: [{ ...target, capabilities: { level: 'debug' } }] },
+  });
+  expect(() => broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Debugger.setBreakpointByUrl'], targetGeneration: target.generation, targetId: target.id }, authority)).not.toThrow();
+  expect(() => broker.acquireLease({ durationMilliseconds: 1_000, requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: secondTarget.generation, targetId: secondTarget.id }, authority)).toThrowError(expect.objectContaining({ code: 'CAPABILITY_DENIED' }));
+  expect(() => broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Unknown.unsafeCommand'], targetGeneration: target.generation, targetId: target.id }, authority)).toThrowError(expect.objectContaining({ code: 'CAPABILITY_DENIED' }));
+});
+
+it('reports exclusive lease ownership and advisory retry timing', () => {
+  expect.assertions(4);
+  const now = Date.parse('2030-01-01T00:00:00.000Z');
+  const broker = createTargetBroker({ now: () => now });
+  const firstAuthority = { connectionId: 'client-1', displayName: 'Agent one', principalId: 'principal-1' };
+  const secondAuthority = { connectionId: 'client-2', displayName: 'Agent two', principalId: 'principal-2' };
+  broker.publishTarget(target);
+  broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Debugger.setBreakpointByUrl'], targetGeneration: target.generation, targetId: target.id }, firstAuthority);
+
+  let conflict: unknown;
+  try {
+    broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Debugger.setBreakpointByUrl'], targetGeneration: target.generation, targetId: target.id }, secondAuthority);
+  } catch (error) {
+    conflict = error;
+  }
+
+  expect(conflict).toMatchObject({ code: 'LEASE_CONFLICT', retryable: true, retryAfterMs: 1_000 });
+  expect(conflict).toMatchObject({ details: { controller: 'principal-1', expiresAt: '2030-01-01T00:00:01.000Z' } });
+  expect(conflict).toMatchObject({ message: 'Another client currently holds the exclusive controller lease.' });
+  expect(secondAuthority.displayName).toBe('Agent two');
+  broker.dispose();
 });
 
 it('keeps leases principal-owned across reconnect grace while isolating connections', async () => {
@@ -132,6 +197,51 @@ it('reconciles agent state without accepting a stale target generation', () => {
   expect(broker.listTargets()).toEqual([]);
 });
 
+it('isolates reconciliation by authenticated agent authority', () => {
+  expect.assertions(2);
+  const broker = createTargetBroker();
+  const firstAuthority = { principalId: 'provider-1' };
+  const secondAuthority = { principalId: 'provider-2' };
+  const secondTarget = { ...target, id: '60000000-0000-4000-8000-000000000002' };
+  broker.publishTarget(target, firstAuthority);
+  broker.publishTarget(secondTarget, secondAuthority);
+  broker.reconcileTargets([], firstAuthority);
+
+  expect(broker.listTargets()).toEqual([secondTarget]);
+  expect(() => broker.updateTarget({ ...secondTarget, title: 'Stolen' }, firstAuthority)).toThrowError(expect.objectContaining({ code: 'CAPABILITY_DENIED' }));
+});
+
+it('retains targets for host-managed recovery and reconciles a higher generation', () => {
+  expect.assertions(2);
+  const broker = createTargetBroker();
+  const authority = { principalId: 'provider-1' };
+  let firstListener: ((message: AgentToBrokerMessage) => void) | undefined;
+  const disconnectFirst = connectAgentTargetBroker({
+    onMessage(receivedListener) {
+      firstListener = receivedListener;
+      return () => firstListener = undefined;
+    },
+  }, broker, { authority, revokeTargetsOnDisconnect: false });
+  completeAgentHello(firstListener);
+  firstListener?.({ kind: 'notification', method: 'targets.publish', parameters: { target }, protocolVersion: 1 });
+  disconnectFirst();
+
+  expect(broker.listTargets()).toEqual([target]);
+
+  let secondListener: ((message: AgentToBrokerMessage) => void) | undefined;
+  const disconnectSecond = connectAgentTargetBroker({
+    onMessage(receivedListener) {
+      secondListener = receivedListener;
+      return () => secondListener = undefined;
+    },
+  }, broker, { authority, revokeTargetsOnDisconnect: false });
+  completeAgentHello(secondListener);
+  secondListener?.({ kind: 'notification', method: 'targets.reconcile', parameters: { targets: [{ ...target, generation: 2 }] }, protocolVersion: 1 });
+
+  expect(broker.listTargets()).toEqual([{ ...target, generation: 2 }]);
+  disconnectSecond();
+});
+
 it('applies authenticated agent lifecycle notifications to the broker', () => {
   expect.assertions(2);
   const broker = createTargetBroker();
@@ -171,6 +281,49 @@ it('rejects agent traffic until one matching hello completes', () => {
   listener?.({ kind: 'notification', method: 'targets.publish', parameters: { target }, protocolVersion: 1 });
   expect(broker.listTargets()).toEqual([]);
   disconnect();
+});
+
+it('answers only a post-handshake heartbeat for the active connection generation', async () => {
+  expect.assertions(4);
+  const broker = createTargetBroker();
+  let listener: ((message: AgentToBrokerMessage) => void) | undefined;
+  let closeCode: number | undefined;
+  const disconnect = connectAgentTargetBroker({
+    close(code) {
+      closeCode = code;
+    },
+    onMessage(receivedListener) {
+      listener = receivedListener;
+      return () => listener = undefined;
+    },
+  }, broker);
+
+  listener?.({ kind: 'request', method: 'agent.heartbeat', parameters: { connectionGeneration: 1 }, protocolVersion: 1, requestId: '60000000-0000-4000-8000-000000000097' });
+  expect(closeCode).toBe(1008);
+  disconnect();
+
+  const activeMessages: BrokerToAgentMessage[] = [];
+  closeCode = undefined;
+  const activeDisconnect = connectAgentTargetBroker({
+    close(code) {
+      closeCode = code;
+    },
+    onMessage(receivedListener) {
+      listener = receivedListener;
+      return () => listener = undefined;
+    },
+    async send(message) {
+      activeMessages.push(message);
+    },
+  }, broker);
+  completeAgentHello(listener);
+  listener?.({ kind: 'request', method: 'agent.heartbeat', parameters: { connectionGeneration: 1 }, protocolVersion: 1, requestId: '60000000-0000-4000-8000-000000000096' });
+  await Promise.resolve();
+  expect(activeMessages).toContainEqual({ kind: 'response', method: 'agent.heartbeat', protocolVersion: 1, requestId: '60000000-0000-4000-8000-000000000096', result: { connectionGeneration: 1 } });
+  expect(broker.listTargets()).toEqual([]);
+  listener?.({ kind: 'request', method: 'agent.heartbeat', parameters: { connectionGeneration: 2 }, protocolVersion: 1, requestId: '60000000-0000-4000-8000-000000000095' });
+  expect(closeCode).toBe(1008);
+  activeDisconnect();
 });
 
 it('revokes every target when its authenticated agent connection closes', async () => {
@@ -353,7 +506,7 @@ it('executes only a non-expired lease grant through the registered opaque target
   expect.assertions(6);
   let currentTime = Date.parse('2026-08-04T12:00:00.000Z');
   const broker = createTargetBroker({ now: () => currentTime });
-  const client = createChromeDebuggerBridgeClient(broker);
+  const client = createChromeDebuggerBridgeClient(createLocalClientFacadeAdapter(broker));
   broker.publishTarget(target);
   const execute = vi.fn(async (command: CdpCommand) => ({ expression: command.parameters?.expression ?? '' }));
   broker.registerTargetExecutor(target, { execute });
@@ -402,7 +555,7 @@ it('executes only a non-expired lease grant through the registered opaque target
 it('externalizes large command results and invalidates their access with the target grant', async () => {
   expect.assertions(6);
   const broker = createTargetBroker({ artifactLifetimeMilliseconds: 1_000, maximumArtifactBytes: 100, maximumInlineResultBytes: 4 });
-  const client = createChromeDebuggerBridgeClient(broker);
+  const client = createChromeDebuggerBridgeClient(createLocalClientFacadeAdapter(broker));
   broker.publishTarget(target);
   broker.registerTargetExecutor(target, { async execute() {
     return { value: 'large result' };
@@ -603,6 +756,27 @@ it('returns subscription demand to the extension executor when the client closes
 
   expect(setSubscriptionDemand).toHaveBeenNthCalledWith(1, 'Runtime.consoleAPICalled', true);
   expect(setSubscriptionDemand).toHaveBeenNthCalledWith(2, 'Runtime.consoleAPICalled', false);
+});
+
+it('tracks distinct event demands within the same CDP domain', async () => {
+  expect.assertions(4);
+  const broker = createTargetBroker();
+  broker.publishTarget(target);
+  const setSubscriptionDemand = vi.fn(async () => {});
+  broker.registerTargetExecutor(target, { async execute() {
+    return {};
+  }, setSubscriptionDemand });
+  const lease = broker.acquireLease({ durationMilliseconds: 1_000, mode: 'exclusive-control', requestedMethods: ['Runtime.bindingCalled', 'Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
+  const bindingSubscription = await broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { method: 'Runtime.bindingCalled' }, targetGeneration: target.generation, targetId: target.id });
+  const consoleSubscription = await broker.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });
+
+  expect(setSubscriptionDemand).toHaveBeenNthCalledWith(1, 'Runtime.bindingCalled', true);
+  expect(setSubscriptionDemand).toHaveBeenNthCalledWith(2, 'Runtime.consoleAPICalled', true);
+  bindingSubscription.close();
+  consoleSubscription.close();
+  await Promise.resolve();
+  expect(setSubscriptionDemand).toHaveBeenNthCalledWith(3, 'Runtime.bindingCalled', false);
+  expect(setSubscriptionDemand).toHaveBeenNthCalledWith(4, 'Runtime.consoleAPICalled', false);
 });
 
 it('routes subscription demand through an opaque child session', async () => {

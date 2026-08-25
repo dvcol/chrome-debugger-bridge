@@ -1,3 +1,5 @@
+import type { HeartbeatParameters } from '@dvcol/cdb/protocol';
+
 export type AgentRecoveryState = 'authenticating' | 'connecting' | 'locating' | 'ready' | 'reconnecting' | 'revoked' | 'stopped';
 
 export interface RecoverableAgentConnection {
@@ -7,12 +9,12 @@ export interface RecoverableAgentConnection {
 
 export interface CreateAgentRecoveryOptions<Connection extends RecoverableAgentConnection> {
   readonly connect: (connectionGeneration: number) => Promise<Connection>;
-  readonly heartbeat?: (connection: Connection, connectionGeneration: number) => Promise<void>;
-  readonly heartbeatIntervalMilliseconds?: number;
+  readonly heartbeat?: (connection: Connection, connectionGeneration: number, parameters: HeartbeatParameters) => Promise<void>;
   readonly maximumBackoffMilliseconds?: number;
   readonly minimumBackoffMilliseconds?: number;
   readonly onStateChange?: (state: AgentRecoveryState) => void;
-  readonly reconcile: (connection: Connection, connectionGeneration: number) => Promise<void>;
+  /** Completes agent.hello and returns its negotiated liveness parameters when heartbeats are enabled. */
+  readonly reconcile: (connection: Connection, connectionGeneration: number) => Promise<HeartbeatParameters | void>;
   readonly schedule?: (task: () => void, delayMilliseconds: number) => ReturnType<typeof globalThis.setTimeout>;
   readonly cancelScheduled?: (handle: ReturnType<typeof globalThis.setTimeout>) => void;
 }
@@ -29,7 +31,6 @@ export interface AgentRecovery<Connection extends RecoverableAgentConnection> {
 export function createAgentRecovery<Connection extends RecoverableAgentConnection>(options: CreateAgentRecoveryOptions<Connection>): AgentRecovery<Connection> {
   const minimumBackoffMilliseconds = options.minimumBackoffMilliseconds ?? 250;
   const maximumBackoffMilliseconds = options.maximumBackoffMilliseconds ?? 30_000;
-  const heartbeatIntervalMilliseconds = options.heartbeatIntervalMilliseconds ?? 20_000;
   const schedule = options.schedule ?? globalThis.setTimeout;
   const cancelScheduled = options.cancelScheduled ?? globalThis.clearTimeout;
   let activeConnection: Connection | undefined;
@@ -55,16 +56,16 @@ export function createAgentRecovery<Connection extends RecoverableAgentConnectio
     }, delayMilliseconds);
   }
 
-  function scheduleHeartbeat(connection: Connection, generation: number): void {
-    if (options.heartbeat === undefined || stopped || activeConnection !== connection) return;
+  function scheduleHeartbeat(connection: Connection, generation: number, parameters: HeartbeatParameters | undefined): void {
+    if (options.heartbeat === undefined || parameters === undefined || stopped || activeConnection !== connection) return;
     scheduledHeartbeat = schedule(() => {
       scheduledHeartbeat = undefined;
-      void options.heartbeat?.(connection, generation).then(() => {
-        scheduleHeartbeat(connection, generation);
+      void options.heartbeat?.(connection, generation, parameters).then(() => {
+        scheduleHeartbeat(connection, generation, parameters);
       }).catch(() => {
         connection.close(3001, 'Agent heartbeat failed');
       });
-    }, heartbeatIntervalMilliseconds);
+    }, parameters.intervalMilliseconds);
   }
 
   async function connect(): Promise<void> {
@@ -78,7 +79,7 @@ export function createAgentRecovery<Connection extends RecoverableAgentConnectio
         return;
       }
       setState('authenticating');
-      await options.reconcile(candidateConnection, connectionGeneration);
+      const heartbeatParameters = await options.reconcile(candidateConnection, connectionGeneration);
       if (stopped) {
         candidateConnection.close(1000, 'Agent recovery stopped');
         return;
@@ -86,7 +87,7 @@ export function createAgentRecovery<Connection extends RecoverableAgentConnectio
       activeConnection = candidateConnection;
       attempt = 0;
       setState('ready');
-      scheduleHeartbeat(candidateConnection, connectionGeneration);
+      scheduleHeartbeat(candidateConnection, connectionGeneration, heartbeatParameters === undefined ? undefined : heartbeatParameters);
       const closure = await candidateConnection.closed;
       if (activeConnection !== candidateConnection) return;
       activeConnection = undefined;

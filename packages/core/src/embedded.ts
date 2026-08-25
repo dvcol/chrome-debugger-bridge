@@ -4,7 +4,7 @@ import type { ChromeDebuggerBridgeClient, TargetDirectory } from './client.js';
 import type { CdpCommand, CdpSubscriptionRequest, JsonObject, Lease, PublishedTarget } from './protocol.js';
 
 import { createTargetBroker, TargetBrokerError } from './broker.js';
-import { createChromeDebuggerBridgeClient } from './client.js';
+import { createChromeDebuggerBridgeClient, createClientFacadeAdapter } from './client.js';
 
 /** Applies host-specific authorization in addition to the broker's mandatory capability checks. */
 export interface EmbeddedAuthorizationAdapter {
@@ -145,7 +145,7 @@ export function createEmbeddedChromeDebuggerBridge(options: CreateEmbeddedChrome
     watchTargets: () => wrapIterator(broker.watchTargets()[Symbol.asyncIterator]()),
   };
   const client = {
-    ...createChromeDebuggerBridgeClient(directory),
+    ...createChromeDebuggerBridgeClient(createClientFacadeAdapter(directory)),
     dispose() {
       if (disposed) return;
       disposed = true;

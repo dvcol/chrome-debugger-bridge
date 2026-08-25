@@ -3,5 +3,5 @@
   "compilerOptions": {
     "lib": ["ES2024"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "test/client-facade-adapter-contract.ts"]
 }

@@ -1,6 +1,14 @@
-import type { ArtifactDescriptor } from '@dvcol/cdb';
 import type {
+  AcquireLeaseRequest,
   ArtifactAccessRequest,
+  ArtifactDescriptor,
+  CdpSubscription,
+  ChromeDebuggerBridgeClient,
+  ReleaseLeaseRequest,
+  RenewLeaseRequest,
+  TargetChange,
+} from '@dvcol/cdb';
+import type {
   CreateTargetBrokerOptions,
   TargetBroker,
 } from '@dvcol/cdb/broker';
@@ -9,7 +17,13 @@ import type {
   AgentToBrokerMessage,
   BrokerToAgentMessage,
   BrokerToClientMessage,
+  CdpCommand,
+  CdpCommandResult,
+  CdpEvent,
+  CdpSubscriptionRequest,
   ClientToBrokerMessage,
+  Lease,
+  PublishedTarget,
 } from '@dvcol/cdb/protocol';
 import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
@@ -21,7 +35,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { styleText } from 'node:util';
 
-import { connectAgentTargetBroker, connectClientTargetBroker, createTargetBroker } from '@dvcol/cdb';
+import { connectAgentTargetBroker, connectClientTargetBroker, createChromeDebuggerBridgeClient, createClientFacadeAdapter, createTargetBroker } from '@dvcol/cdb';
 import {
   agentAuthenticationMessageSchema,
   agentToBrokerMessageSchema,
@@ -1189,11 +1203,13 @@ export async function createStandaloneAuthenticatedWebSocketBridge<
 
 export type NodeClientConnection = AuthenticatedConnection<BrokerToClientMessage, ClientToBrokerMessage>;
 
-export async function connectNodeClientWebSocket(options: {
+export interface ConnectNodeClientWebSocketOptions {
   readonly authorization: string;
   readonly endpoint: string;
   readonly origin?: string;
-}): Promise<NodeClientConnection> {
+}
+
+export async function connectNodeClientWebSocket(options: ConnectNodeClientWebSocketOptions): Promise<NodeClientConnection> {
   const endpointUrl = new URL(options.endpoint);
   validateWebSocketEndpointSecurity(endpointUrl);
   if (endpointUrl.username || endpointUrl.password || endpointUrl.search || endpointUrl.hash) {
@@ -1216,6 +1232,288 @@ export async function connectNodeClientWebSocket(options: {
     throw new Error('The broker selected an invalid WebSocket subprotocol');
   }
   return createNodeClientConnection(webSocket);
+}
+
+export interface NodeChromeDebuggerBridgeClient extends ChromeDebuggerBridgeClient {
+  readonly closed: Promise<{ readonly code: number; readonly reason: string }>;
+  cancelCommand: (request: Pick<CdpCommand, 'operationId' | 'targetGeneration' | 'targetId'>) => Promise<void>;
+  close: (code?: number, reason?: string) => void;
+  dispose: () => void;
+}
+
+export interface CreateNodeChromeDebuggerBridgeClientOptions extends ConnectNodeClientWebSocketOptions {
+  readonly artifactEndpoint: string;
+  readonly reconnect?: { readonly initialDelayMilliseconds?: number; readonly maximumDelayMilliseconds?: number };
+}
+
+interface NodePendingRequest {
+  readonly reject: (error: Error) => void;
+  readonly resolve: (message: Extract<BrokerToClientMessage, { readonly kind: 'response' }>) => void;
+}
+
+interface NodeSubscriptionState {
+  readonly events: ReturnType<typeof createNodeAsyncQueue<CdpEvent>>;
+  readonly request: CdpSubscriptionRequest;
+  closed: boolean;
+  droppedCount: number;
+  id: string;
+  lastDeliveredSequence: number;
+  overflowed: boolean;
+}
+
+function nodeProtocolError(error: { readonly code: string; readonly message: string }): Error & { readonly code: string } {
+  return Object.assign(new Error(error.message), { code: error.code });
+}
+
+function createNodeAsyncQueue<Value>(maximumValues: number): AsyncIterable<Value> & { close: (error?: Error) => void; offer: (value: Value) => void } {
+  const values: Value[] = [];
+  const receivers: Array<{ readonly reject: (error: Error) => void; readonly resolve: (result: IteratorResult<Value>) => void }> = [];
+  let closed = false;
+  let terminalError: Error | undefined;
+  return {
+    close(error) {
+      if (closed) return;
+      closed = true;
+      terminalError = error;
+      while (receivers.length > 0) {
+        const receiver = receivers.shift();
+        if (receiver === undefined) return;
+        if (error === undefined) receiver.resolve({ done: true, value: undefined });
+        else receiver.reject(error);
+      }
+    },
+    offer(value) {
+      if (closed) return;
+      const receiver = receivers.shift();
+      if (receiver !== undefined) receiver.resolve({ done: false, value });
+      else if (values.length < maximumValues) values.push(value);
+      else throw new Error('The Node client queue overflowed.');
+    },
+    [Symbol.asyncIterator]() {
+      return {
+        async next(): Promise<IteratorResult<Value>> {
+          const value = values.shift();
+          if (value !== undefined) return { done: false, value };
+          if (terminalError !== undefined) throw terminalError;
+          if (closed) return { done: true, value: undefined };
+          return new Promise((resolve, reject) => receivers.push({ reject, resolve }));
+        },
+      };
+    },
+  };
+}
+
+function validateArtifactEndpoint(endpoint: string): URL {
+  const endpointUrl = new URL(endpoint);
+  if (endpointUrl.protocol !== 'http:' && endpointUrl.protocol !== 'https:') throw new Error('The artifact endpoint must use HTTP.');
+  if (endpointUrl.protocol === 'http:' && !isLoopbackHostname(endpointUrl.hostname)) throw new Error('Plaintext artifact connections are restricted to loopback hosts.');
+  if (endpointUrl.username || endpointUrl.password || endpointUrl.search || endpointUrl.hash) throw new Error('The artifact endpoint must not contain credentials, query parameters, or fragments.');
+  return endpointUrl;
+}
+
+/** Creates the complete reconnecting public CDB client facade for a header-authenticated Node endpoint. */
+export async function createNodeChromeDebuggerBridgeClient(options: CreateNodeChromeDebuggerBridgeClientOptions): Promise<NodeChromeDebuggerBridgeClient> {
+  const artifactEndpoint = validateArtifactEndpoint(options.artifactEndpoint);
+  let connection = await connectNodeClientWebSocket(options);
+  const pendingRequests = new Map<string, NodePendingRequest>();
+  const subscriptions = new Map<string, NodeSubscriptionState>();
+  const subscriptionStates = new Set<NodeSubscriptionState>();
+  const targetChanges = createNodeAsyncQueue<TargetChange>(maximumPendingAuthenticatedMessages);
+  const initialDelayMilliseconds = options.reconnect?.initialDelayMilliseconds ?? 25;
+  const maximumDelayMilliseconds = options.reconnect?.maximumDelayMilliseconds ?? 1_000;
+  let manuallyClosed = false;
+  let reconnecting: Promise<void> | undefined;
+  let removeListener = (): void => {};
+  let nextTargetSequence = 0;
+  let resolveClosed: (close: { readonly code: number; readonly reason: string }) => void;
+  const closed = new Promise<{ readonly code: number; readonly reason: string }>(resolve => resolveClosed = resolve);
+  let closedResolved = false;
+  const failPendingRequests = (error: Error): void => {
+    for (const pendingRequest of pendingRequests.values()) pendingRequest.reject(error);
+    pendingRequests.clear();
+  };
+  const finishClosed = (close: { readonly code: number; readonly reason: string }): void => {
+    if (closedResolved) return;
+    closedResolved = true;
+    failPendingRequests(new Error(`The Node client WebSocket closed (${close.code}).`));
+    targetChanges.close();
+    for (const subscription of subscriptionStates) subscription.events.close();
+    resolveClosed(close);
+  };
+  const receiveMessage = (message: BrokerToClientMessage): void => {
+    if (message.kind === 'response') {
+      const pendingRequest = pendingRequests.get(message.requestId);
+      if (pendingRequest !== undefined) {
+        pendingRequests.delete(message.requestId);
+        pendingRequest.resolve(message);
+      }
+      return;
+    }
+    if (message.kind === 'error') {
+      const pendingRequest = pendingRequests.get(message.requestId);
+      if (pendingRequest !== undefined) {
+        pendingRequests.delete(message.requestId);
+        pendingRequest.reject(nodeProtocolError(message.error));
+      }
+      return;
+    }
+    if (message.method === 'targets.snapshot') {
+      nextTargetSequence = message.parameters.sequence;
+      targetChanges.offer({ kind: 'snapshot', sequence: nextTargetSequence, targets: message.parameters.targets });
+    } else if (message.method === 'targets.published') targetChanges.offer({ kind: 'published', sequence: ++nextTargetSequence, target: message.parameters.target });
+    else if (message.method === 'targets.updated') targetChanges.offer({ kind: 'updated', sequence: ++nextTargetSequence, target: message.parameters.target });
+    else if (message.method === 'targets.revoked') targetChanges.offer({ kind: 'revoked', sequence: ++nextTargetSequence, ...message.parameters });
+    else if (message.method === 'cdp.event') {
+      const subscription = subscriptions.get(message.parameters.subscriptionId);
+      if (subscription !== undefined) {
+        subscription.lastDeliveredSequence = message.parameters.sequence;
+        subscription.events.offer(message.parameters);
+      }
+    } else if (message.method === 'subscriptions.overflow') {
+      const subscription = subscriptions.get(message.parameters.subscriptionId);
+      if (subscription !== undefined) {
+        subscription.droppedCount = message.parameters.droppedCount;
+        subscription.lastDeliveredSequence = message.parameters.lastDeliveredSequence;
+        subscription.overflowed = true;
+      }
+    }
+  };
+  const wait = async (milliseconds: number): Promise<void> => new Promise(resolve => globalThis.setTimeout(resolve, milliseconds));
+  const attachConnection = (nextConnection: NodeClientConnection): void => {
+    connection = nextConnection;
+    removeListener = connection.onMessage(receiveMessage);
+    void connection.closed.then((close) => {
+      removeListener();
+      if (manuallyClosed) {
+        finishClosed(close);
+        return;
+      }
+      failPendingRequests(new Error(`The Node client WebSocket disconnected (${close.code}).`));
+      void reconnect();
+    });
+  };
+  async function request(message: ClientToBrokerMessage, allowDuringReconnect = false): Promise<Extract<BrokerToClientMessage, { readonly kind: 'response' }>> {
+    if (!allowDuringReconnect && reconnecting !== undefined) await reconnecting;
+    if (manuallyClosed) throw new Error('The Node client is closed.');
+    return new Promise((resolve, reject) => {
+      pendingRequests.set(message.requestId, { reject, resolve });
+      void connection.send(message).catch((error: unknown) => {
+        pendingRequests.delete(message.requestId);
+        reject(error instanceof Error ? error : new Error('Unable to send client request.'));
+      });
+    });
+  }
+  const restoreSubscriptions = async (): Promise<void> => {
+    for (const subscription of subscriptionStates) {
+      if (subscription.closed) continue;
+      try {
+        const response = await request({ kind: 'request', method: 'cdp.subscribe', parameters: subscription.request, protocolVersion: 1, requestId: randomUUID() }, true);
+        if (response.method !== 'cdp.subscribe') throw new Error('Received an unexpected subscription response.');
+        subscriptions.delete(subscription.id);
+        subscription.id = response.result.subscriptionId;
+        subscriptions.set(subscription.id, subscription);
+      } catch (error) {
+        subscription.closed = true;
+        subscriptions.delete(subscription.id);
+        subscriptionStates.delete(subscription);
+        subscription.events.close(error instanceof Error ? error : new Error('LEASE_REQUIRED'));
+      }
+    }
+  };
+  async function reconnect(): Promise<void> {
+    if (reconnecting !== undefined || manuallyClosed) return reconnecting;
+    reconnecting = (async () => {
+      let delayMilliseconds = initialDelayMilliseconds;
+      while (true) {
+        if (manuallyClosed) return;
+        try {
+          const nextConnection = await connectNodeClientWebSocket(options);
+          if (manuallyClosed) {
+            nextConnection.close();
+            return;
+          }
+          attachConnection(nextConnection);
+          await restoreSubscriptions();
+          return;
+        } catch {
+          await wait(delayMilliseconds);
+          delayMilliseconds = Math.min(maximumDelayMilliseconds, delayMilliseconds * 2);
+        }
+      }
+    })().finally(() => reconnecting = undefined);
+    return reconnecting;
+  }
+  attachConnection(connection);
+  const facade = createChromeDebuggerBridgeClient(createClientFacadeAdapter({
+    async acquireLease(input: AcquireLeaseRequest): Promise<Lease> {
+      const response = await request({ kind: 'request', method: 'leases.acquire', parameters: { ...input, mode: input.mode ?? 'shared-read', requestedMethods: [...input.requestedMethods] }, protocolVersion: 1, requestId: randomUUID() });
+      if (response.method !== 'leases.acquire') throw new Error('Received an unexpected lease response.');
+      return response.result.lease;
+    },
+    async executeCommand(command: CdpCommand): Promise<CdpCommandResult> {
+      const response = await request({ kind: 'request', method: 'cdp.send', parameters: command, protocolVersion: 1, requestId: randomUUID() });
+      if (response.method !== 'cdp.send') throw new Error('Received an unexpected command response.');
+      return response.result;
+    },
+    async listTargets(): Promise<readonly PublishedTarget[]> {
+      const response = await request({ kind: 'request', method: 'targets.list', parameters: {}, protocolVersion: 1, requestId: randomUUID() });
+      if (response.method !== 'targets.list') throw new Error('Received an unexpected target response.');
+      return response.result.targets;
+    },
+    async readArtifact(input: ArtifactAccessRequest, signal?: AbortSignal): Promise<Uint8Array> {
+      const response = await globalThis.fetch(new URL(encodeURIComponent(input.artifactId), artifactEndpoint), { headers: { authorization: options.authorization, ...(input.range === undefined ? {} : { range: `bytes=${input.range.offset}-${input.range.offset + input.range.length - 1}` }) }, ...(signal === undefined ? {} : { signal }) });
+      if (!response.ok) throw new Error(`Artifact read failed with HTTP ${response.status}.`);
+      return new Uint8Array(await response.arrayBuffer());
+    },
+    async releaseArtifact(): Promise<void> {},
+    async releaseLease(input: ReleaseLeaseRequest): Promise<void> {
+      const response = await request({ kind: 'request', method: 'leases.release', parameters: input, protocolVersion: 1, requestId: randomUUID() });
+      if (response.method !== 'leases.release') throw new Error('Received an unexpected lease response.');
+    },
+    async renewLease(input: RenewLeaseRequest): Promise<Lease> {
+      const response = await request({ kind: 'request', method: 'leases.renew', parameters: input, protocolVersion: 1, requestId: randomUUID() });
+      if (response.method !== 'leases.renew') throw new Error('Received an unexpected lease response.');
+      return response.result.lease;
+    },
+    async subscribe(input: CdpSubscriptionRequest): Promise<CdpSubscription> {
+      const response = await request({ kind: 'request', method: 'cdp.subscribe', parameters: input, protocolVersion: 1, requestId: randomUUID() });
+      if (response.method !== 'cdp.subscribe') throw new Error('Received an unexpected subscription response.');
+      const subscription: NodeSubscriptionState = { closed: false, droppedCount: 0, events: createNodeAsyncQueue<CdpEvent>(input.buffer.capacity), id: response.result.subscriptionId, lastDeliveredSequence: 0, overflowed: false, request: input };
+      subscriptions.set(subscription.id, subscription);
+      subscriptionStates.add(subscription);
+      return { close() {
+        if (subscription.closed) return;
+        subscription.closed = true;
+        subscriptions.delete(subscription.id);
+        subscriptionStates.delete(subscription);
+        subscription.events.close();
+        void request({ kind: 'request', method: 'cdp.unsubscribe', parameters: { subscriptionId: subscription.id }, protocolVersion: 1, requestId: randomUUID() }).catch(() => {});
+      }, get droppedCount() {
+        return subscription.droppedCount;
+      }, get id() {
+        return subscription.id;
+      }, get lastDeliveredSequence() {
+        return subscription.lastDeliveredSequence;
+      }, get overflowed() {
+        return subscription.overflowed;
+      }, targetGeneration: input.targetGeneration, targetId: input.targetId, [Symbol.asyncIterator]() {
+        return subscription.events[Symbol.asyncIterator]();
+      } } satisfies CdpSubscription;
+    },
+    watchTargets() {
+      return targetChanges;
+    },
+  }));
+  const close = (code?: number, reason?: string): void => {
+    if (manuallyClosed) return;
+    manuallyClosed = true;
+    finishClosed({ code: code ?? 1_000, reason: reason ?? '' });
+    connection.close(code, reason);
+  };
+  return { ...facade, async cancelCommand(input) {
+    const response = await request({ kind: 'request', method: 'cdp.cancel', parameters: input, protocolVersion: 1, requestId: randomUUID() });
+    if (response.method !== 'cdp.cancel') throw new Error('Received an unexpected cancellation response.');
+  }, close, closed, dispose: close };
 }
 
 /** A short-lived pairing code is intentionally presented only through the host callback. */

@@ -9,16 +9,19 @@ export interface ClientTargetConnection {
 /** Streams an initial target snapshot and ordered lifecycle changes to one authenticated client. */
 export function connectClientTargetBroker(connection: ClientTargetConnection, broker: TargetBroker, authority: ClientAuthority = { connectionId: 'local', principalId: 'local' }): () => void {
   broker.connectClient(authority);
-  const iterator = broker.watchTargets()[Symbol.asyncIterator]();
+  const iterator = broker.watchTargets(authority)[Symbol.asyncIterator]();
   const subscriptions = new Map<string, CdpSubscription>();
   let stopped = false;
   async function sendError(message: Extract<ClientToBrokerMessage, { readonly kind: 'request' }>, error: unknown): Promise<void> {
-    const code = error instanceof Error && 'code' in error ? (error as TargetBrokerError).code : 'FEATURE_UNSUPPORTED';
+    const targetBrokerError = error instanceof Error && 'code' in error ? error as TargetBrokerError : undefined;
+    const code = targetBrokerError?.code ?? 'FEATURE_UNSUPPORTED';
     await connection.send({
       error: {
         code,
-        message: 'The requested target operation is not available.',
-        retryable: false,
+        ...(targetBrokerError?.details === undefined ? {} : { details: targetBrokerError.details }),
+        message: targetBrokerError?.message ?? 'The requested target operation is not available.',
+        ...(targetBrokerError?.retryAfterMs === undefined ? {} : { retryAfterMs: targetBrokerError.retryAfterMs }),
+        retryable: targetBrokerError?.retryable ?? false,
       },
       kind: 'error',
       method: message.method,
@@ -59,7 +62,7 @@ export function connectClientTargetBroker(connection: ClientTargetConnection, br
           subscriptions.delete(message.parameters.subscriptionId);
           await connection.send({ kind: 'response', method: 'cdp.unsubscribe', protocolVersion: 1, requestId: message.requestId, result: {} });
         } else if (message.method === 'targets.list') {
-          await connection.send({ kind: 'response', method: 'targets.list', protocolVersion: 1, requestId: message.requestId, result: { targets: [...broker.listTargets()] } });
+          await connection.send({ kind: 'response', method: 'targets.list', protocolVersion: 1, requestId: message.requestId, result: { targets: [...broker.listTargets(authority)] } });
         } else if (message.method === 'leases.acquire') {
           const lease = broker.acquireLease(message.parameters, authority);
           await connection.send({ kind: 'response', method: 'leases.acquire', protocolVersion: 1, requestId: message.requestId, result: { lease } });

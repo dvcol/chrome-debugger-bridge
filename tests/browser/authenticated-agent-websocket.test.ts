@@ -146,13 +146,15 @@ it('preserves broker frames sent while a new credential is being stored', async 
 });
 
 it('pairs a native browser agent and resumes with the stored non-extractable credential', async () => {
-  expect.assertions(10);
+  expect.assertions(12);
   const testContext = inject('websocketBrowserTest');
   const credentialStore = createIndexedDbPairingStore({ databaseName: `bridge-browser-${testContext.brokerId}` });
+  const instanceId = crypto.randomUUID();
   let pairingRequests = 0;
   const firstConnection = await connectAgentWebSocket({
     credentialStore,
     endpoint: testContext.agentEndpoint,
+    implementation: { instanceId, name: 'stable-identity-test-agent', version: '0.0.0' },
     async requestPairingCode(challenge) {
       pairingRequests += 1;
       expect(challenge.brokerId).toBe(testContext.brokerId);
@@ -168,7 +170,7 @@ it('pairs a native browser agent and resumes with the stored non-extractable cre
       features: ['bridge.cdp.read'],
       heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 },
       implementation: {
-        instanceId: crypto.randomUUID(),
+        instanceId,
         name: 'chromium-test-agent',
         role: 'agent',
         version: '0.0.0',
@@ -194,12 +196,14 @@ it('pairs a native browser agent and resumes with the stored non-extractable cre
   expect((await firstConnection.closed).code).toBe(1000);
 
   const storedCredential = await credentialStore.load(testContext.agentEndpoint);
+  expect(storedCredential?.agentId).toBe(instanceId);
   expect(storedCredential?.key.extractable).toBe(false);
   expect(storedCredential?.key.algorithm.name).toBe('HKDF');
 
   const resumedConnection = await connectAgentWebSocket({
     credentialStore,
     endpoint: testContext.agentEndpoint,
+    implementation: { instanceId, name: 'stable-identity-test-agent', version: '0.0.0' },
     async requestPairingCode() {
       pairingRequests += 1;
       return testContext.pairingCode;
@@ -209,4 +213,9 @@ it('pairs a native browser agent and resumes with the stored non-extractable cre
   expect(pairingRequests).toBe(1);
   resumedConnection.close(1000, 'Resumed connection complete');
   expect((await resumedConnection.closed).code).toBe(1000);
+  await expect(connectAgentWebSocket({
+    credentialStore,
+    endpoint: testContext.agentEndpoint,
+    implementation: { instanceId: crypto.randomUUID(), name: 'wrong-identity-test-agent', version: '0.0.0' },
+  })).rejects.toThrow('configured agent identity does not match the stored pairing');
 });
