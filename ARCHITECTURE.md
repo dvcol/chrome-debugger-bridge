@@ -99,12 +99,14 @@ retry hint. The agent decides whether and when to retry. Lease inactivity expiry
 
 ## Recovery and navigation
 
-Same-origin page reloads and navigations may recover the stable target. The provider republishes it
-with a new generation, reconciles it with DevKit, and grants can become active again after continuity
-is proven. Commands carrying the old generation remain fenced.
+CDB does not interpret URLs or navigation policies. A provider may renew one stable target under a
+new generation when it proves that the underlying tab continues. Commands carrying the previous
+generation remain fenced regardless of why authority was renewed.
 
-Cross-origin navigation revokes the target. Access to one origin is not authority over the next
-origin merely because Chrome reused the tab ID.
+The embedding broker scopes grants. DevKit currently supports `same-origin` and `follow-tab` grants
+on the same CDB target: a cross-origin renewal makes only the former unavailable, while the latter
+continues. CDB receives the resulting per-principal target authority and remains unaware of Chrome
+origins.
 
 When the provider transport drops, targets and grants enter recovery for a configurable bounded
 window. A matching provider identity can reconnect, reconcile its exact targets, and continue under

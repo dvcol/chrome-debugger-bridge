@@ -30,6 +30,8 @@ Preserve these invariants:
 - Treat provider recovery as bounded and recoverable; treat broker death as revocation of all live
   authority.
 - Keep Chrome APIs and tab-selection policy out of CDB.
+- Keep URL and navigation-grant policy out of CDB. The embedding broker may scope different
+  principals differently while they share one target.
 - Keep MCP definitions transport-neutral. DevKit owns the MCP server and passes its current RPC
   session through as principal identity.
 - Return structured errors with retry hints where retry can succeed.

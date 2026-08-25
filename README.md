@@ -36,6 +36,11 @@ targets. It is not created per browser tab or window. Trusted diagnostic UIs can
 stable instance IDs, tab IDs, target IDs, and generations; pairing and authority secrets stay out of
 aggregate state.
 
+Navigation scope is intentionally above CDB. DevKit can authorize `same-origin` and `follow-tab`
+principals independently against one stable target; QA Helper renews that target generation as the
+tab crosses HTTP(S) origins. CDB only fences generations and applies the per-principal authority it
+receives.
+
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the protocol and failure model. See
 [AGENTS.md](./AGENTS.md) before changing an invariant.
 
