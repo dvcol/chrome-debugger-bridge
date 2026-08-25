@@ -301,11 +301,15 @@ export function createCdbToolDefinitions(options: RegisterCdbToolsOptions): CdbT
   register(
     'browser.acquire',
     {
-      description: 'Acquire an explicit target lease.',
+      description:
+        'Acquire an explicit target lease for exact Chrome DevTools Protocol command or event names (for example, "Runtime.evaluate"). Semantic browser tool names such as "evaluate" are not valid requested methods.',
       inputSchema: z.object({
         ...leaseInput,
         mode: z.enum(['exclusive-control', 'shared-read']).optional(),
-        requestedMethods: z.array(z.string()).min(1),
+        requestedMethods: z
+          .array(z.string())
+          .min(1)
+          .describe('Exact Chrome DevTools Protocol method or event names, such as "Runtime.evaluate".'),
       }),
     },
     async (input) => {

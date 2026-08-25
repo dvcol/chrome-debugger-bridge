@@ -83,7 +83,7 @@ it('rejects a conflicting CDB registration before adding any CDB tools', () => {
 });
 
 it('serves target discovery through the official SDK Streamable HTTP client', async () => {
-  expect.assertions(43);
+  expect.assertions(44);
   const server = createServer();
   const acquiredLeases: unknown[] = [];
   const cancelledCommands: unknown[] = [];
@@ -237,6 +237,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     await client.connect(transport);
     const tools = await client.listTools();
     expect(tools.tools.map(tool => tool.name)).toEqual(['browser.list_targets', 'browser.acquire', 'browser.renew', 'browser.release', 'browser.release_artifact', 'browser.read_artifact', 'browser.inspect', 'browser.snapshot', 'browser.screenshot', 'browser.network_body', 'browser.evaluate', 'browser.navigate', 'browser.click', 'browser.type', 'browser.press', 'browser.console', 'browser.network', 'browser.wait_for']);
+    expect(tools.tools.find(tool => tool.name === 'browser.acquire')?.description).toContain('"Runtime.evaluate"');
     const result = await client.callTool({
       arguments: {},
       name: 'browser.list_targets',
