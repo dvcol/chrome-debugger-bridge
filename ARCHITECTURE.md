@@ -52,13 +52,17 @@ There are four distinct identifiers:
 | Identifier           | Meaning                                               | Lifetime                                |
 | -------------------- | ----------------------------------------------------- | --------------------------------------- |
 | broker ID            | Identity of one persisted DevKit broker installation  | Across DevKit restarts                  |
-| provider instance ID | Stable identity of one QA Helper installation         | Across service-worker restarts          |
+| provider instance ID | Stable identity of one provider installation/profile  | Across service-worker restarts          |
 | target ID            | Stable identity of the browser target being recovered | While the provider can prove continuity |
 | target generation    | Authority epoch for one publication                   | Changes on republish or recovery        |
 
 Display names, tab IDs, target IDs, and generations are diagnostic metadata and may be shown to
 trusted localhost UIs. Pairing credentials, bearer material, and grant tokens are never projected
 into aggregate state.
+
+One provider instance may publish many targets across tabs and windows. Multiple installed browser
+profiles therefore appear as separate providers even when their display name and version match.
+Diagnostic UIs should show provider and stable instance IDs so operators can distinguish them.
 
 An authenticated WebSocket connection validates the implementation instance ID against the stored
 pairing. The connection exposes a broker-issued connection generation. QA Helper uses that

@@ -31,6 +31,11 @@ The responsibilities are intentionally split:
   command execution, cancellation, and subscriptions.
 - DevTools and QA Helper render the same DevKit state. They do not mint grants or bypass CDB.
 
+One provider identity represents one grant-provider installation/profile and may publish many
+targets. It is not created per browser tab or window. Trusted diagnostic UIs can show provider IDs,
+stable instance IDs, tab IDs, target IDs, and generations; pairing and authority secrets stay out of
+aggregate state.
+
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the protocol and failure model. See
 [AGENTS.md](./AGENTS.md) before changing an invariant.
 

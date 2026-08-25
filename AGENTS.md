@@ -21,6 +21,8 @@ Chrome tab, show approval UI, or add one MCP host per Vite server.
 Preserve these invariants:
 
 - Authenticate a provider by its stable implementation instance ID and stored pairing.
+- Model one provider per implementation installation/profile, with many targets beneath it. Keep
+  provider and instance IDs available as non-secret diagnostics.
 - Scope grants and target visibility to the authenticated client principal.
 - Require target ID and target generation for every target-scoped operation.
 - Fence an old generation immediately when authority is renewed.
