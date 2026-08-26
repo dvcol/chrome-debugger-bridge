@@ -109,7 +109,9 @@ it('rejects a conflicting CDB registration before adding any CDB tools', () => {
 });
 
 it('preserves a successful navigation when its temporary lease was fenced during navigation', async () => {
-  expect.assertions(3);
+  expect.assertions(4);
+  const renewedTarget = { ...target, generation: 2 };
+  let listCount = 0;
   const releaseLease = vi.fn(async () => {
     throw Object.assign(new Error('The target generation is stale.'), {
       code: 'TARGET_GENERATION_STALE',
@@ -131,10 +133,50 @@ it('preserves a successful navigation when its temporary lease was fenced during
         targetId: target.id,
       };
     },
+    async cancelCommand() {},
     async executeCommand() {
       return commandResult;
     },
+    async listTargets() {
+      listCount += 1;
+      return listCount === 1 ? [target] : [renewedTarget];
+    },
     releaseLease,
+    async subscribe(request: { readonly match: { readonly method: string } }) {
+      return {
+        close() {},
+        droppedCount: 0,
+        id: crypto.randomUUID(),
+        lastDeliveredSequence: 0,
+        overflowed: false,
+        targetGeneration: target.generation,
+        targetId: target.id,
+        async* [Symbol.asyncIterator]() {
+          if (request.match.method === 'Page.loadEventFired') {
+            yield {
+              method: request.match.method,
+              parameters: { timestamp: 1 },
+              sequence: 1,
+              subscriptionId: crypto.randomUUID(),
+              targetGeneration: target.generation,
+              targetId: target.id,
+            };
+          } else {
+            await new Promise(() => {});
+          }
+        },
+      };
+    },
+    watchTargets() {
+      return {
+        [Symbol.asyncIterator]() {
+          return {
+            next: async () => new Promise<IteratorResult<never>>(() => {}),
+            return: async () => ({ done: true, value: undefined }),
+          };
+        },
+      };
+    },
   } as unknown as McpChromeDebuggerBridgeClient;
   const navigate = createCdbToolDefinitions({ client: bridgeClient }).find(
     definition => definition.name === 'browser.navigate',
@@ -150,9 +192,10 @@ it('preserves a successful navigation when its temporary lease was fenced during
 
   expect(releaseLease).toHaveBeenCalledOnce();
   expect(result.isError).toBeUndefined();
-  expect(result.content).toEqual([
-    { text: JSON.stringify(commandResult), type: 'text' },
-  ]);
+  expect(result.content[0]).toMatchObject({ type: 'text' });
+  expect(JSON.parse((result.content[0] as { readonly text: string }).text)).toMatchObject({
+    target: { generation: 2 },
+  });
 });
 
 it('reads and releases a DOM snapshot artifact before returning agent-readable text', async () => {
@@ -218,7 +261,9 @@ it('reads and releases a DOM snapshot artifact before returning agent-readable t
   const releaseLease = vi.fn(async () => {});
   const bridgeClient = {
     acquireLease,
-    async executeCommand() {
+    async executeCommand(command: { readonly method: string }) {
+      if (command.method === 'Bridge.listChildSessions')
+        return { value: { sessions: [] } };
       return {
         operationId: '30000000-0000-4000-8000-000000000002',
         value: { artifact },
@@ -252,7 +297,7 @@ it('reads and releases a DOM snapshot artifact before returning agent-readable t
     targetGeneration: target.generation,
     targetId: target.id,
   });
-  expect(releaseLease).toHaveBeenCalledOnce();
+  expect(releaseLease).toHaveBeenCalledTimes(2);
   expect(result.isError).toBeUndefined();
   const resultContent = result.content[0];
   expect(resultContent?.type).toBe('text');
@@ -287,6 +332,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
   let resolveInspectionStarted: (() => void) | undefined;
   let resolveArtifactReadStarted: (() => void) | undefined;
   let resolveSubscriptionStarted: (() => void) | undefined;
+  let navigationCompleted = false;
   const inspectionStarted = new Promise<void>((resolve) => {
     resolveInspectionStarted = resolve;
   });
@@ -339,18 +385,21 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
           value: { result: { type: 'string', value: 'document.title' } },
         };
       executedMethods.push(command.method);
+      if (command.method === 'Bridge.listChildSessions')
+        return { value: { sessions: [] } };
       if (command.method === 'Network.getResponseBody')
         return {
           operationId: '017c10a7-e0af-40ec-879f-cd87dffaf036',
           value: { artifact: artifactDescriptor },
         };
+      if (command.method === 'Page.navigate') navigationCompleted = true;
       return {
         operationId: '017c10a7-e0af-40ec-879f-cd87dffaf036',
         value: { result: { type: 'string', value: command.method } },
       };
     },
     async listTargets() {
-      return [target];
+      return [navigationCompleted ? { ...target, generation: 2 } : target];
     },
     async readArtifact(request: unknown, signal?: AbortSignal) {
       artifactReads.push({ request, signalAborted: signal?.aborted });
@@ -395,6 +444,40 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       readonly match: { readonly method: string };
     }) {
       subscriptionRequests.push(request);
+      if (request.match.method.startsWith('Page.')) {
+        let resolvePendingPageEvent: ((result: IteratorResult<never>) => void) | undefined;
+        return {
+          close() {
+            closedSubscriptions += 1;
+            resolvePendingPageEvent?.({ done: true, value: undefined });
+          },
+          droppedCount: 0,
+          id: '017c10a7-e0af-40ec-879f-cd87dffaf036',
+          lastDeliveredSequence: 0,
+          overflowed: false,
+          targetGeneration: target.generation,
+          targetId: target.id,
+          [Symbol.asyncIterator]() {
+            return {
+              next: async () => request.match.method === 'Page.loadEventFired'
+                ? {
+                    done: false as const,
+                    value: {
+                      method: request.match.method,
+                      parameters: { timestamp: 1 },
+                      sequence: 1,
+                      subscriptionId: '017c10a7-e0af-40ec-879f-cd87dffaf036',
+                      targetGeneration: target.generation,
+                      targetId: target.id,
+                    },
+                  }
+                : new Promise<IteratorResult<never>>((resolve) => {
+                    resolvePendingPageEvent = resolve;
+                  }),
+            };
+          },
+        };
+      }
       if (request.match.method === 'Network.loadingFinished') {
         return {
           close() {
@@ -440,6 +523,16 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
         },
       };
     },
+    watchTargets() {
+      return {
+        [Symbol.asyncIterator]() {
+          return {
+            next: async () => new Promise<IteratorResult<never>>(() => {}),
+            return: async () => ({ done: true as const, value: undefined }),
+          };
+        },
+      };
+    },
   } as unknown as McpChromeDebuggerBridgeClient;
   const mounted = mountMcpStreamableHttp({ client: bridgeClient, server });
   await new Promise<void>((resolve, reject) => {
@@ -473,9 +566,22 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       'browser.network_body',
       'browser.evaluate',
       'browser.navigate',
+      'browser.back',
+      'browser.forward',
+      'browser.reload',
       'browser.click',
+      'browser.move',
+      'browser.scroll',
+      'browser.drag',
+      'browser.click_node',
+      'browser.hover_node',
+      'browser.focus_node',
+      'browser.type_node',
       'browser.type',
       'browser.press',
+      'browser.wait_for_navigation',
+      'browser.wait_for_dialog',
+      'browser.handle_dialog',
       'browser.console',
       'browser.network',
       'browser.wait_for',
@@ -756,11 +862,23 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     expect(acquiredLeases).toMatchObject([
       {
         mode: 'shared-read',
+        requestedMethods: ['Bridge.listChildSessions'],
+      },
+      {
+        mode: 'shared-read',
         requestedMethods: ['DOMSnapshot.captureSnapshot'],
       },
       { mode: 'shared-read', requestedMethods: ['Page.captureScreenshot'] },
       { mode: 'shared-read', requestedMethods: ['Network.getResponseBody'] },
-      { mode: 'exclusive-control', requestedMethods: ['Page.navigate'] },
+      {
+        mode: 'exclusive-control',
+        requestedMethods: [
+          'Page.navigate',
+          'Page.loadEventFired',
+          'Page.navigatedWithinDocument',
+          'Page.javascriptDialogOpening',
+        ],
+      },
       {
         mode: 'exclusive-control',
         requestedMethods: ['Input.dispatchMouseEvent'],
@@ -775,6 +893,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       { mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'] },
     ]);
     expect(executedMethods).toEqual([
+      'Bridge.listChildSessions',
       'DOMSnapshot.captureSnapshot',
       'Page.captureScreenshot',
       'Network.getResponseBody',
@@ -784,8 +903,8 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       'Input.dispatchKeyEvent',
       'Input.dispatchKeyEvent',
     ]);
-    expect(releasedLeases).toHaveLength(10);
-    expect(closedSubscriptions).toBe(1);
+    expect(releasedLeases).toHaveLength(11);
+    expect(closedSubscriptions).toBe(4);
     const timedOutWait = await client.callTool({
       arguments: {
         method: 'Network.loadingFinished',
@@ -807,8 +926,8 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
         type: 'text',
       },
     ]);
-    expect(closedSubscriptions).toBe(2);
-    expect(releasedLeases).toHaveLength(11);
+    expect(closedSubscriptions).toBe(5);
+    expect(releasedLeases).toHaveLength(12);
     subscriptionStarted = new Promise<void>((resolve) => {
       resolveSubscriptionStarted = resolve;
     });
@@ -828,8 +947,8 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     await subscriptionStarted;
     cancellationController.abort();
     await expect(cancelledWait).rejects.toThrow();
-    await expect.poll(() => closedSubscriptions).toBe(3);
-    expect(releasedLeases).toHaveLength(12);
+    await expect.poll(() => closedSubscriptions).toBe(6);
+    expect(releasedLeases).toHaveLength(13);
     expect(supportedMcpSdkVersion).toBe('2.0.0');
     expect(supportedMcpProtocolVersions).toEqual(['2026-07-28']);
   } finally {

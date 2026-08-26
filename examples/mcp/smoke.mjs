@@ -31,6 +31,12 @@ async function main() {
         startCancellation();
         await new Promise((_resolve, reject) => abortSignal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true }));
       }
+      if (command.method === 'Page.navigate')
+        bridge.broker.publishEvent(
+          target,
+          'Page.navigatedWithinDocument',
+          { frameId: 'frame-1', navigationType: 'fragment', url: 'https://example.test/#packed-smoke' },
+        );
       if (command.method === 'Page.captureScreenshot') return { data: 'A'.repeat(70_000) };
       return { method: command.method };
     },
@@ -126,19 +132,20 @@ async function main() {
       name: 'browser.release',
     });
 
+    const navigation = JSON.parse(
+      (
+        await client.callTool({
+          arguments: {
+            targetGeneration: target.generation,
+            targetId: target.id,
+            url: 'https://example.test/',
+          },
+          name: 'browser.navigate',
+        })
+      ).content[0].text,
+    );
     assert.equal(
-      JSON.parse(
-        (
-          await client.callTool({
-            arguments: {
-              targetGeneration: target.generation,
-              targetId: target.id,
-              url: 'https://example.test/',
-            },
-            name: 'browser.navigate',
-          })
-        ).content[0].text,
-      ).value.method,
+      navigation.command.value.method,
       'Page.navigate',
     );
     const screenshot = JSON.parse(

@@ -2,8 +2,11 @@ import type {
   ArtifactAccessRequest,
   ArtifactDescriptor,
   CdpEvent,
+  CdpSubscription,
   ChromeDebuggerBridgeClient,
   Lease,
+  PublishedTarget,
+  TargetChange,
 } from '@dvcol/cdb';
 import type { JsonObject } from '@dvcol/cdb/protocol';
 import type { CallToolResult } from '@modelcontextprotocol/server';
@@ -29,13 +32,38 @@ const cdpMethodPattern = /^[A-Za-z]+\.[A-Za-z]+$/u;
 const maximumArtifactReadBytes = 49_152;
 const maximumReadableSnapshotBytes = 16_777_216;
 const maximumSnapshotCharacters = 120_000;
+const maximumInputActionDurationMilliseconds = 10_000;
+const maximumInputActionSteps = 120;
 const omittedTextElementNames = new Set(['noscript', 'script', 'style']);
 const whitespacePattern = /\s+/gu;
+
+const inputModifierValues = {
+  alt: 1,
+  control: 2,
+  meta: 4,
+  shift: 8,
+} as const;
+const pointerButtonValues = {
+  back: 8,
+  forward: 16,
+  left: 1,
+  middle: 4,
+  right: 2,
+} as const;
+
+type InputModifier = keyof typeof inputModifierValues;
+
+interface ViewportPoint {
+  readonly x: number;
+  readonly y: number;
+}
 
 class McpToolError extends Error {
   constructor(
     readonly code: string,
     message: string,
+    readonly details?: JsonObject,
+    readonly retryable = false,
   ) {
     super(message);
   }
@@ -170,7 +198,11 @@ async function withLease<Value>(
 
 async function executeSemanticCommand(
   client: McpChromeDebuggerBridgeClient,
-  input: { readonly targetGeneration: number; readonly targetId: string },
+  input: {
+    readonly sessionId?: string | undefined;
+    readonly targetGeneration: number;
+    readonly targetId: string;
+  },
   mode: Lease['mode'],
   method: string,
   parameters: JsonObject,
@@ -194,6 +226,7 @@ async function executeSemanticCommand(
         method,
         operationId,
         parameters,
+        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
         targetGeneration: input.targetGeneration,
         targetId: input.targetId,
       });
@@ -246,7 +279,11 @@ interface RetainedArtifactResult {
 
 async function executeArtifactCommand(
   client: McpChromeDebuggerBridgeClient,
-  input: { readonly targetGeneration: number; readonly targetId: string },
+  input: {
+    readonly sessionId?: string | undefined;
+    readonly targetGeneration: number;
+    readonly targetId: string;
+  },
   method: string,
   parameters: JsonObject,
 ): Promise<RetainedArtifactResult | unknown> {
@@ -264,6 +301,7 @@ async function executeArtifactCommand(
       method,
       operationId: randomUUID(),
       parameters,
+      ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
       targetGeneration: input.targetGeneration,
       targetId: input.targetId,
     });
@@ -287,6 +325,25 @@ async function executeArtifactCommand(
       }
     }
   }
+}
+
+interface ChildSessionReference {
+  readonly generation: number;
+  readonly id: string;
+  readonly type: string;
+}
+
+function childSessionReferences(value: unknown): ChildSessionReference[] {
+  const commandValue = property(value, 'value') ?? value;
+  const sessions = arrayValue(property(commandValue, 'sessions'));
+  return sessions.flatMap((session) => {
+    const generation = numberValue(property(session, 'generation'));
+    const id = stringValue(property(session, 'id'));
+    const type = stringValue(property(session, 'type'));
+    return generation === undefined || id === undefined || type === undefined
+      ? []
+      : [{ generation, id, type }];
+  });
 }
 
 function retainedArtifactResult(
@@ -553,37 +610,679 @@ function formatDomSnapshot(
   return lines.join('\n').slice(0, maximumSnapshotCharacters);
 }
 
-async function executeSemanticCommands(
+function encodeInputModifiers(modifiers: readonly InputModifier[]): number {
+  return modifiers.reduce(
+    (encodedModifiers, modifier) => encodedModifiers | inputModifierValues[modifier],
+    0,
+  );
+}
+
+function interpolateViewportPoints(
+  from: ViewportPoint,
+  to: ViewportPoint,
+  steps: number,
+): ViewportPoint[] {
+  return Array.from({ length: steps }, (_value, index) => {
+    const progress = (index + 1) / steps;
+    return {
+      x: from.x + (to.x - from.x) * progress,
+      y: from.y + (to.y - from.y) * progress,
+    };
+  });
+}
+
+function pointerPositionKey(input: {
+  readonly targetGeneration: number;
+  readonly targetId: string;
+}): string {
+  return `${input.targetId}:${input.targetGeneration}`;
+}
+
+async function waitForInputStep(
+  durationMilliseconds: number,
+  signal: AbortSignal,
+): Promise<void> {
+  if (signal.aborted)
+    throw new McpToolError('MCP_WAIT_CANCELLED', 'The input action was cancelled.');
+  if (durationMilliseconds <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const abort = (): void => {
+      if (timeout !== undefined) clearTimeout(timeout);
+      signal.removeEventListener('abort', abort);
+      reject(new McpToolError('MCP_WAIT_CANCELLED', 'The input action was cancelled.'));
+    };
+    const finish = (): void => {
+      signal.removeEventListener('abort', abort);
+      resolve();
+    };
+    timeout = setTimeout(finish, durationMilliseconds);
+    signal.addEventListener('abort', abort, { once: true });
+    timeout.unref?.();
+    if (signal.aborted) abort();
+  });
+}
+
+async function executeInputAction(
   client: McpChromeDebuggerBridgeClient,
-  input: { readonly targetGeneration: number; readonly targetId: string },
-  mode: Lease['mode'],
-  commands: readonly {
-    readonly method: string;
-    readonly parameters: JsonObject;
-  }[],
-): Promise<unknown[]> {
+  input: {
+    readonly sessionId?: string | undefined;
+    readonly targetGeneration: number;
+    readonly targetId: string;
+  },
+  requestedMethods: readonly string[],
+  signal: AbortSignal,
+  action: (
+    execute: (method: string, parameters: JsonObject) => Promise<unknown>,
+    executeCleanup: (method: string, parameters: JsonObject) => Promise<void>,
+    lease: Lease,
+  ) => Promise<unknown>,
+): Promise<unknown> {
   return withLease(
     client,
     input,
-    mode,
-    [...new Set(commands.map(command => command.method))],
+    'exclusive-control',
+    [...new Set(requestedMethods)],
     async (lease) => {
-      const results: unknown[] = [];
-      for (const command of commands) {
-        results.push(
-          await client.executeCommand({
+      let activeOperationId: string | undefined;
+      const abort = (): void => {
+        if (activeOperationId === undefined) return;
+        void client.cancelCommand({
+          operationId: activeOperationId,
+          targetGeneration: input.targetGeneration,
+          targetId: input.targetId,
+        }).catch(() => {});
+      };
+      const execute = async (method: string, parameters: JsonObject): Promise<unknown> => {
+        if (signal.aborted)
+          throw new McpToolError('MCP_WAIT_CANCELLED', 'The input action was cancelled.');
+        activeOperationId = randomUUID();
+        try {
+          return await client.executeCommand({
             leaseId: lease.id,
-            method: command.method,
-            operationId: randomUUID(),
-            parameters: command.parameters,
+            method,
+            operationId: activeOperationId,
+            parameters,
+            ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
             targetGeneration: input.targetGeneration,
             targetId: input.targetId,
-          }),
-        );
+          });
+        } catch (error) {
+          if (signal.aborted)
+            throw new McpToolError('MCP_WAIT_CANCELLED', 'The input action was cancelled.');
+          throw error;
+        } finally {
+          activeOperationId = undefined;
+        }
+      };
+      const executeCleanup = async (method: string, parameters: JsonObject): Promise<void> => {
+        try {
+          await client.executeCommand({
+            leaseId: lease.id,
+            method,
+            operationId: randomUUID(),
+            parameters,
+            ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+            targetGeneration: input.targetGeneration,
+            targetId: input.targetId,
+          });
+        } catch {
+          /** The original cancellation or target fence is the actionable failure. */
+        }
+      };
+      signal.addEventListener('abort', abort, { once: true });
+      try {
+        return await action(execute, executeCleanup, lease);
+      } finally {
+        signal.removeEventListener('abort', abort);
       }
-      return results;
     },
   );
+}
+
+type NodeAction = 'click' | 'focus' | 'hover' | 'type';
+
+interface NodeActionInput {
+  readonly backendNodeId: number;
+  readonly button?: keyof typeof pointerButtonValues;
+  readonly clickCount?: number;
+  readonly modifiers?: readonly InputModifier[];
+  readonly sessionId?: string | undefined;
+  readonly targetGeneration: number;
+  readonly targetId: string;
+  readonly text?: string;
+}
+
+interface NodeProbe {
+  readonly connected: boolean;
+  readonly disabled: boolean;
+  readonly editable: boolean;
+  readonly viewportHeight: number;
+  readonly viewportWidth: number;
+  readonly visible: boolean;
+}
+
+const nodeProbeFunction = `function () {
+  const style = globalThis.getComputedStyle(this);
+  const inputTypes = new Set(['date', 'datetime-local', 'email', 'month', 'number', 'password', 'search', 'tel', 'text', 'time', 'url', 'week']);
+  const editable = this.isContentEditable
+    || this instanceof HTMLTextAreaElement
+    || (this instanceof HTMLInputElement && inputTypes.has(this.type));
+  return {
+    connected: this.isConnected,
+    disabled: Boolean(this.disabled) || this.getAttribute('aria-disabled') === 'true',
+    editable: editable && !this.readOnly,
+    viewportHeight: globalThis.innerHeight,
+    viewportWidth: globalThis.innerWidth,
+    visible: style.display !== 'none'
+      && style.visibility !== 'hidden'
+      && style.visibility !== 'collapse'
+      && Number.parseFloat(style.opacity || '1') > 0
+      && this.getClientRects().length > 0,
+  };
+}`;
+
+function commandResultValue(value: unknown): unknown {
+  return property(value, 'value') ?? value;
+}
+
+function runtimeResultValue(value: unknown): unknown {
+  const commandValue = commandResultValue(value);
+  return property(property(commandValue, 'result'), 'value');
+}
+
+function parseNodeProbe(value: unknown): NodeProbe | undefined {
+  const probe = runtimeResultValue(value);
+  const connected = property(probe, 'connected');
+  const disabled = property(probe, 'disabled');
+  const editable = property(probe, 'editable');
+  const viewportHeight = property(probe, 'viewportHeight');
+  const viewportWidth = property(probe, 'viewportWidth');
+  const visible = property(probe, 'visible');
+  if (
+    typeof connected !== 'boolean'
+    || typeof disabled !== 'boolean'
+    || typeof editable !== 'boolean'
+    || typeof viewportHeight !== 'number'
+    || typeof viewportWidth !== 'number'
+    || typeof visible !== 'boolean'
+  ) return undefined;
+  return {
+    connected,
+    disabled,
+    editable,
+    viewportHeight,
+    viewportWidth,
+    visible,
+  };
+}
+
+function remoteObjectId(value: unknown): string | undefined {
+  const commandValue = commandResultValue(value);
+  return stringValue(property(property(commandValue, 'object'), 'objectId'));
+}
+
+function contentQuadPoint(
+  value: unknown,
+  viewportWidth: number,
+  viewportHeight: number,
+): ViewportPoint | undefined {
+  const commandValue = commandResultValue(value);
+  const quads = arrayValue(property(commandValue, 'quads'));
+  const candidates = quads.flatMap((quadValue) => {
+    const quad = arrayValue(quadValue);
+    const coordinates = quad.map(coordinate => typeof coordinate === 'number' ? coordinate : Number.NaN);
+    if (coordinates.length !== 8 || coordinates.some(coordinate => !Number.isFinite(coordinate))) return [];
+    const [firstX, firstY, secondX, secondY, thirdX, thirdY, fourthX, fourthY] = coordinates;
+    if (
+      firstX === undefined || firstY === undefined
+      || secondX === undefined || secondY === undefined
+      || thirdX === undefined || thirdY === undefined
+      || fourthX === undefined || fourthY === undefined
+    ) return [];
+    const xValues = [firstX, secondX, thirdX, fourthX];
+    const yValues = [firstY, secondY, thirdY, fourthY];
+    const left = Math.max(0, Math.min(...xValues));
+    const right = Math.min(viewportWidth, Math.max(...xValues));
+    const top = Math.max(0, Math.min(...yValues));
+    const bottom = Math.min(viewportHeight, Math.max(...yValues));
+    if (right <= left || bottom <= top) return [];
+    const minimumX = Math.ceil(left);
+    const maximumX = Math.ceil(right) - 1;
+    const minimumY = Math.ceil(top);
+    const maximumY = Math.ceil(bottom) - 1;
+    if (maximumX < minimumX || maximumY < minimumY) return [];
+    return [{
+      area: (right - left) * (bottom - top),
+      x: Math.round((minimumX + maximumX) / 2),
+      y: Math.round((minimumY + maximumY) / 2),
+    }];
+  });
+  candidates.sort((first, second) => second.area - first.area);
+  const selected = candidates[0];
+  return selected === undefined ? undefined : { x: selected.x, y: selected.y };
+}
+
+function nodeActionError(
+  code: string,
+  message: string,
+  input: NodeActionInput,
+): McpToolError {
+  return new McpToolError(code, message, {
+    backendNodeId: input.backendNodeId,
+    ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+  }, code === 'MCP_NODE_STALE');
+}
+
+async function executeNodeAction(
+  client: McpChromeDebuggerBridgeClient,
+  input: NodeActionInput,
+  action: NodeAction,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const methods = [
+    'DOM.describeNode',
+    'DOM.getContentQuads',
+    'DOM.getNodeForLocation',
+    'DOM.resolveNode',
+    'DOM.scrollIntoViewIfNeeded',
+    'Runtime.callFunctionOn',
+    'Runtime.releaseObjectGroup',
+    ...(action === 'click' || action === 'hover' ? ['Input.dispatchMouseEvent'] : []),
+    ...(action === 'focus' || action === 'type' ? ['DOM.focus'] : []),
+    ...(action === 'type' ? ['Input.insertText'] : []),
+  ];
+  const objectGroup = `cdb-node-${randomUUID()}`;
+  return executeInputAction(client, input, methods, signal, async (execute, executeCleanup) => {
+    const results: unknown[] = [];
+    try {
+      try {
+        results.push(await execute('DOM.describeNode', {
+          backendNodeId: input.backendNodeId,
+          depth: 0,
+          pierce: true,
+        }));
+      } catch {
+        throw nodeActionError('MCP_NODE_STALE', 'The snapshot node is detached or stale.', input);
+      }
+      let resolvedNode: unknown;
+      try {
+        resolvedNode = await execute('DOM.resolveNode', {
+          backendNodeId: input.backendNodeId,
+          objectGroup,
+        });
+      } catch {
+        throw nodeActionError('MCP_NODE_STALE', 'The snapshot node is detached or stale.', input);
+      }
+      results.push(resolvedNode);
+      const objectId = remoteObjectId(resolvedNode);
+      if (objectId === undefined)
+        throw nodeActionError('MCP_NODE_STALE', 'The snapshot node cannot be resolved.', input);
+      let probeResult: unknown;
+      try {
+        probeResult = await execute('Runtime.callFunctionOn', {
+          functionDeclaration: nodeProbeFunction,
+          objectId,
+          returnByValue: true,
+        });
+      } catch {
+        throw nodeActionError('MCP_NODE_STALE', 'The snapshot node is detached or stale.', input);
+      }
+      results.push(probeResult);
+      const probe = parseNodeProbe(probeResult);
+      if (probe === undefined || !probe.connected)
+        throw nodeActionError('MCP_NODE_STALE', 'The snapshot node is detached or stale.', input);
+      if (!probe.visible)
+        throw nodeActionError('MCP_NODE_NOT_VISIBLE', 'The snapshot node is not visible.', input);
+      if (action !== 'hover' && probe.disabled)
+        throw nodeActionError('MCP_NODE_DISABLED', 'The snapshot node is disabled.', input);
+      if (action === 'type' && !probe.editable)
+        throw nodeActionError('MCP_NODE_NOT_EDITABLE', 'The snapshot node does not accept text.', input);
+      try {
+        results.push(await execute('DOM.scrollIntoViewIfNeeded', {
+          backendNodeId: input.backendNodeId,
+        }));
+      } catch {
+        throw nodeActionError('MCP_NODE_STALE', 'The snapshot node became stale before scrolling.', input);
+      }
+      let quadResult: unknown;
+      try {
+        quadResult = await execute('DOM.getContentQuads', {
+          backendNodeId: input.backendNodeId,
+        });
+      } catch {
+        throw nodeActionError('MCP_NODE_NO_GEOMETRY', 'The snapshot node has no usable geometry.', input);
+      }
+      results.push(quadResult);
+      const point = contentQuadPoint(quadResult, probe.viewportWidth, probe.viewportHeight);
+      if (point === undefined)
+        throw nodeActionError('MCP_NODE_NO_GEOMETRY', 'The snapshot node has no visible viewport geometry.', input);
+      let hitResult: unknown;
+      try {
+        hitResult = await execute('DOM.getNodeForLocation', {
+          includeUserAgentShadowDOM: true,
+          x: point.x,
+          y: point.y,
+        });
+      } catch {
+        throw nodeActionError('MCP_NODE_OBSCURED', 'Chrome could not hit-test the snapshot node.', input);
+      }
+      results.push(hitResult);
+      const hitBackendNodeId = numberValue(property(commandResultValue(hitResult), 'backendNodeId'));
+      if (hitBackendNodeId === undefined)
+        throw nodeActionError('MCP_NODE_OBSCURED', 'Chrome could not hit-test the snapshot node.', input);
+      if (hitBackendNodeId !== input.backendNodeId) {
+        let hitNode: unknown;
+        try {
+          hitNode = await execute('DOM.resolveNode', {
+            backendNodeId: hitBackendNodeId,
+            objectGroup,
+          });
+        } catch {
+          throw nodeActionError('MCP_NODE_OBSCURED', 'Another element obscures the snapshot node.', input);
+        }
+        results.push(hitNode);
+        const hitObjectId = remoteObjectId(hitNode);
+        if (hitObjectId === undefined)
+          throw nodeActionError('MCP_NODE_OBSCURED', 'Another element obscures the snapshot node.', input);
+        const containsResult = await execute('Runtime.callFunctionOn', {
+          arguments: [{ objectId: hitObjectId }],
+          functionDeclaration: 'function (hit) { return this === hit || this.contains(hit); }',
+          objectId,
+          returnByValue: true,
+        });
+        results.push(containsResult);
+        if (runtimeResultValue(containsResult) !== true)
+          throw nodeActionError('MCP_NODE_OBSCURED', 'Another element obscures the snapshot node.', input);
+      }
+      if (action === 'hover') {
+        results.push(await execute('Input.dispatchMouseEvent', {
+          modifiers: encodeInputModifiers(input.modifiers ?? []),
+          type: 'mouseMoved',
+          ...point,
+        }));
+        return results;
+      }
+      if (action === 'click') {
+        const button = input.button ?? 'left';
+        const requestedClickCount = input.clickCount ?? 1;
+        let buttonPressed = false;
+        try {
+          for (let clickCount = 1; clickCount <= requestedClickCount; clickCount += 1) {
+            results.push(await execute('Input.dispatchMouseEvent', {
+              button,
+              clickCount,
+              modifiers: encodeInputModifiers(input.modifiers ?? []),
+              type: 'mousePressed',
+              ...point,
+            }));
+            buttonPressed = true;
+            results.push(await execute('Input.dispatchMouseEvent', {
+              button,
+              clickCount,
+              modifiers: encodeInputModifiers(input.modifiers ?? []),
+              type: 'mouseReleased',
+              ...point,
+            }));
+            buttonPressed = false;
+          }
+        } finally {
+          if (buttonPressed) {
+            await executeCleanup('Input.dispatchMouseEvent', {
+              button,
+              clickCount: requestedClickCount,
+              modifiers: encodeInputModifiers(input.modifiers ?? []),
+              type: 'mouseReleased',
+              ...point,
+            });
+          }
+        }
+        return results;
+      }
+      results.push(await execute('DOM.focus', { backendNodeId: input.backendNodeId }));
+      if (action === 'type')
+        results.push(await execute('Input.insertText', { text: input.text ?? '' }));
+      return results;
+    } finally {
+      await executeCleanup('Runtime.releaseObjectGroup', { objectGroup });
+    }
+  });
+}
+
+type NavigationWaitUntil = 'commit' | 'domcontentloaded' | 'load';
+
+interface LifecycleInput {
+  readonly sessionId?: string | undefined;
+  readonly targetGeneration: number;
+  readonly targetId: string;
+  readonly timeoutMilliseconds: number;
+  readonly waitUntil: NavigationWaitUntil;
+}
+
+function navigationMilestoneMethods(waitUntil: NavigationWaitUntil): string[] {
+  if (waitUntil === 'commit')
+    return ['Page.frameNavigated', 'Page.navigatedWithinDocument'];
+  return [
+    waitUntil === 'load' ? 'Page.loadEventFired' : 'Page.domContentEventFired',
+    'Page.navigatedWithinDocument',
+  ];
+}
+
+function targetFromChange(
+  change: TargetChange,
+  targetId: string,
+  priorGeneration: number,
+): PublishedTarget | undefined {
+  if (change.kind === 'snapshot')
+    return change.targets.find(target => target.id === targetId && target.generation > priorGeneration);
+  if (
+    (change.kind === 'published' || change.kind === 'updated')
+    && change.target.id === targetId
+    && change.target.generation > priorGeneration
+  ) return change.target;
+  return undefined;
+}
+
+async function waitForRenewedTarget(
+  client: McpChromeDebuggerBridgeClient,
+  input: Pick<LifecycleInput, 'targetGeneration' | 'targetId' | 'timeoutMilliseconds'>,
+  signal: AbortSignal,
+): Promise<PublishedTarget> {
+  const existingTarget = (await client.listTargets()).find(
+    target => target.id === input.targetId && target.generation > input.targetGeneration,
+  );
+  if (existingTarget !== undefined) return existingTarget;
+  const iterator = client.watchTargets()[Symbol.asyncIterator]();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let rejectAbort: ((reason?: unknown) => void) | undefined;
+  const abortPromise = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject;
+  });
+  const abortRenewal = (): void => rejectAbort?.(
+    new McpToolError('MCP_WAIT_CANCELLED', 'The navigation wait was cancelled.'),
+  );
+  signal.addEventListener('abort', abortRenewal, { once: true });
+  if (signal.aborted) abortRenewal();
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(
+      () => reject(new McpToolError(
+        'MCP_TARGET_RENEWAL_TIMEOUT',
+        'The target did not publish renewed authority before the navigation timeout.',
+        { targetId: input.targetId },
+        true,
+      )),
+      input.timeoutMilliseconds,
+    );
+  });
+  try {
+    while (true) {
+      const result = await Promise.race([iterator.next(), abortPromise, timeoutPromise]);
+      if (result.done)
+        throw new McpToolError('MCP_TARGET_RENEWAL_TIMEOUT', 'Target watching ended before authority renewal.', { targetId: input.targetId }, true);
+      const target = targetFromChange(result.value, input.targetId, input.targetGeneration);
+      if (target !== undefined) return target;
+    }
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+    signal.removeEventListener('abort', abortRenewal);
+    await iterator.return?.();
+  }
+}
+
+async function waitForSubscriptions(
+  milestoneSubscriptions: readonly CdpSubscription[],
+  dialogSubscription: CdpSubscription,
+  timeoutMilliseconds: number,
+  signal: AbortSignal,
+): Promise<CdpEvent> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let rejectAbort: ((reason?: unknown) => void) | undefined;
+  const milestonePromises = milestoneSubscriptions.map(async (subscription) => {
+    const result = await subscription[Symbol.asyncIterator]().next();
+    if (result.done)
+      throw new McpToolError('MCP_TARGET_RENEWAL_TIMEOUT', 'The navigation subscription ended during authority renewal.', undefined, true);
+    return result.value;
+  });
+  const dialogPromise = dialogSubscription[Symbol.asyncIterator]().next().then((result): never => {
+    if (result.done)
+      throw new McpToolError('MCP_TARGET_RENEWAL_TIMEOUT', 'The dialog subscription ended during authority renewal.', undefined, true);
+    throw new McpToolError(
+      'MCP_JAVASCRIPT_DIALOG_OPEN',
+      'A JavaScript dialog interrupted navigation.',
+      result.value.parameters,
+    );
+  });
+  const abortPromise = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject;
+  });
+  const abortWait = (): void => rejectAbort?.(
+    new McpToolError('MCP_WAIT_CANCELLED', 'The navigation wait was cancelled.'),
+  );
+  signal.addEventListener('abort', abortWait, { once: true });
+  if (signal.aborted) abortWait();
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(
+      () => reject(new McpToolError('MCP_NAVIGATION_TIMEOUT', 'Navigation did not reach the requested milestone.', undefined, true)),
+      timeoutMilliseconds,
+    );
+  });
+  try {
+    return await Promise.race([
+      ...milestonePromises,
+      dialogPromise,
+      abortPromise,
+      timeoutPromise,
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+    signal.removeEventListener('abort', abortWait);
+  }
+}
+
+async function executeLifecycleAction(
+  client: McpChromeDebuggerBridgeClient,
+  input: LifecycleInput,
+  commandMethods: readonly string[],
+  runCommand: (
+    execute: (method: string, parameters: JsonObject) => Promise<unknown>,
+  ) => Promise<unknown>,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const milestoneMethods = navigationMilestoneMethods(input.waitUntil);
+  const requestedMethods = [
+    ...commandMethods,
+    ...milestoneMethods,
+    'Page.javascriptDialogOpening',
+  ];
+  const deadline = Date.now() + input.timeoutMilliseconds;
+  const renewalAbortController = new AbortController();
+  const relayAbort = (): void => renewalAbortController.abort();
+  signal.addEventListener('abort', relayAbort, { once: true });
+  const renewedTarget = waitForRenewedTarget(
+    client,
+    input,
+    renewalAbortController.signal,
+  );
+  renewedTarget.catch(() => {});
+  try {
+    const result = await executeInputAction(
+      client,
+      input,
+      requestedMethods,
+      signal,
+      async (execute, _executeCleanup, lease) => {
+        const milestoneSubscriptions = await Promise.all(milestoneMethods.map(async method => client.subscribe({
+          buffer: { capacity: 1, overflowStrategy: 'drop-oldest' },
+          leaseId: lease.id,
+          match: { method },
+          ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+          targetGeneration: input.targetGeneration,
+          targetId: input.targetId,
+        })));
+        const dialogSubscription = await client.subscribe({
+          buffer: { capacity: 1, overflowStrategy: 'drop-oldest' },
+          leaseId: lease.id,
+          match: { method: 'Page.javascriptDialogOpening' },
+          ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+          targetGeneration: input.targetGeneration,
+          targetId: input.targetId,
+        });
+        try {
+          const commandResult = await runCommand(execute);
+          const navigationValue = commandResultValue(commandResult);
+          const errorText = stringValue(property(navigationValue, 'errorText'));
+          if (errorText !== undefined && errorText.length > 0)
+            throw new McpToolError('MCP_NAVIGATION_FAILED', errorText);
+          const remainingMilliseconds = Math.max(1, deadline - Date.now());
+          const milestoneWait = waitForSubscriptions(
+            milestoneSubscriptions,
+            dialogSubscription,
+            remainingMilliseconds,
+            signal,
+          ).catch(async (error: unknown) => {
+            if (property(error, 'code') !== 'MCP_TARGET_RENEWAL_TIMEOUT') throw error;
+            return { renewedTarget: await renewedTarget };
+          });
+          const milestone = await Promise.race([
+            milestoneWait,
+            renewedTarget.then(target => ({ renewedTarget: target })),
+          ]);
+          if ('renewedTarget' in milestone) {
+            if (input.waitUntil === 'commit')
+              return { command: commandResult, milestone: 'authority-renewed' };
+            const event = await waitForEvent(client, {
+              method: input.waitUntil === 'load'
+                ? 'Page.loadEventFired'
+                : 'Page.domContentEventFired',
+              ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+              targetGeneration: milestone.renewedTarget.generation,
+              targetId: input.targetId,
+              timeoutMilliseconds: Math.max(1, deadline - Date.now()),
+            }, signal);
+            return { command: commandResult, milestone: event };
+          }
+          return { command: commandResult, milestone };
+        } finally {
+          for (const subscription of milestoneSubscriptions) subscription.close();
+          dialogSubscription.close();
+        }
+      },
+    );
+    let currentTarget = (await client.listTargets()).find(target => target.id === input.targetId);
+    if (currentTarget === undefined)
+      throw new McpToolError('TARGET_NOT_FOUND', 'The navigated target is no longer available.');
+    const milestone = property(result, 'milestone');
+    const sameDocument = property(milestone, 'method') === 'Page.navigatedWithinDocument';
+    if (
+      input.sessionId === undefined
+      && !sameDocument
+      && currentTarget.generation <= input.targetGeneration
+    ) currentTarget = await renewedTarget;
+    return { ...result as JsonObject, target: currentTarget };
+  } finally {
+    renewalAbortController.abort();
+    signal.removeEventListener('abort', relayAbort);
+  }
 }
 
 async function waitForEvent(
@@ -591,6 +1290,7 @@ async function waitForEvent(
   input: {
     readonly leaseId?: string;
     readonly method: string;
+    readonly sessionId?: string | undefined;
     readonly targetGeneration: number;
     readonly targetId: string;
     readonly timeoutMilliseconds: number;
@@ -602,6 +1302,7 @@ async function waitForEvent(
       buffer: { capacity: 1, overflowStrategy: 'drop-oldest' },
       leaseId,
       match: { method: input.method },
+      ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
       targetGeneration: input.targetGeneration,
       targetId: input.targetId,
     });
@@ -649,6 +1350,49 @@ async function waitForEvent(
     waitUsingLease(lease.id));
 }
 
+async function waitForNavigationEvent(
+  client: McpChromeDebuggerBridgeClient,
+  input: LifecycleInput,
+  signal: AbortSignal,
+): Promise<CdpEvent> {
+  const milestoneMethods = navigationMilestoneMethods(input.waitUntil);
+  return withLease(
+    client,
+    input,
+    'shared-read',
+    [...milestoneMethods, 'Page.javascriptDialogOpening'],
+    async (lease) => {
+      const milestoneSubscriptions = await Promise.all(milestoneMethods.map(async method => client.subscribe({
+        buffer: { capacity: 1, overflowStrategy: 'drop-oldest' },
+        leaseId: lease.id,
+        match: { method },
+        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+        targetGeneration: input.targetGeneration,
+        targetId: input.targetId,
+      })));
+      const dialogSubscription = await client.subscribe({
+        buffer: { capacity: 1, overflowStrategy: 'drop-oldest' },
+        leaseId: lease.id,
+        match: { method: 'Page.javascriptDialogOpening' },
+        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+        targetGeneration: input.targetGeneration,
+        targetId: input.targetId,
+      });
+      try {
+        return await waitForSubscriptions(
+          milestoneSubscriptions,
+          dialogSubscription,
+          input.timeoutMilliseconds,
+          signal,
+        );
+      } finally {
+        for (const subscription of milestoneSubscriptions) subscription.close();
+        dialogSubscription.close();
+      }
+    },
+  );
+}
+
 export interface CdbToolInvocationContext {
   readonly signal: AbortSignal;
 }
@@ -690,6 +1434,59 @@ export function createCdbToolDefinitions(
   };
   const { client } = options;
   const enableRawCdp = options.enableRawCdp ?? false;
+  const pointerPositions = new Map<string, ViewportPoint>();
+  const inputModifiersSchema = z
+    .array(z.enum(['alt', 'control', 'meta', 'shift']))
+    .max(4)
+    .default([]);
+  const pointerButtonSchema = z
+    .enum(['back', 'forward', 'left', 'middle', 'right'])
+    .default('left');
+  const nodeReferenceSchema = z.object({
+    backendNodeId: z.number().int().positive(),
+    sessionId: z.string().uuid().optional(),
+  });
+  const inputActionTiming = {
+    durationMilliseconds: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(maximumInputActionDurationMilliseconds)
+      .default(0),
+    steps: z
+      .number()
+      .int()
+      .positive()
+      .max(maximumInputActionSteps)
+      .default(1),
+  };
+  const lifecycleInput = {
+    ...targetInput,
+    sessionId: z.string().uuid().optional(),
+    timeoutMilliseconds: z.number().int().positive().max(30_000).default(10_000),
+    waitUntil: z.enum(['commit', 'domcontentloaded', 'load']).default('load'),
+  };
+  const navigateHistory = async (
+    input: LifecycleInput,
+    offset: -1 | 1,
+    signal: AbortSignal,
+  ): Promise<unknown> => executeLifecycleAction(
+    client,
+    input,
+    ['Page.getNavigationHistory', 'Page.navigateToHistoryEntry'],
+    async (execute) => {
+      const historyResult = await execute('Page.getNavigationHistory', {});
+      const history = commandResultValue(historyResult);
+      const currentIndex = numberValue(property(history, 'currentIndex'));
+      const entries = arrayValue(property(history, 'entries'));
+      const entry = currentIndex === undefined ? undefined : entries[currentIndex + offset];
+      const entryId = numberValue(property(entry, 'id'));
+      if (entryId === undefined)
+        throw new McpToolError('MCP_HISTORY_UNAVAILABLE', 'There is no navigation history entry in that direction.');
+      return execute('Page.navigateToHistoryEntry', { entryId });
+    },
+    signal,
+  );
   register(
     'browser.list_targets',
     {
@@ -934,7 +1731,7 @@ export function createCdbToolDefinitions(
     'browser.snapshot',
     {
       description:
-        'Capture an agent-readable structural DOM tree through a read lease, including backendNodeId references for targeted raw DOM inspection. Large CDP responses are read and released internally; use browser.raw_cdp with DOMSnapshot.captureSnapshot only when the lossless response is required.',
+        'Capture an agent-readable structural DOM tree through read leases, including backendNodeId and opaque child-session references for semantic node actions. Large CDP responses are read and released internally; use browser.raw_cdp with DOMSnapshot.captureSnapshot only when the lossless response is required.',
       inputSchema: z.object({
         ...targetInput,
         maximumDepth: z.number().int().nonnegative().max(50).default(20),
@@ -943,18 +1740,33 @@ export function createCdbToolDefinitions(
     },
     async (input, context) => {
       try {
-        const commandValue = await executeArtifactCommand(
+        const listedSessions = await executeSemanticCommand(
           client,
           input,
-          'DOMSnapshot.captureSnapshot',
-          {
-            computedStyles: [],
-            includeDOMRects: false,
-            includePaintOrder: false,
-          },
+          'shared-read',
+          'Bridge.listChildSessions',
+          {},
+          context.mcpReq.signal,
         );
-        return textContent(
-          formatDomSnapshot(
+        const iframeSessions = childSessionReferences(listedSessions)
+          .filter(session => session.type === 'iframe')
+          .slice(0, 16);
+        const maximumNodesPerSession = Math.max(
+          1,
+          Math.floor(input.maximumNodes / (iframeSessions.length + 1)),
+        );
+        const capture = async (sessionId?: string): Promise<string> => {
+          const commandValue = await executeArtifactCommand(
+            client,
+            { ...input, ...(sessionId === undefined ? {} : { sessionId }) },
+            'DOMSnapshot.captureSnapshot',
+            {
+              computedStyles: [],
+              includeDOMRects: false,
+              includePaintOrder: false,
+            },
+          );
+          return formatDomSnapshot(
             await readableCommandValue(
               client,
               input,
@@ -963,9 +1775,18 @@ export function createCdbToolDefinitions(
             ),
             {
               maximumDepth: input.maximumDepth,
-              maximumNodes: input.maximumNodes,
+              maximumNodes: maximumNodesPerSession,
             },
-          ),
+          );
+        };
+        const sections = [`# Root session\n${await capture()}`];
+        for (const session of iframeSessions) {
+          sections.push(
+            `# Child session [sessionId=${session.id}] [sessionGeneration=${session.generation}] [type=${session.type}]\n${await capture(session.id)}`,
+          );
+        }
+        return textContent(
+          sections.join('\n\n').slice(0, maximumSnapshotCharacters),
         );
       } catch (error) {
         return toolError(error);
@@ -1047,18 +1868,18 @@ export function createCdbToolDefinitions(
     'browser.navigate',
     {
       description:
-        'Navigate an authorized target through an exclusive lease. Navigation can advance the target generation without revoking the grant; list targets before the next command and use the current generation.',
-      inputSchema: z.object({ ...targetInput, url: z.url() }),
+        'Navigate an authorized target, wait for a bounded lifecycle milestone, and return the current target generation.',
+      inputSchema: z.object({ ...lifecycleInput, url: z.url() }),
     },
-    async (input) => {
+    async (input, ctx) => {
       try {
         return jsonContent(
-          await executeSemanticCommand(
+          await executeLifecycleAction(
             client,
             input,
-            'exclusive-control',
-            'Page.navigate',
-            { url: input.url },
+            ['Page.navigate'],
+            async execute => execute('Page.navigate', { url: input.url }),
+            ctx.mcpReq.signal,
           ),
         );
       } catch (error) {
@@ -1067,41 +1888,395 @@ export function createCdbToolDefinitions(
     },
   );
   register(
+    'browser.back',
+    {
+      description: 'Navigate one entry back and return the current target generation after a bounded lifecycle wait.',
+      inputSchema: z.object(lifecycleInput),
+    },
+    async (input, ctx) => {
+      try {
+        return jsonContent(await navigateHistory(input, -1, ctx.mcpReq.signal));
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  register(
+    'browser.forward',
+    {
+      description: 'Navigate one entry forward and return the current target generation after a bounded lifecycle wait.',
+      inputSchema: z.object(lifecycleInput),
+    },
+    async (input, ctx) => {
+      try {
+        return jsonContent(await navigateHistory(input, 1, ctx.mcpReq.signal));
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  register(
+    'browser.reload',
+    {
+      description: 'Reload an authorized target and return its current generation after a bounded lifecycle wait.',
+      inputSchema: z.object(lifecycleInput),
+    },
+    async (input, ctx) => {
+      try {
+        return jsonContent(await executeLifecycleAction(
+          client,
+          input,
+          ['Page.reload'],
+          async execute => execute('Page.reload', {}),
+          ctx.mcpReq.signal,
+        ));
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  register(
     'browser.click',
     {
-      description: 'Dispatch an explicit click through an exclusive lease.',
+      description:
+        'Click explicit viewport coordinates. Prefer browser.click_node when a snapshot reference is available.',
       inputSchema: z.object({
         ...targetInput,
+        button: pointerButtonSchema,
+        clickCount: z.number().int().positive().max(3).default(1),
+        modifiers: inputModifiersSchema,
         x: z.number().nonnegative(),
         y: z.number().nonnegative(),
       }),
     },
-    async (input) => {
+    async (input, ctx) => {
       try {
-        return jsonContent(
-          await executeSemanticCommands(client, input, 'exclusive-control', [
-            {
-              method: 'Input.dispatchMouseEvent',
-              parameters: {
-                button: 'left',
-                clickCount: 1,
-                type: 'mousePressed',
-                x: input.x,
-                y: input.y,
-              },
-            },
-            {
-              method: 'Input.dispatchMouseEvent',
-              parameters: {
-                button: 'left',
-                clickCount: 1,
-                type: 'mouseReleased',
-                x: input.x,
-                y: input.y,
-              },
-            },
-          ]),
+        const results: unknown[] = [];
+        let buttonPressed = false;
+        const modifiers = encodeInputModifiers(input.modifiers);
+        await executeInputAction(
+          client,
+          input,
+          ['Input.dispatchMouseEvent'],
+          ctx.mcpReq.signal,
+          async (execute, executeCleanup) => {
+            try {
+              for (let clickCount = 1; clickCount <= input.clickCount; clickCount += 1) {
+                results.push(await execute('Input.dispatchMouseEvent', {
+                  button: input.button,
+                  clickCount,
+                  modifiers,
+                  type: 'mousePressed',
+                  x: input.x,
+                  y: input.y,
+                }));
+                buttonPressed = true;
+                results.push(await execute('Input.dispatchMouseEvent', {
+                  button: input.button,
+                  clickCount,
+                  modifiers,
+                  type: 'mouseReleased',
+                  x: input.x,
+                  y: input.y,
+                }));
+                buttonPressed = false;
+              }
+            } finally {
+              if (buttonPressed) {
+                await executeCleanup('Input.dispatchMouseEvent', {
+                  button: input.button,
+                  clickCount: input.clickCount,
+                  modifiers,
+                  type: 'mouseReleased',
+                  x: input.x,
+                  y: input.y,
+                });
+              }
+            }
+          },
         );
+        pointerPositions.set(pointerPositionKey(input), { x: input.x, y: input.y });
+        return jsonContent(results);
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  register(
+    'browser.move',
+    {
+      description:
+        'Move or hover the pointer at explicit viewport coordinates. Prefer browser.hover_node when a snapshot reference is available.',
+      inputSchema: z.object({
+        ...targetInput,
+        ...inputActionTiming,
+        modifiers: inputModifiersSchema,
+        x: z.number().nonnegative(),
+        y: z.number().nonnegative(),
+      }),
+    },
+    async (input, ctx) => {
+      try {
+        const destination = { x: input.x, y: input.y };
+        const points = interpolateViewportPoints(
+          pointerPositions.get(pointerPositionKey(input)) ?? destination,
+          destination,
+          input.steps,
+        );
+        const modifiers = encodeInputModifiers(input.modifiers);
+        const stepDuration = input.durationMilliseconds / input.steps;
+        const results: unknown[] = [];
+        await executeInputAction(
+          client,
+          input,
+          ['Input.dispatchMouseEvent'],
+          ctx.mcpReq.signal,
+          async (execute) => {
+            for (const point of points) {
+              results.push(await execute('Input.dispatchMouseEvent', {
+                modifiers,
+                type: 'mouseMoved',
+                ...point,
+              }));
+              await waitForInputStep(stepDuration, ctx.mcpReq.signal);
+            }
+          },
+        );
+        pointerPositions.set(pointerPositionKey(input), destination);
+        return jsonContent(results);
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  register(
+    'browser.scroll',
+    {
+      description: 'Dispatch a bounded mouse-wheel scroll at explicit viewport coordinates.',
+      inputSchema: z.object({
+        ...targetInput,
+        ...inputActionTiming,
+        deltaX: z.number().finite(),
+        deltaY: z.number().finite(),
+        modifiers: inputModifiersSchema,
+        x: z.number().nonnegative(),
+        y: z.number().nonnegative(),
+      }),
+    },
+    async (input, ctx) => {
+      try {
+        if (input.deltaX === 0 && input.deltaY === 0)
+          throw new McpToolError('MCP_TOOL_FAILED', 'At least one scroll delta must be non-zero.');
+        const modifiers = encodeInputModifiers(input.modifiers);
+        const stepDuration = input.durationMilliseconds / input.steps;
+        const results: unknown[] = [];
+        await executeInputAction(
+          client,
+          input,
+          ['Input.dispatchMouseEvent'],
+          ctx.mcpReq.signal,
+          async (execute) => {
+            let dispatchedDeltaX = 0;
+            let dispatchedDeltaY = 0;
+            for (let step = 1; step <= input.steps; step += 1) {
+              const deltaX = step === input.steps
+                ? input.deltaX - dispatchedDeltaX
+                : input.deltaX / input.steps;
+              const deltaY = step === input.steps
+                ? input.deltaY - dispatchedDeltaY
+                : input.deltaY / input.steps;
+              dispatchedDeltaX += deltaX;
+              dispatchedDeltaY += deltaY;
+              results.push(await execute('Input.dispatchMouseEvent', {
+                deltaX,
+                deltaY,
+                modifiers,
+                type: 'mouseWheel',
+                x: input.x,
+                y: input.y,
+              }));
+              await waitForInputStep(stepDuration, ctx.mcpReq.signal);
+            }
+          },
+        );
+        return jsonContent(results);
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  register(
+    'browser.drag',
+    {
+      description: 'Drag the pointer along a bounded viewport path.',
+      inputSchema: z.object({
+        ...targetInput,
+        button: pointerButtonSchema,
+        durationMilliseconds: inputActionTiming.durationMilliseconds,
+        modifiers: inputModifiersSchema,
+        path: z.array(z.object({
+          x: z.number().nonnegative(),
+          y: z.number().nonnegative(),
+        })).min(2).max(maximumInputActionSteps),
+      }),
+    },
+    async (input, ctx) => {
+      try {
+        const firstPoint = input.path[0];
+        const lastPoint = input.path.at(-1);
+        if (firstPoint === undefined || lastPoint === undefined)
+          throw new McpToolError('MCP_TOOL_FAILED', 'The drag path is empty.');
+        const modifiers = encodeInputModifiers(input.modifiers);
+        const stepDuration = input.durationMilliseconds / (input.path.length - 1);
+        const results: unknown[] = [];
+        let buttonPressed = false;
+        let currentPoint = firstPoint;
+        await executeInputAction(
+          client,
+          input,
+          ['Input.cancelDragging', 'Input.dispatchMouseEvent'],
+          ctx.mcpReq.signal,
+          async (execute, executeCleanup) => {
+            try {
+              results.push(await execute('Input.dispatchMouseEvent', {
+                modifiers,
+                type: 'mouseMoved',
+                ...firstPoint,
+              }));
+              results.push(await execute('Input.dispatchMouseEvent', {
+                button: input.button,
+                buttons: pointerButtonValues[input.button],
+                clickCount: 1,
+                modifiers,
+                type: 'mousePressed',
+                ...firstPoint,
+              }));
+              buttonPressed = true;
+              for (const point of input.path.slice(1)) {
+                currentPoint = point;
+                results.push(await execute('Input.dispatchMouseEvent', {
+                  button: input.button,
+                  buttons: pointerButtonValues[input.button],
+                  modifiers,
+                  type: 'mouseMoved',
+                  ...point,
+                }));
+                await waitForInputStep(stepDuration, ctx.mcpReq.signal);
+              }
+              results.push(await execute('Input.dispatchMouseEvent', {
+                button: input.button,
+                clickCount: 1,
+                modifiers,
+                type: 'mouseReleased',
+                ...lastPoint,
+              }));
+              buttonPressed = false;
+            } finally {
+              if (buttonPressed) {
+                await executeCleanup('Input.dispatchMouseEvent', {
+                  button: input.button,
+                  clickCount: 1,
+                  modifiers,
+                  type: 'mouseReleased',
+                  ...currentPoint,
+                });
+              }
+              if (ctx.mcpReq.signal.aborted)
+                await executeCleanup('Input.cancelDragging', {});
+            }
+          },
+        );
+        pointerPositions.set(pointerPositionKey(input), lastPoint);
+        return jsonContent(results);
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  register(
+    'browser.click_node',
+    {
+      description:
+        'Click a fresh, visible snapshot node after scrolling and hit-testing it. Prefer this over coordinate clicks.',
+      inputSchema: z.object({
+        ...targetInput,
+        button: pointerButtonSchema,
+        clickCount: z.number().int().positive().max(3).default(1),
+        modifiers: inputModifiersSchema,
+        node: nodeReferenceSchema,
+      }),
+    },
+    async (input, ctx) => {
+      try {
+        return jsonContent(await executeNodeAction(client, {
+          ...input,
+          ...input.node,
+        }, 'click', ctx.mcpReq.signal));
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  register(
+    'browser.hover_node',
+    {
+      description:
+        'Move the pointer to a fresh, visible snapshot node after scrolling and hit-testing it.',
+      inputSchema: z.object({
+        ...targetInput,
+        modifiers: inputModifiersSchema,
+        node: nodeReferenceSchema,
+      }),
+    },
+    async (input, ctx) => {
+      try {
+        return jsonContent(await executeNodeAction(client, {
+          ...input,
+          ...input.node,
+        }, 'hover', ctx.mcpReq.signal));
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  register(
+    'browser.focus_node',
+    {
+      description:
+        'Focus a fresh, visible snapshot node after scrolling and hit-testing it.',
+      inputSchema: z.object({
+        ...targetInput,
+        node: nodeReferenceSchema,
+      }),
+    },
+    async (input, ctx) => {
+      try {
+        return jsonContent(await executeNodeAction(client, {
+          ...input,
+          ...input.node,
+        }, 'focus', ctx.mcpReq.signal));
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  register(
+    'browser.type_node',
+    {
+      description:
+        'Focus a fresh, visible editable snapshot node and insert text into it.',
+      inputSchema: z.object({
+        ...targetInput,
+        node: nodeReferenceSchema,
+        text: z.string().min(1),
+      }),
+    },
+    async (input, ctx) => {
+      try {
+        return jsonContent(await executeNodeAction(client, {
+          ...input,
+          ...input.node,
+        }, 'type', ctx.mcpReq.signal));
       } catch (error) {
         return toolError(error);
       }
@@ -1135,20 +2310,39 @@ export function createCdbToolDefinitions(
       description: 'Dispatch a key through an exclusive lease.',
       inputSchema: z.object({ ...targetInput, key: z.string().min(1) }),
     },
-    async (input) => {
+    async (input, ctx) => {
       try {
-        return jsonContent(
-          await executeSemanticCommands(client, input, 'exclusive-control', [
-            {
-              method: 'Input.dispatchKeyEvent',
-              parameters: { key: input.key, text: input.key, type: 'keyDown' },
-            },
-            {
-              method: 'Input.dispatchKeyEvent',
-              parameters: { key: input.key, type: 'keyUp' },
-            },
-          ]),
+        const results: unknown[] = [];
+        let keyPressed = false;
+        await executeInputAction(
+          client,
+          input,
+          ['Input.dispatchKeyEvent'],
+          ctx.mcpReq.signal,
+          async (execute, executeCleanup) => {
+            try {
+              results.push(await execute('Input.dispatchKeyEvent', {
+                key: input.key,
+                text: input.key,
+                type: 'keyDown',
+              }));
+              keyPressed = true;
+              results.push(await execute('Input.dispatchKeyEvent', {
+                key: input.key,
+                type: 'keyUp',
+              }));
+              keyPressed = false;
+            } finally {
+              if (keyPressed) {
+                await executeCleanup('Input.dispatchKeyEvent', {
+                  key: input.key,
+                  type: 'keyUp',
+                });
+              }
+            }
+          },
         );
+        return jsonContent(results);
       } catch (error) {
         return toolError(error);
       }
@@ -1157,8 +2351,87 @@ export function createCdbToolDefinitions(
   const eventWaitInput = {
     ...targetInput,
     leaseId: z.string().uuid().optional(),
+    sessionId: z.string().uuid().optional(),
     timeoutMilliseconds: z.number().int().positive().max(30_000).default(5_000),
   };
+  register(
+    'browser.wait_for_navigation',
+    {
+      description: 'Wait for a bounded root or child-session navigation milestone and fail promptly on JavaScript dialogs.',
+      inputSchema: z.object(lifecycleInput),
+    },
+    async (input, ctx) => {
+      const renewalAbortController = new AbortController();
+      const renewedTarget = input.sessionId === undefined
+        ? waitForRenewedTarget(client, input, renewalAbortController.signal)
+        : undefined;
+      renewedTarget?.catch(() => {});
+      try {
+        const event = await waitForNavigationEvent(client, input, ctx.mcpReq.signal);
+        let currentTarget = (await client.listTargets()).find(target => target.id === input.targetId);
+        if (currentTarget === undefined)
+          throw new McpToolError('TARGET_NOT_FOUND', 'The navigated target is no longer available.');
+        if (
+          renewedTarget !== undefined
+          && event.method !== 'Page.navigatedWithinDocument'
+          && currentTarget.generation <= input.targetGeneration
+        ) currentTarget = await renewedTarget;
+        return jsonContent({ event, target: currentTarget });
+      } catch (error) {
+        return toolError(error);
+      } finally {
+        renewalAbortController.abort();
+      }
+    },
+  );
+  register(
+    'browser.wait_for_dialog',
+    {
+      description: 'Wait for one JavaScript dialog in a root or opaque child session.',
+      inputSchema: z.object(eventWaitInput),
+    },
+    async (input, ctx) => {
+      try {
+        const { leaseId, ...eventInput } = input;
+        return jsonContent(await waitForEvent(client, {
+          ...eventInput,
+          ...(leaseId === undefined ? {} : { leaseId }),
+          method: 'Page.javascriptDialogOpening',
+        }, ctx.mcpReq.signal));
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  register(
+    'browser.handle_dialog',
+    {
+      description: 'Accept or dismiss the current JavaScript dialog through an exclusive lease.',
+      inputSchema: z.object({
+        ...targetInput,
+        accept: z.boolean(),
+        promptText: z.string().optional(),
+        sessionId: z.string().uuid().optional(),
+      }),
+    },
+    async (input, ctx) => {
+      try {
+        return jsonContent(await executeSemanticCommand(
+          client,
+          input,
+          'exclusive-control',
+          'Page.handleJavaScriptDialog',
+          {
+            accept: input.accept,
+            ...(input.promptText === undefined ? {} : { promptText: input.promptText }),
+          },
+          ctx.mcpReq.signal,
+        ));
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
   register(
     'browser.console',
     {
