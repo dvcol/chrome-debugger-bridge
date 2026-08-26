@@ -45,6 +45,24 @@ policy.
 tools without creating a server or choosing a transport. DevKit installs these definitions in its
 existing MCP aggregation surface, preserving the DevKit RPC session as the agent principal.
 
+The semantic catalogue includes structural DOM inspection through `browser.snapshot`, which uses
+`DOMSnapshot.captureSnapshot`; it is not a screenshot fallback. The tool consumes an externalized
+snapshot internally, releases its artifact and temporary lease, and returns a bounded text tree with
+backend node IDs. Inline `script`, `style`, and `noscript` bodies are omitted from that default view;
+the raw catalogue remains the explicit lossless path. Other large command results are returned as
+artifacts. Their temporary lease stays live until the caller reads and releases the artifact, and
+artifact reads count as lease activity in the embedding broker.
+
+The broker owns lifecycle activation for catalogue domains with an `enable` command. A lease declares
+the command and event methods it needs; on first use CDB acquires the corresponding domain demand from
+the target executor and releases that demand with the last lease. Callers must not put domain
+`enable`/`disable` commands in their lease or depend on a previous agent having enabled a domain.
+
+An embedding host may also expose the generated raw CDP catalogue. That catalogue covers
+`chrome.debugger.sendCommand` protocol methods subject to access-level and lease checks. The Chrome
+extension lifecycle API itself is intentionally not agent-facing: attach, detach, target discovery,
+and debugger event ownership remain grant-provider responsibilities.
+
 ## Identity and authority
 
 There are four distinct identifiers:
@@ -68,6 +86,12 @@ An authenticated WebSocket connection validates the implementation instance ID a
 pairing. The connection exposes a broker-issued connection generation. QA Helper uses that
 generation for hello and heartbeat messages so an older connection cannot resume authority after a
 newer connection has taken over.
+
+The authenticated WebSocket's `maximumMessageBytes` bound is enforced before the target broker can
+externalize a large CDP result. The transport keeps a conservative 16 KiB generic default; an
+embedding host that permits multi-megabyte artifacts must explicitly raise the authenticated message
+bound enough for the raw response envelope, while retaining its separate artifact-size limit. A
+message above the transport bound closes the connection with code `1009`; it is never truncated.
 
 ## Grants and access levels
 
@@ -93,6 +117,11 @@ CDB separates durable permission from short-lived command coordination:
 - A grant says that one principal may access one exact target at a maximum level.
 - A shared-read lease allows compatible observation and inspection by several principals.
 - An exclusive-control lease serializes actions that require one controller.
+
+A grant has no lease inactivity timeout. A semantic tool normally acquires and releases a temporary
+lease around one operation; an explicit lease remains available for a sequence of raw commands until
+it is released, reaches the embedding broker's configured inactivity or maximum lifetime, loses its
+generation, or its grant/principal is revoked.
 
 There is no lease queue and no preemption. An incompatible acquire fails with `LEASE_CONFLICT` and a
 retry hint. The agent decides whether and when to retry. Lease inactivity expiry is configurable.

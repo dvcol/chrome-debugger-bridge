@@ -1,13 +1,24 @@
 import type { McpChromeDebuggerBridgeClient } from '../src/index.js';
 
+import { Buffer } from 'node:buffer';
 import { createServer } from 'node:http';
 
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import {
+  Client,
+  StreamableHTTPClientTransport,
+} from '@modelcontextprotocol/client';
 import { InMemoryTransport, McpServer } from '@modelcontextprotocol/server';
 import { expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 
-import { createCdbToolDefinitions, mountMcpStdio, mountMcpStreamableHttp, registerCdbTools, supportedMcpProtocolVersions, supportedMcpSdkVersion } from '../src/index.js';
+import {
+  createCdbToolDefinitions,
+  mountMcpStdio,
+  mountMcpStreamableHttp,
+  registerCdbTools,
+  supportedMcpProtocolVersions,
+  supportedMcpSdkVersion,
+} from '../src/index.js';
 
 const target = {
   availability: 'available',
@@ -24,14 +35,19 @@ it('registers the CDB surface on an application-owned official MCP server', asyn
     name: 'application',
     version: '1.0.0',
   });
-  applicationServer.registerTool('application.health', { description: 'Return application health.', inputSchema: z.object({}) }, async () => ({ content: [{ text: 'healthy', type: 'text' }] }));
+  applicationServer.registerTool(
+    'application.health',
+    { description: 'Return application health.', inputSchema: z.object({}) },
+    async () => ({ content: [{ text: 'healthy', type: 'text' }] }),
+  );
   const bridgeClient = {
     async listTargets() {
       return [target];
     },
   } as unknown as McpChromeDebuggerBridgeClient;
   registerCdbTools(applicationServer, { client: bridgeClient });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const [clientTransport, serverTransport]
+    = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'consumer', version: '1.0.0' });
   await applicationServer.connect(serverTransport);
   await client.connect(clientTransport);
@@ -49,8 +65,12 @@ it('registers the CDB surface on an application-owned official MCP server', asyn
     expect(toolNames).toContain('application.health');
     expect(toolNames).toContain('browser.list_targets');
     expect(toolNames).not.toContain('browser.raw_cdp');
-    expect(applicationResult.content).toEqual([{ text: 'healthy', type: 'text' }]);
-    expect(targetsResult.content).toEqual([{ text: JSON.stringify([target]), type: 'text' }]);
+    expect(applicationResult.content).toEqual([
+      { text: 'healthy', type: 'text' },
+    ]);
+    expect(targetsResult.content).toEqual([
+      { text: JSON.stringify([target]), type: 'text' },
+    ]);
     expect(targetsResult.isError).toBeUndefined();
   } finally {
     await client.close();
@@ -64,13 +84,19 @@ it('rejects a conflicting CDB registration before adding any CDB tools', () => {
     name: 'application',
     version: '1.0.0',
   });
-  applicationServer.registerTool('browser.navigate', { description: 'Application navigation.', inputSchema: z.object({}) }, async () => ({ content: [] }));
+  applicationServer.registerTool(
+    'browser.navigate',
+    { description: 'Application navigation.', inputSchema: z.object({}) },
+    async () => ({ content: [] }),
+  );
   const bridgeClient = {
     async listTargets() {
       return [target];
     },
   } as unknown as McpChromeDebuggerBridgeClient;
-  expect(() => registerCdbTools(applicationServer, { client: bridgeClient })).toThrow('browser.navigate is already registered');
+  expect(() =>
+    registerCdbTools(applicationServer, { client: bridgeClient }),
+  ).toThrow('browser.navigate is already registered');
   expect(
     Object.keys(
       (
@@ -85,7 +111,9 @@ it('rejects a conflicting CDB registration before adding any CDB tools', () => {
 it('preserves a successful navigation when its temporary lease was fenced during navigation', async () => {
   expect.assertions(3);
   const releaseLease = vi.fn(async () => {
-    throw Object.assign(new Error('The target generation is stale.'), { code: 'TARGET_GENERATION_STALE' });
+    throw Object.assign(new Error('The target generation is stale.'), {
+      code: 'TARGET_GENERATION_STALE',
+    });
   });
   const commandResult = {
     operationId: '30000000-0000-4000-8000-000000000001',
@@ -108,8 +136,11 @@ it('preserves a successful navigation when its temporary lease was fenced during
     },
     releaseLease,
   } as unknown as McpChromeDebuggerBridgeClient;
-  const navigate = createCdbToolDefinitions({ client: bridgeClient }).find(definition => definition.name === 'browser.navigate');
-  if (navigate === undefined) throw new Error('browser.navigate was not registered');
+  const navigate = createCdbToolDefinitions({ client: bridgeClient }).find(
+    definition => definition.name === 'browser.navigate',
+  );
+  if (navigate === undefined)
+    throw new Error('browser.navigate was not registered');
 
   const result = await navigate.invoke({
     targetGeneration: target.generation,
@@ -119,7 +150,118 @@ it('preserves a successful navigation when its temporary lease was fenced during
 
   expect(releaseLease).toHaveBeenCalledOnce();
   expect(result.isError).toBeUndefined();
-  expect(result.content).toEqual([{ text: JSON.stringify(commandResult), type: 'text' }]);
+  expect(result.content).toEqual([
+    { text: JSON.stringify(commandResult), type: 'text' },
+  ]);
+});
+
+it('reads and releases a DOM snapshot artifact before returning agent-readable text', async () => {
+  expect.assertions(8);
+  const lease = {
+    expiresAt: '2030-01-01T00:00:00.000Z',
+    id: '017c10a7-e0af-40ec-879f-cd87dffaf036',
+    issuedAt: '2026-08-26T00:00:00.000Z',
+    methods: ['DOMSnapshot.captureSnapshot'],
+    mode: 'shared-read' as const,
+    targetGeneration: target.generation,
+    targetId: target.id,
+  };
+  const domSnapshot = {
+    documents: [
+      {
+        documentURL: 9,
+        nodes: {
+          attributes: [[], [], [], [6, 7], [], [], []],
+          backendNodeId: [1, 2, 3, 4, 5, 6, 7],
+          nodeName: [0, 1, 2, 3, 4, 10, 4],
+          nodeValue: [5, 5, 5, 5, 8, 5, 11],
+          parentIndex: [-1, 0, 1, 2, 3, 2, 5],
+        },
+      },
+    ],
+    strings: [
+      '#document',
+      'HTML',
+      'BODY',
+      'BUTTON',
+      '#text',
+      '',
+      'id',
+      'save',
+      'Save',
+      'https://example.test/',
+      'SCRIPT',
+      "localStorage.setItem('auth-token', 'secret')",
+    ],
+  };
+  const snapshotBytes = Buffer.from(JSON.stringify(domSnapshot));
+  const artifact = {
+    expiresAt: '2030-01-01T00:00:00.000Z',
+    id: '117c10a7-e0af-40ec-879f-cd87dffaf036',
+    length: snapshotBytes.byteLength,
+    mediaType: 'application/json',
+  };
+  const acquireLease = vi.fn(async () => lease);
+  const readArtifact = vi.fn(
+    async (request: {
+      readonly range?: { readonly length: number; readonly offset: number };
+    }) => {
+      if (request.range === undefined)
+        throw new Error('Expected a ranged artifact read.');
+      return snapshotBytes.subarray(
+        request.range.offset,
+        request.range.offset + request.range.length,
+      );
+    },
+  );
+  const releaseArtifact = vi.fn(async () => {});
+  const releaseLease = vi.fn(async () => {});
+  const bridgeClient = {
+    acquireLease,
+    async executeCommand() {
+      return {
+        operationId: '30000000-0000-4000-8000-000000000002',
+        value: { artifact },
+      };
+    },
+    readArtifact,
+    releaseArtifact,
+    releaseLease,
+  } as unknown as McpChromeDebuggerBridgeClient;
+  const snapshot = createCdbToolDefinitions({ client: bridgeClient }).find(
+    definition => definition.name === 'browser.snapshot',
+  );
+  if (snapshot === undefined)
+    throw new Error('browser.snapshot was not registered');
+
+  const result = await snapshot.invoke({
+    targetGeneration: target.generation,
+    targetId: target.id,
+  });
+
+  expect(acquireLease).toHaveBeenCalledWith(
+    expect.objectContaining({
+      mode: 'shared-read',
+      requestedMethods: ['DOMSnapshot.captureSnapshot'],
+    }),
+  );
+  expect(readArtifact).toHaveBeenCalledOnce();
+  expect(releaseArtifact).toHaveBeenCalledWith({
+    artifactId: artifact.id,
+    leaseId: lease.id,
+    targetGeneration: target.generation,
+    targetId: target.id,
+  });
+  expect(releaseLease).toHaveBeenCalledOnce();
+  expect(result.isError).toBeUndefined();
+  const resultContent = result.content[0];
+  expect(resultContent?.type).toBe('text');
+  if (resultContent?.type !== 'text')
+    throw new Error('Expected a text DOM snapshot result.');
+  expect(resultContent.text).toContain(
+    '- <button id="save"> [backendNodeId=4]\n        - "Save"',
+  );
+  expect(resultContent.text).not.toContain('auth-token');
 });
 
 it('serves target discovery through the official SDK Streamable HTTP client', async () => {
@@ -140,7 +282,8 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
   };
   let closedSubscriptions = 0;
   let rejectPendingInspection: ((reason?: unknown) => void) | undefined;
-  let resolvePendingEvent: ((result: IteratorResult<never>) => void) | undefined;
+  let resolvePendingEvent:
+    ((result: IteratorResult<never>) => void) | undefined;
   let resolveInspectionStarted: (() => void) | undefined;
   let resolveArtifactReadStarted: (() => void) | undefined;
   let resolveSubscriptionStarted: (() => void) | undefined;
@@ -156,7 +299,9 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
   const bridgeClient = {
     async cancelCommand(request: unknown) {
       cancelledCommands.push(request);
-      rejectPendingInspection?.(Object.assign(new Error('Cancelled.'), { code: 'MCP_WAIT_CANCELLED' }));
+      rejectPendingInspection?.(
+        Object.assign(new Error('Cancelled.'), { code: 'MCP_WAIT_CANCELLED' }),
+      );
     },
     async acquireLease(request: unknown) {
       acquiredLeases.push(request);
@@ -168,14 +313,23 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
         targetId: target.id,
       };
     },
-    async executeCommand(command: { readonly method: string; readonly parameters?: { readonly expression?: unknown } }) {
-      if (command.method === 'Runtime.evaluate' && command.parameters?.expression === 'await-cancellation') {
+    async executeCommand(command: {
+      readonly method: string;
+      readonly parameters?: { readonly expression?: unknown };
+    }) {
+      if (
+        command.method === 'Runtime.evaluate'
+        && command.parameters?.expression === 'await-cancellation'
+      ) {
         resolveInspectionStarted?.();
         return new Promise<never>((_resolve, reject) => {
           rejectPendingInspection = reject;
         });
       }
-      if (command.method === 'Runtime.evaluate' && command.parameters?.expression === 'cdp-failure')
+      if (
+        command.method === 'Runtime.evaluate'
+        && command.parameters?.expression === 'cdp-failure'
+      )
         throw Object.assign(new Error('Denied.'), {
           code: 'CAPABILITY_DENIED',
         });
@@ -200,11 +354,32 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     },
     async readArtifact(request: unknown, signal?: AbortSignal) {
       artifactReads.push({ request, signalAborted: signal?.aborted });
-      if (typeof request === 'object' && request !== null && 'range' in request && request.range !== null && typeof request.range === 'object' && 'offset' in request.range && request.range.offset === 8) return new Uint8Array([1, 2]);
-      if (typeof request === 'object' && request !== null && 'range' in request && request.range !== null && typeof request.range === 'object' && 'offset' in request.range && request.range.offset === 9) {
+      if (
+        typeof request === 'object'
+        && request !== null
+        && 'range' in request
+        && request.range !== null
+        && typeof request.range === 'object'
+        && 'offset' in request.range
+        && request.range.offset === 8
+      )
+        return new Uint8Array([1, 2]);
+      if (
+        typeof request === 'object'
+        && request !== null
+        && 'range' in request
+        && request.range !== null
+        && typeof request.range === 'object'
+        && 'offset' in request.range
+        && request.range.offset === 9
+      ) {
         resolveArtifactReadStarted?.();
         return new Promise<Uint8Array>((_resolve, reject) => {
-          signal?.addEventListener('abort', () => reject(new Error('The artifact read was cancelled.')), { once: true });
+          signal?.addEventListener(
+            'abort',
+            () => reject(new Error('The artifact read was cancelled.')),
+            { once: true },
+          );
         });
       }
       return new Uint8Array([1, 2]);
@@ -215,7 +390,10 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     async releaseArtifact(request: unknown) {
       releasedArtifacts.push(request);
     },
-    async subscribe(request: { readonly leaseId: string; readonly match: { readonly method: string } }) {
+    async subscribe(request: {
+      readonly leaseId: string;
+      readonly match: { readonly method: string };
+    }) {
       subscriptionRequests.push(request);
       if (request.match.method === 'Network.loadingFinished') {
         return {
@@ -269,21 +447,50 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     server.once('error', reject);
   });
   const address = server.address();
-  if (address === null || typeof address === 'string') throw new Error('Expected a TCP address.');
-  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/cdb/mcp`));
-  const client = new Client({ name: 'mcp-test-client', version: '0.0.0' }, { versionNegotiation: { mode: { pin: '2026-07-28' } } });
+  if (address === null || typeof address === 'string')
+    throw new Error('Expected a TCP address.');
+  const transport = new StreamableHTTPClientTransport(
+    new URL(`http://127.0.0.1:${address.port}/cdb/mcp`),
+  );
+  const client = new Client(
+    { name: 'mcp-test-client', version: '0.0.0' },
+    { versionNegotiation: { mode: { pin: '2026-07-28' } } },
+  );
 
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    expect(tools.tools.map(tool => tool.name)).toEqual(['browser.list_targets', 'browser.acquire', 'browser.renew', 'browser.release', 'browser.release_artifact', 'browser.read_artifact', 'browser.inspect', 'browser.snapshot', 'browser.screenshot', 'browser.network_body', 'browser.evaluate', 'browser.navigate', 'browser.click', 'browser.type', 'browser.press', 'browser.console', 'browser.network', 'browser.wait_for']);
-    expect(tools.tools.find(tool => tool.name === 'browser.acquire')?.description).toContain('"Runtime.evaluate"');
+    expect(tools.tools.map(tool => tool.name)).toEqual([
+      'browser.list_targets',
+      'browser.acquire',
+      'browser.renew',
+      'browser.release',
+      'browser.release_artifact',
+      'browser.read_artifact',
+      'browser.inspect',
+      'browser.snapshot',
+      'browser.screenshot',
+      'browser.network_body',
+      'browser.evaluate',
+      'browser.navigate',
+      'browser.click',
+      'browser.type',
+      'browser.press',
+      'browser.console',
+      'browser.network',
+      'browser.wait_for',
+    ]);
+    expect(
+      tools.tools.find(tool => tool.name === 'browser.acquire')?.description,
+    ).toContain('"Runtime.evaluate"');
     const result = await client.callTool({
       arguments: {},
       name: 'browser.list_targets',
     });
     expect(result.isError).toBeUndefined();
-    expect(result.content).toEqual([{ text: JSON.stringify([target]), type: 'text' }]);
+    expect(result.content).toEqual([
+      { text: JSON.stringify([target]), type: 'text' },
+    ]);
     const snapshot = await client.callTool({
       arguments: { targetGeneration: target.generation, targetId: target.id },
       name: 'browser.snapshot',
@@ -311,21 +518,19 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       name: 'browser.network_body',
     });
     expect(networkBody.isError).toBeUndefined();
-    expect(networkBody.content).toEqual([
-      {
-        text: JSON.stringify({
-          artifact: artifactDescriptor,
-          lease: {
-            expiresAt: '2030-01-01T00:00:00.000Z',
-            id: '017c10a7-e0af-40ec-879f-cd87dffaf036',
-            mode: 'shared-read',
-            targetGeneration: target.generation,
-            targetId: target.id,
-          },
-        }),
-        type: 'text',
+    const networkBodyContent = networkBody.content[0];
+    if (networkBodyContent?.type !== 'text')
+      throw new Error('Expected a text network body result.');
+    expect(JSON.parse(networkBodyContent.text)).toEqual({
+      artifact: artifactDescriptor,
+      lease: {
+        expiresAt: '2030-01-01T00:00:00.000Z',
+        id: '017c10a7-e0af-40ec-879f-cd87dffaf036',
+        mode: 'shared-read',
+        targetGeneration: target.generation,
+        targetId: target.id,
       },
-    ]);
+    });
     const releasedArtifact = await client.callTool({
       arguments: {
         artifactId: '017c10a7-e0af-40ec-879f-cd87dffaf036',
@@ -543,7 +748,11 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     await inspectionStarted;
     inspectionCancellationController.abort();
     await expect(cancelledInspection).rejects.toThrow();
-    await expect.poll(() => cancelledCommands).toMatchObject([{ targetGeneration: target.generation, targetId: target.id }]);
+    await expect
+      .poll(() => cancelledCommands)
+      .toMatchObject([
+        { targetGeneration: target.generation, targetId: target.id },
+      ]);
     expect(acquiredLeases).toMatchObject([
       {
         mode: 'shared-read',
@@ -565,7 +774,16 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       { mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'] },
       { mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'] },
     ]);
-    expect(executedMethods).toEqual(['DOMSnapshot.captureSnapshot', 'Page.captureScreenshot', 'Network.getResponseBody', 'Page.navigate', 'Input.dispatchMouseEvent', 'Input.dispatchMouseEvent', 'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent']);
+    expect(executedMethods).toEqual([
+      'DOMSnapshot.captureSnapshot',
+      'Page.captureScreenshot',
+      'Network.getResponseBody',
+      'Page.navigate',
+      'Input.dispatchMouseEvent',
+      'Input.dispatchMouseEvent',
+      'Input.dispatchKeyEvent',
+      'Input.dispatchKeyEvent',
+    ]);
     expect(releasedLeases).toHaveLength(10);
     expect(closedSubscriptions).toBe(1);
     const timedOutWait = await client.callTool({
@@ -617,7 +835,11 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
   } finally {
     await transport.terminateSession();
     await mounted.close();
-    await new Promise<void>((resolve, reject) => server.close(error => (error === undefined ? resolve() : reject(error))));
+    await new Promise<void>((resolve, reject) =>
+      server.close(error =>
+        error === undefined ? resolve() : reject(error),
+      ),
+    );
   }
 });
 
@@ -635,17 +857,29 @@ it('registers raw CDP only when a trusted host explicitly enables it', async () 
     server.once('error', reject);
   });
   const address = server.address();
-  if (address === null || typeof address === 'string') throw new Error('Expected a TCP address.');
-  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/bridge-mcp`));
-  const client = new Client({ name: 'mcp-test-client', version: '0.0.0' }, { versionNegotiation: { mode: { pin: '2026-07-28' } } });
+  if (address === null || typeof address === 'string')
+    throw new Error('Expected a TCP address.');
+  const transport = new StreamableHTTPClientTransport(
+    new URL(`http://127.0.0.1:${address.port}/bridge-mcp`),
+  );
+  const client = new Client(
+    { name: 'mcp-test-client', version: '0.0.0' },
+    { versionNegotiation: { mode: { pin: '2026-07-28' } } },
+  );
 
   try {
     await client.connect(transport);
-    expect((await client.listTools()).tools.map(tool => tool.name)).toContain('browser.raw_cdp');
+    expect((await client.listTools()).tools.map(tool => tool.name)).toContain(
+      'browser.raw_cdp',
+    );
   } finally {
     await transport.terminateSession();
     await mounted.close();
-    await new Promise<void>((resolve, reject) => server.close(error => (error === undefined ? resolve() : reject(error))));
+    await new Promise<void>((resolve, reject) =>
+      server.close(error =>
+        error === undefined ? resolve() : reject(error),
+      ),
+    );
   }
 });
 

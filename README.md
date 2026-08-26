@@ -41,6 +41,28 @@ principals independently against one stable target; QA Helper renews that target
 tab crosses HTTP(S) origins. CDB only fences generations and applies the per-principal authority it
 receives.
 
+Agents do not need to infer page structure from screenshots. `browser.snapshot` captures a
+structural DOM snapshot and returns a bounded text tree with backend node IDs. It consumes any broker
+artifact internally and omits inline `script`, `style`, and `noscript` bodies from this default
+agent-readable view. Hosts can expose the generated raw CDP command catalogue when an authorized
+agent needs the lossless DOMSnapshot response or deeper DOM, Runtime, Network, Debugger, and other
+protocol operations. CDB does not expose the extension-owned `chrome.debugger.attach`, `detach`, or
+target-selection lifecycle to agents.
+
+Grants and leases have different lifetimes. A grant is durable authority owned by the embedding
+broker; a lease is short-lived command coordination. Semantic tools acquire, use, and release their
+temporary leases in one operation. Tools that deliberately return an artifact retain that lease until
+the caller reads and releases the artifact.
+
+CDB owns lifecycle activation for leased CDP domains. Callers request the commands and events they
+need, not `*.enable` or `*.disable`; the broker activates a managed domain before first use and
+reference-counts it across leases.
+
+Artifact externalization happens after the raw debugger result reaches the broker. Hosts that enable
+large DOM snapshots, screenshots, or response bodies must configure the authenticated WebSocket
+message bound above the generic 16 KiB default; transport overflow closes the provider connection
+rather than representing lease or grant expiry.
+
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the protocol and failure model. See
 [AGENTS.md](./AGENTS.md) before changing an invariant.
 
