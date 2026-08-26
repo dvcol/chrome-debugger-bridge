@@ -1,11 +1,14 @@
 export interface PublicChildSession {
   readonly generation: number;
   readonly id: string;
+  readonly type: string;
 }
 
 export interface ChildSessionRouter {
-  attach: (chromeSessionId: string) => PublicChildSession;
+  attach: (chromeSessionId: string, type?: string) => PublicChildSession;
   detach: (chromeSessionId: string) => PublicChildSession | undefined;
+  list: () => readonly PublicChildSession[];
+  publicSessionForChromeId: (chromeSessionId: string) => PublicChildSession | undefined;
   resolve: (publicSessionId: string) => string | undefined;
   revoke: () => readonly PublicChildSession[];
 }
@@ -17,10 +20,10 @@ export function createChildSessionRouter(): ChildSessionRouter {
   let generation = 0;
 
   return {
-    attach(chromeSessionId) {
+    attach(chromeSessionId, type = 'unknown') {
       const existing = publicSessionByChromeId.get(chromeSessionId);
       if (existing !== undefined) return existing;
-      const session = { generation: ++generation, id: globalThis.crypto.randomUUID() };
+      const session = { generation: ++generation, id: globalThis.crypto.randomUUID(), type };
       chromeSessionIdByPublicId.set(session.id, chromeSessionId);
       publicSessionByChromeId.set(chromeSessionId, session);
       return session;
@@ -31,6 +34,12 @@ export function createChildSessionRouter(): ChildSessionRouter {
       publicSessionByChromeId.delete(chromeSessionId);
       chromeSessionIdByPublicId.delete(session.id);
       return session;
+    },
+    list() {
+      return [...publicSessionByChromeId.values()];
+    },
+    publicSessionForChromeId(chromeSessionId) {
+      return publicSessionByChromeId.get(chromeSessionId);
     },
     resolve(publicSessionId) {
       return chromeSessionIdByPublicId.get(publicSessionId);

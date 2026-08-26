@@ -1,11 +1,13 @@
 import type { CapabilityGrant, CdpCommand, JsonObject, Lease, PublishedTarget } from '@dvcol/cdb/protocol';
 
 import type { PublicChildSession } from './child-session-router.js';
+import type { AgentControlPresentationEvent } from './presentation.js';
 import type { TabScopeSelector } from './tab-scope.js';
 
 import { isCdpNameAllowed, requiredLeaseMode } from '@dvcol/cdb/cdp-catalogue';
 
 import { createChildSessionRouter } from './child-session-router.js';
+import { translateAgentControlInputCommand } from './presentation.js';
 import { matchesTabScope } from './tab-scope.js';
 
 export interface ChromeDebuggerPort {
@@ -46,6 +48,8 @@ export interface SelectedTabPublisherOptions {
   readonly commandAuthorizationPolicy?: CommandAuthorizationPolicy;
   readonly isExposureAllowed?: (tab: Omit<SelectedTab, 'tabId'>) => boolean;
   readonly metadataPolicy?: (tab: Omit<SelectedTab, 'tabId'>) => Pick<PublishedTarget, 'title' | 'url'>;
+  /** Receives sanitized pointer events only after Chrome accepts their debugger command. */
+  readonly publishPresentationEvent?: (event: AgentControlPresentationEvent) => void;
   readonly publishTarget: (target: PublishedTarget) => Promise<void> | void;
   readonly publishEvent?: (target: Pick<PublishedTarget, 'generation' | 'id'>, method: string, parameters: JsonObject, sessionId?: string) => void;
   readonly registerTargetExecutor?: (target: PublishedTarget, executor: {
@@ -157,7 +161,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
 
   function handleAttachedChild(parameters: JsonObject): PublicChildSession | undefined {
     if (!isEligibleChildAttachment(parameters)) return undefined;
-    const childSession = childSessionRouter.attach(parameters.sessionId);
+    const childSession = childSessionRouter.attach(parameters.sessionId, parameters.targetInfo.type);
     void (async () => {
       await configureFlatSessions(parameters.sessionId);
       await enableActiveRootDomains(parameters.sessionId);
@@ -234,7 +238,12 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       throw new Error('The requested command is not permitted.');
     }
     const chromeSessionId = command.sessionId === undefined ? undefined : childSessionRouter.resolve(command.sessionId);
-    if (command.sessionId !== undefined && chromeSessionId === undefined) throw new Error('The requested command is not permitted.');
+    if (command.sessionId !== undefined && chromeSessionId === undefined) {
+      throw Object.assign(new Error('The requested child session is not available.'), {
+        code: 'SESSION_NOT_FOUND',
+        retryable: true,
+      });
+    }
     const authorizationContext: CommandAuthorizationContext = {
       capabilities: publishedTarget.capabilities,
       method: command.method,
@@ -245,11 +254,16 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     if (!isBaselineCommandAuthorized(authorizationContext) || !isPolicyAuthorized) {
       throw new Error('The requested command is not permitted.');
     }
+    if (command.method === 'Bridge.listChildSessions') {
+      return { sessions: childSessionRouter.list().map(session => ({ ...session })) };
+    }
     try {
       const value = await options.chromeDebugger.sendCommand({ tabId: selectedTabId, ...(chromeSessionId === undefined ? {} : { sessionId: chromeSessionId }) }, command.method, command.parameters);
       if (abortSignal.aborted) {
         throw new Error('The requested command was cancelled.');
       }
+      for (const event of translateAgentControlInputCommand(command))
+        options.publishPresentationEvent?.(event);
       return value;
     } catch (error) {
       throw new Error(error instanceof Error ? `The debugger command failed: ${error.message}` : 'The debugger command failed.');
@@ -350,9 +364,10 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       }
       if (source.sessionId === undefined && method === 'Page.frameNavigated') {
         invalidateChildrenOnRootNavigation(method, parameters);
-        return;
       }
-      const publicSession = source.sessionId === undefined ? undefined : childSessionRouter.resolve(source.sessionId);
+      const publicSession = source.sessionId === undefined
+        ? undefined
+        : childSessionRouter.publicSessionForChromeId(source.sessionId)?.id;
       if (source.sessionId !== undefined && publicSession === undefined) return;
       if (isEventDemanded(method, publicSession)) publishEvent(method, parameters, publicSession);
     },

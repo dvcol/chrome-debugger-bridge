@@ -3,15 +3,18 @@ import { expect, it } from 'vitest';
 import { createChildSessionRouter } from '../src/child-session-router.js';
 
 it('maps private Chrome sessions to opaque lifecycle-bound public identities', () => {
-  expect.assertions(6);
+  expect.assertions(9);
   const router = createChildSessionRouter();
-  const first = router.attach('chrome-session-a');
-  const second = router.attach('chrome-session-b');
+  const first = router.attach('chrome-session-a', 'iframe');
+  const second = router.attach('chrome-session-b', 'worker');
 
   expect(first.id).toMatch(/^[0-9a-f-]{36}$/u);
   expect(first.generation).toBe(1);
   expect(router.attach('chrome-session-a')).toEqual(first);
   expect(router.resolve(first.id)).toBe('chrome-session-a');
+  expect(router.publicSessionForChromeId('chrome-session-a')).toEqual(first);
+  expect(router.list()).toEqual([first, second]);
   expect(router.detach('chrome-session-a')).toEqual(first);
   expect(router.revoke()).toEqual([second]);
+  expect(router.list()).toEqual([]);
 });
