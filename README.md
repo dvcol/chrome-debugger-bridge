@@ -42,12 +42,19 @@ tab crosses HTTP(S) origins. CDB only fences generations and applies the per-pri
 receives.
 
 Agents do not need to infer page structure from screenshots. `browser.snapshot` captures a
-structural DOM snapshot and returns a bounded text tree with backend node IDs. It consumes any broker
-artifact internally and omits inline `script`, `style`, and `noscript` bodies from this default
-agent-readable view. Hosts can expose the generated raw CDP command catalogue when an authorized
-agent needs the lossless DOMSnapshot response or deeper DOM, Runtime, Network, Debugger, and other
-protocol operations. CDB does not expose the extension-owned `chrome.debugger.attach`, `detach`, or
-target-selection lifecycle to agents.
+structural DOM snapshot and returns a bounded text tree with backend node IDs and opaque child-session
+references. Semantic tools resolve those references immediately before click, hover, focus, or text
+entry. Coordinate pointer tools cover move, multi-button click, wheel scrolling, and drag. Navigation
+tools cover URL navigation, history, reload, bounded load milestones, and JavaScript dialogs. It
+consumes any broker artifact internally and omits inline `script`, `style`, and `noscript` bodies from
+this default agent-readable view. Hosts can expose the generated raw CDP command catalogue when an
+authorized agent needs the lossless response or another protocol operation.
+
+Extension hosts can opt into `@dvcol/cdb-extension/presentation`. It renders an isolated pointer and
+temporary control favicon from sanitized successful input events. The host still owns installation,
+current grant state, navigation reinjection, approval UI, and Chrome policy. See the
+[browser-control parity matrix](./docs/browser-control-parity.md) for supported and intentionally
+excluded behavior.
 
 Grants and leases have different lifetimes. A grant is durable authority owned by the embedding
 broker; a lease is short-lived command coordination. Semantic tools acquire, use, and release their
@@ -72,7 +79,7 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the protocol and failure model. See
 | ---------------------- | ---------------------------------------------------------------------------------------- |
 | `@dvcol/cdb`           | Broker, client facade, protocol types, target authorization, leases, and command routing |
 | `@dvcol/cdb-birpc`     | RPC transport adapter                                                                    |
-| `@dvcol/cdb-extension` | Browser-extension helpers for publication, heartbeat, and recovery                       |
+| `@dvcol/cdb-extension` | Browser-extension helpers for publication, recovery, and opt-in control presentation |
 | `@dvcol/cdb-mcp`       | Transport-neutral MCP tool definitions over a CDB client                                 |
 | `@dvcol/cdb-websocket` | Authenticated browser and Node WebSocket transports                                      |
 

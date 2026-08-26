@@ -37,7 +37,10 @@ revokes the live authority owned by that principal.
 
 `@dvcol/cdb-extension` provides publication and recovery mechanics that remain useful to a browser
 extension but do not import Chrome APIs. QA Helper supplies the Chrome adapter and the user approval
-policy.
+policy. The separate `presentation` entry is an opt-in content-script helper. It translates
+successful CDP pointer commands into sanitized visual events and renders an isolated pointer plus a
+temporary favicon. The host owns installation, messaging, current grant state, and navigation
+reinjection.
 
 ### MCP definitions
 
@@ -48,10 +51,14 @@ existing MCP aggregation surface, preserving the DevKit RPC session as the agent
 The semantic catalogue includes structural DOM inspection through `browser.snapshot`, which uses
 `DOMSnapshot.captureSnapshot`; it is not a screenshot fallback. The tool consumes an externalized
 snapshot internally, releases its artifact and temporary lease, and returns a bounded text tree with
-backend node IDs. Inline `script`, `style`, and `noscript` bodies are omitted from that default view;
-the raw catalogue remains the explicit lossless path. Other large command results are returned as
-artifacts. Their temporary lease stays live until the caller reads and releases the artifact, and
-artifact reads count as lease activity in the embedding broker.
+backend node IDs. Out-of-process frame sections carry opaque public child-session IDs. Node actions
+resolve, scroll, measure, and hit-test those references immediately before input, so a prior
+coordinate is never reused after layout changes. The semantic catalogue also owns pointer actions,
+bounded navigation and history waits, and JavaScript dialog handling. Inline `script`, `style`, and
+`noscript` bodies are omitted from the default snapshot; the raw catalogue remains the explicit
+lossless path. Other large command results are returned as artifacts. Their temporary lease stays
+live until the caller reads and releases the artifact, and artifact reads count as lease activity in
+the embedding broker.
 
 The broker owns lifecycle activation for catalogue domains with an `enable` command. A lease declares
 the command and event methods it needs; on first use CDB acquires the corresponding domain demand from
@@ -161,8 +168,9 @@ Starting a new DevKit daemon therefore starts with no live authority.
 
 Browser-control failures carry a stable code, a human-readable message, and, when useful, a
 `retryAfterMilliseconds` hint. Important cases include denied or expired requests, insufficient
-grant level, missing or stale targets, provider recovery, and lease conflict. Agents should branch on
-the code, not parse the message.
+grant level, missing or stale targets, provider recovery, lease conflict, stale DOM references,
+obscured nodes, navigation timeouts, and child-session replacement. Agents should branch on the code,
+not parse the message.
 
 ## Security invariants
 
