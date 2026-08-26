@@ -1325,6 +1325,7 @@ export async function createNodeChromeDebuggerBridgeClient(options: CreateNodeCh
   let reconnecting: Promise<void> | undefined;
   let removeListener = (): void => {};
   let nextTargetSequence = 0;
+  let receivedTargetSnapshot = false;
   let resolveClosed: (close: { readonly code: number; readonly reason: string }) => void;
   const closed = new Promise<{ readonly code: number; readonly reason: string }>(resolve => resolveClosed = resolve);
   let closedResolved = false;
@@ -1358,6 +1359,7 @@ export async function createNodeChromeDebuggerBridgeClient(options: CreateNodeCh
       return;
     }
     if (message.method === 'targets.snapshot') {
+      receivedTargetSnapshot = true;
       nextTargetSequence = message.parameters.sequence;
       targetChanges.offer({ kind: 'snapshot', sequence: nextTargetSequence, targets: message.parameters.targets });
     } else if (message.method === 'targets.published') targetChanges.offer({ kind: 'published', sequence: ++nextTargetSequence, target: message.parameters.target });
@@ -1403,6 +1405,12 @@ export async function createNodeChromeDebuggerBridgeClient(options: CreateNodeCh
       });
     });
   }
+  const ensureTargetSnapshot = async (allowDuringReconnect = false): Promise<void> => {
+    const response = await request({ kind: 'request', method: 'targets.list', parameters: {}, protocolVersion: 1, requestId: randomUUID() }, allowDuringReconnect);
+    if (response.method !== 'targets.list') throw new Error('Received an unexpected target response.');
+    if (!receivedTargetSnapshot)
+      targetChanges.offer({ kind: 'snapshot', sequence: nextTargetSequence, targets: response.result.targets });
+  };
   const restoreSubscriptions = async (): Promise<void> => {
     for (const subscription of subscriptionStates) {
       if (subscription.closed) continue;
@@ -1432,7 +1440,9 @@ export async function createNodeChromeDebuggerBridgeClient(options: CreateNodeCh
             nextConnection.close();
             return;
           }
+          receivedTargetSnapshot = false;
           attachConnection(nextConnection);
+          await ensureTargetSnapshot(true);
           await restoreSubscriptions();
           return;
         } catch {
@@ -1504,6 +1514,7 @@ export async function createNodeChromeDebuggerBridgeClient(options: CreateNodeCh
       return targetChanges;
     },
   }));
+  await ensureTargetSnapshot();
   const close = (code?: number, reason?: string): void => {
     if (manuallyClosed) return;
     manuallyClosed = true;

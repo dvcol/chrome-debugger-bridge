@@ -159,6 +159,8 @@ export class TargetBrokerError extends Error {
       | 'LEASE_EXPIRED'
       | 'LEASE_REQUIRED'
       | 'REQUEST_CANCELLED'
+      | 'SESSION_GENERATION_STALE'
+      | 'SESSION_NOT_FOUND'
       | 'TARGET_GENERATION_STALE'
       | 'TARGET_NOT_FOUND'
     >,
@@ -186,8 +188,32 @@ export class TargetBrokerError extends Error {
   }
 
   get retryable(): boolean {
-    return this.options.retryable ?? this.code === 'LEASE_CONFLICT';
+    return this.options.retryable
+      ?? (this.code === 'LEASE_CONFLICT' || this.code === 'SESSION_NOT_FOUND');
   }
+}
+
+function targetExecutorError(error: unknown): TargetBrokerError | undefined {
+  if (error === null || typeof error !== 'object') return undefined;
+  const record = error as Readonly<Record<PropertyKey, unknown>>;
+  const code = record.code;
+  if (
+    code !== 'CDP_COMMAND_FAILED'
+    && code !== 'REQUEST_CANCELLED'
+    && code !== 'SESSION_GENERATION_STALE'
+    && code !== 'SESSION_NOT_FOUND'
+  ) return undefined;
+  const retryable = record.retryable;
+  const retryAfterMs = record.retryAfterMs;
+  const details = record.details;
+  return new TargetBrokerError(code, {
+    ...(details !== null && typeof details === 'object' && !Array.isArray(details)
+      ? { details: details as JsonObject }
+      : {}),
+    ...(error instanceof Error ? { message: error.message } : {}),
+    ...(typeof retryAfterMs === 'number' ? { retryAfterMs } : {}),
+    ...(typeof retryable === 'boolean' ? { retryable } : {}),
+  });
 }
 
 export interface CreateTargetBrokerOptions {
@@ -910,6 +936,11 @@ export function createTargetBroker(
       } catch (error) {
         if (error instanceof TargetBrokerError) {
           throw error;
+        }
+        const executorError = targetExecutorError(error);
+        if (executorError !== undefined) {
+          recordDiagnostic(executorError.code);
+          throw executorError;
         }
         if (abortController.signal.aborted) {
           recordDiagnostic('REQUEST_CANCELLED');

@@ -141,7 +141,15 @@ export function createEmbeddedChromeDebuggerBridge(options: CreateEmbeddedChrome
     releaseArtifact: async (request: ArtifactAccessRequest) => invoke(() => broker.releaseArtifact(copy(request))),
     releaseLease: async (request: ReleaseLeaseRequest) => invoke(() => broker.releaseLease(copy(request))),
     renewLease: async (request: RenewLeaseRequest) => invoke(() => broker.renewLease(copy(request))),
-    subscribe: async (request: CdpSubscriptionRequest) => wrapSubscription(await invoke(async () => broker.subscribe(copy(request)))),
+    subscribe: async (request: CdpSubscriptionRequest) => {
+      ensureActive();
+      const subscription = await broker.subscribe(copy(request));
+      if (disposed) {
+        subscription.close();
+        throw new Error('The embedded bridge is disposed.');
+      }
+      return wrapSubscription(subscription);
+    },
     watchTargets: () => wrapIterator(broker.watchTargets()[Symbol.asyncIterator]()),
   };
   const client = {

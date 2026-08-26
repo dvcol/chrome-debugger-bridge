@@ -7,6 +7,7 @@ const capabilityLevelIndex = new Map(cdpCapabilityLevels.map((level, index) => [
 const catalogue: Readonly<Record<string, CdpCatalogueEntry>> = cdpCapabilityCatalogue;
 const bridgeCatalogue: Readonly<Record<string, CdpCatalogueEntry>> = {
   'Bridge.childSessionAttached': { kind: 'event', level: 'observe' },
+  'Bridge.listChildSessions': { kind: 'command', level: 'inspect' },
 };
 const kernelOwnedNames = new Set<string>(cdpKernelOwnedNames);
 

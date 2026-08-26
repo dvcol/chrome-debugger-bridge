@@ -86,3 +86,34 @@ it('cleans pending operations and async iterators when the host disposes the emb
   expect(pendingExecutor).toHaveBeenCalledTimes(1);
   await expect(bridge.client.listTargets()).rejects.toThrow('disposed');
 });
+
+it('keeps live subscription methods local while cloning delivered events', async () => {
+  expect.assertions(3);
+  const bridge = createEmbeddedChromeDebuggerBridge();
+  bridge.broker.publishTarget(target);
+  const lease = await bridge.client.acquireLease({
+    durationMilliseconds: 1_000,
+    mode: 'shared-read',
+    requestedMethods: ['Runtime.consoleAPICalled'],
+    targetGeneration: target.generation,
+    targetId: target.id,
+  });
+  const subscription = await bridge.client.subscribe({
+    buffer: { capacity: 1, overflowStrategy: 'drop-oldest' },
+    leaseId: lease.id,
+    match: { method: 'Runtime.consoleAPICalled' },
+    targetGeneration: target.generation,
+    targetId: target.id,
+  });
+  const nextEvent = subscription[Symbol.asyncIterator]().next();
+
+  bridge.broker.publishEvent(target, 'Runtime.consoleAPICalled', { type: 'log' });
+
+  const event = await nextEvent;
+  expect(typeof subscription.close).toBe('function');
+  expect(event.done).toBe(false);
+  expect(event.value).toMatchObject({ method: 'Runtime.consoleAPICalled', parameters: { type: 'log' } });
+  subscription.close();
+  await bridge.client.releaseLease({ leaseId: lease.id, targetGeneration: target.generation, targetId: target.id });
+  bridge.dispose();
+});

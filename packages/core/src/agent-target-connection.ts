@@ -169,7 +169,10 @@ export function connectAgentTargetBroker(
       return;
     }
     if (message.kind === 'error' && message.method === 'cdp.execute') {
-      pendingCommands.get(message.requestId)?.reject(new Error(message.error.message));
+      pendingCommands.get(message.requestId)?.reject(Object.assign(
+        new Error(message.error.message),
+        message.error,
+      ));
       return;
     }
     if (message.kind !== 'notification') return;

@@ -1453,6 +1453,41 @@ it('cancels a pending command and disposes its eventual response', async () => {
   expect(broker.listTargets()).toEqual([target]);
 });
 
+it('preserves a structured child-session error from the target executor', async () => {
+  expect.assertions(1);
+  const broker = createTargetBroker();
+  broker.publishTarget(target);
+  broker.registerTargetExecutor(target, {
+    async execute() {
+      throw Object.assign(new Error('The child session was replaced.'), {
+        code: 'SESSION_NOT_FOUND',
+        details: { sessionId: '80000000-0000-4000-8000-000000000001' },
+        retryable: true,
+      });
+    },
+  });
+  const lease = broker.acquireLease({
+    durationMilliseconds: 1_000,
+    mode: 'exclusive-control',
+    requestedMethods: ['Runtime.evaluate'],
+    targetGeneration: target.generation,
+    targetId: target.id,
+  });
+
+  await expect(broker.executeCommand({
+    leaseId: lease.id,
+    method: 'Runtime.evaluate',
+    operationId: '30000000-0000-4000-8000-000000000014',
+    sessionId: '80000000-0000-4000-8000-000000000001',
+    targetGeneration: target.generation,
+    targetId: target.id,
+  })).rejects.toMatchObject({
+    code: 'SESSION_NOT_FOUND',
+    details: { sessionId: '80000000-0000-4000-8000-000000000001' },
+    retryable: true,
+  });
+});
+
 it('delivers bounded matching events with opaque sequence numbers and closes on revocation', async () => {
   expect.assertions(5);
   const broker = createTargetBroker();
