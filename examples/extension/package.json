@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "smoke": "node --input-type=module --eval \"await import('@dvcol/cdb-extension')\""
+    "smoke": "node --input-type=module --eval \"await Promise.all([import('@dvcol/cdb-extension'), import('@dvcol/cdb-extension/presentation')])\""
   },
   "dependencies": {
     "@dvcol/cdb-extension": "workspace:*",

@@ -10,6 +10,7 @@ export default defineConfig({
   entry: [
     'src/index.ts',
     'src/bootstrap.ts',
+    'src/presentation.ts',
     'src/testing.ts',
   ],
   format: 'esm',

@@ -181,6 +181,12 @@
       "subpath": "./bootstrap"
     },
     {
+      "example": "extension",
+      "exportName": "createAgentControlPresenter",
+      "packageName": "@dvcol/cdb-extension",
+      "subpath": "./presentation"
+    },
+    {
       "example": "browser-client",
       "exportName": "connectAgentWebSocket",
       "packageName": "@dvcol/cdb-websocket",

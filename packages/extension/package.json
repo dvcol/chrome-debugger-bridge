@@ -19,6 +19,10 @@
       "types": "./dist/bootstrap.d.ts",
       "import": "./dist/bootstrap.js"
     },
+    "./presentation": {
+      "types": "./dist/presentation.d.ts",
+      "import": "./dist/presentation.js"
+    },
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
