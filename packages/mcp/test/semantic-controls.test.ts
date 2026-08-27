@@ -290,6 +290,96 @@ it('continues a load wait on renewed authority and returns the new generation', 
   expect(releasedRequests).toHaveLength(2);
 });
 
+it('ignores a stale same-document milestone while a full root navigation renews authority', async () => {
+  expect.assertions(3);
+  const renewedTarget = { ...target, generation: 2 };
+  let authorityRenewed = false;
+  const client = {
+    async acquireLease(request: { readonly requestedMethods: readonly string[]; readonly targetGeneration: number }) {
+      return { ...lease(request.requestedMethods), targetGeneration: request.targetGeneration };
+    },
+    async cancelCommand() {},
+    async executeCommand(command: CdpCommand) {
+      return { operationId: command.operationId, value: { frameId: 'frame-1', loaderId: 'loader-2' } };
+    },
+    async listTargets() {
+      return [authorityRenewed ? renewedTarget : target];
+    },
+    async releaseLease() {},
+    async subscribe(request: { readonly match: { readonly method: string }; readonly targetGeneration: number }) {
+      let resolvePendingEvent: ((result: IteratorResult<never>) => void) | undefined;
+      return {
+        close() {
+          resolvePendingEvent?.({ done: true, value: undefined });
+        },
+        droppedCount: 0,
+        id: crypto.randomUUID(),
+        lastDeliveredSequence: 0,
+        overflowed: false,
+        targetGeneration: request.targetGeneration,
+        targetId: target.id,
+        [Symbol.asyncIterator]() {
+          return {
+            next: async () => request.targetGeneration === 1
+              && request.match.method === 'Page.navigatedWithinDocument'
+              ? {
+                  done: false as const,
+                  value: {
+                    method: request.match.method,
+                    parameters: { frameId: 'frame-1', url: 'https://example.test/previous-route' },
+                    sequence: 1,
+                    subscriptionId: crypto.randomUUID(),
+                    targetGeneration: 1,
+                    targetId: target.id,
+                  },
+                }
+              : request.targetGeneration === 2 && request.match.method === 'Page.loadEventFired'
+                ? {
+                    done: false as const,
+                    value: {
+                      method: request.match.method,
+                      parameters: { timestamp: 2 },
+                      sequence: 1,
+                      subscriptionId: crypto.randomUUID(),
+                      targetGeneration: 2,
+                      targetId: target.id,
+                    },
+                  }
+                : new Promise<IteratorResult<never>>((resolve) => {
+                    resolvePendingEvent = resolve;
+                  }),
+          };
+        },
+      };
+    },
+    watchTargets() {
+      return {
+        async* [Symbol.asyncIterator]() {
+          await new Promise(resolve => setTimeout(resolve, 5));
+          authorityRenewed = true;
+          yield { kind: 'updated' as const, sequence: 2, target: renewedTarget };
+        },
+      };
+    },
+  } as unknown as McpChromeDebuggerBridgeClient;
+  const navigate = createCdbToolDefinitions({ client }).find(tool => tool.name === 'browser.navigate');
+  if (navigate === undefined) throw new Error('browser.navigate is missing');
+
+  const result = await navigate.invoke({
+    targetGeneration: target.generation,
+    targetId: target.id,
+    url: 'https://next.example.test/',
+  });
+  const payload = JSON.parse((result.content[0] as { readonly text: string }).text) as {
+    readonly milestone: { readonly targetGeneration: number };
+    readonly target: { readonly generation: number };
+  };
+
+  expect(result.isError).toBeUndefined();
+  expect(payload.target.generation).toBe(2);
+  expect(payload.milestone.targetGeneration).toBe(2);
+});
+
 it('fails a root full-navigation result when renewed authority is not published', async () => {
   expect.assertions(2);
   const client = {

@@ -1242,6 +1242,23 @@ async function executeLifecycleAction(
           if (errorText !== undefined && errorText.length > 0)
             throw new McpToolError('MCP_NAVIGATION_FAILED', errorText);
           const remainingMilliseconds = Math.max(1, deadline - Date.now());
+          const waitAfterAuthorityRenewal = async (target: PublishedTarget): Promise<CdpEvent | 'authority-renewed'> => {
+            if (input.waitUntil === 'commit') return 'authority-renewed';
+            return waitForEvent(client, {
+              method: input.waitUntil === 'load'
+                ? 'Page.loadEventFired'
+                : 'Page.domContentEventFired',
+              ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+              targetGeneration: target.generation,
+              targetId: input.targetId,
+              timeoutMilliseconds: Math.max(1, deadline - Date.now()),
+            }, signal);
+          };
+          const loaderId = stringValue(property(navigationValue, 'loaderId'));
+          if (input.sessionId === undefined && loaderId !== undefined) {
+            const target = await renewedTarget;
+            return { command: commandResult, milestone: await waitAfterAuthorityRenewal(target) };
+          }
           const milestoneWait = waitForSubscriptions(
             milestoneSubscriptions,
             dialogSubscription,
@@ -1256,18 +1273,10 @@ async function executeLifecycleAction(
             renewedTarget.then(target => ({ renewedTarget: target })),
           ]);
           if ('renewedTarget' in milestone) {
-            if (input.waitUntil === 'commit')
-              return { command: commandResult, milestone: 'authority-renewed' };
-            const event = await waitForEvent(client, {
-              method: input.waitUntil === 'load'
-                ? 'Page.loadEventFired'
-                : 'Page.domContentEventFired',
-              ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
-              targetGeneration: milestone.renewedTarget.generation,
-              targetId: input.targetId,
-              timeoutMilliseconds: Math.max(1, deadline - Date.now()),
-            }, signal);
-            return { command: commandResult, milestone: event };
+            return {
+              command: commandResult,
+              milestone: await waitAfterAuthorityRenewal(milestone.renewedTarget),
+            };
           }
           return { command: commandResult, milestone };
         } finally {
