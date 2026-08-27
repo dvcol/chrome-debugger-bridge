@@ -161,7 +161,11 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
 
   function handleAttachedChild(parameters: JsonObject): PublicChildSession | undefined {
     if (!isEligibleChildAttachment(parameters)) return undefined;
-    const childSession = childSessionRouter.attach(parameters.sessionId, parameters.targetInfo.type);
+    const childSession = childSessionRouter.attach(parameters.sessionId, {
+      ...(typeof parameters.targetInfo.targetId === 'string' ? { frameId: parameters.targetInfo.targetId } : {}),
+      type: parameters.targetInfo.type,
+      ...(typeof parameters.targetInfo.url === 'string' ? { url: parameters.targetInfo.url } : {}),
+    });
     void (async () => {
       await configureFlatSessions(parameters.sessionId);
       await enableActiveRootDomains(parameters.sessionId);

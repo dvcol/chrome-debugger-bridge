@@ -29,13 +29,16 @@ import { z } from 'zod/v4';
 export const supportedMcpProtocolVersions = ['2026-07-28'] as const;
 export const supportedMcpSdkVersion = '2.0.0';
 const cdpMethodPattern = /^[A-Za-z]+\.[A-Za-z]+$/u;
+const elementReferencePattern = /^e[1-9]\d*$/u;
 const maximumArtifactReadBytes = 49_152;
 const maximumReadableSnapshotBytes = 16_777_216;
 const maximumSnapshotCharacters = 120_000;
+const maximumInteractiveSnapshotCharacters = 60_000;
 const maximumInputActionDurationMilliseconds = 10_000;
 const maximumInputActionSteps = 120;
 const omittedTextElementNames = new Set(['noscript', 'script', 'style']);
 const whitespacePattern = /\s+/gu;
+const targetReferencePattern = /^t[1-9]\d*$/u;
 
 const inputModifierValues = {
   alt: 1,
@@ -129,6 +132,12 @@ function arrayValue(value: unknown): readonly unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+function objectValue(value: unknown): Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : {};
+}
+
 function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value)
     ? value
@@ -162,10 +171,21 @@ function toolError(error: unknown): CallToolResult {
   };
 }
 
-const targetInput = {
-  targetGeneration: z.number().int().nonnegative(),
-  targetId: z.string().uuid(),
-};
+function semanticEvent(event: unknown): JsonObject {
+  return {
+    method: stringValue(property(event, 'method')) ?? 'unknown',
+    parameters: objectValue(property(event, 'parameters')) as JsonObject,
+  };
+}
+
+function semanticLifecycleResult(value: unknown, targetRef: string): JsonObject {
+  const milestone = property(value, 'milestone');
+  return {
+    command: commandResultValue(property(value, 'command')) as JsonObject,
+    milestone: milestone === 'authority-renewed' ? milestone : semanticEvent(milestone),
+    target: { targetRef },
+  };
+}
 
 async function withLease<Value>(
   client: McpChromeDebuggerBridgeClient,
@@ -328,9 +348,11 @@ async function executeArtifactCommand(
 }
 
 interface ChildSessionReference {
+  readonly frameId?: string;
   readonly generation: number;
   readonly id: string;
   readonly type: string;
+  readonly url?: string;
 }
 
 function childSessionReferences(value: unknown): ChildSessionReference[] {
@@ -340,9 +362,17 @@ function childSessionReferences(value: unknown): ChildSessionReference[] {
     const generation = numberValue(property(session, 'generation'));
     const id = stringValue(property(session, 'id'));
     const type = stringValue(property(session, 'type'));
+    const frameId = stringValue(property(session, 'frameId'));
+    const url = stringValue(property(session, 'url'));
     return generation === undefined || id === undefined || type === undefined
       ? []
-      : [{ generation, id, type }];
+      : [{
+          ...(frameId === undefined ? {} : { frameId }),
+          generation,
+          id,
+          type,
+          ...(url === undefined ? {} : { url }),
+        }];
   });
 }
 
@@ -748,86 +778,8 @@ async function executeInputAction(
   );
 }
 
-type NodeAction = 'click' | 'focus' | 'hover' | 'type';
-
-interface NodeActionInput {
-  readonly backendNodeId: number;
-  readonly button?: keyof typeof pointerButtonValues;
-  readonly clickCount?: number;
-  readonly modifiers?: readonly InputModifier[];
-  readonly sessionId?: string | undefined;
-  readonly targetGeneration: number;
-  readonly targetId: string;
-  readonly text?: string;
-}
-
-interface NodeProbe {
-  readonly connected: boolean;
-  readonly disabled: boolean;
-  readonly editable: boolean;
-  readonly viewportHeight: number;
-  readonly viewportWidth: number;
-  readonly visible: boolean;
-}
-
-const nodeProbeFunction = `function () {
-  const style = globalThis.getComputedStyle(this);
-  const inputTypes = new Set(['date', 'datetime-local', 'email', 'month', 'number', 'password', 'search', 'tel', 'text', 'time', 'url', 'week']);
-  const editable = this.isContentEditable
-    || this instanceof HTMLTextAreaElement
-    || (this instanceof HTMLInputElement && inputTypes.has(this.type));
-  return {
-    connected: this.isConnected,
-    disabled: Boolean(this.disabled) || this.getAttribute('aria-disabled') === 'true',
-    editable: editable && !this.readOnly,
-    viewportHeight: globalThis.innerHeight,
-    viewportWidth: globalThis.innerWidth,
-    visible: style.display !== 'none'
-      && style.visibility !== 'hidden'
-      && style.visibility !== 'collapse'
-      && Number.parseFloat(style.opacity || '1') > 0
-      && this.getClientRects().length > 0,
-  };
-}`;
-
 function commandResultValue(value: unknown): unknown {
   return property(value, 'value') ?? value;
-}
-
-function runtimeResultValue(value: unknown): unknown {
-  const commandValue = commandResultValue(value);
-  return property(property(commandValue, 'result'), 'value');
-}
-
-function parseNodeProbe(value: unknown): NodeProbe | undefined {
-  const probe = runtimeResultValue(value);
-  const connected = property(probe, 'connected');
-  const disabled = property(probe, 'disabled');
-  const editable = property(probe, 'editable');
-  const viewportHeight = property(probe, 'viewportHeight');
-  const viewportWidth = property(probe, 'viewportWidth');
-  const visible = property(probe, 'visible');
-  if (
-    typeof connected !== 'boolean'
-    || typeof disabled !== 'boolean'
-    || typeof editable !== 'boolean'
-    || typeof viewportHeight !== 'number'
-    || typeof viewportWidth !== 'number'
-    || typeof visible !== 'boolean'
-  ) return undefined;
-  return {
-    connected,
-    disabled,
-    editable,
-    viewportHeight,
-    viewportWidth,
-    visible,
-  };
-}
-
-function remoteObjectId(value: unknown): string | undefined {
-  const commandValue = commandResultValue(value);
-  return stringValue(property(property(commandValue, 'object'), 'objectId'));
 }
 
 function contentQuadPoint(
@@ -869,192 +821,6 @@ function contentQuadPoint(
   candidates.sort((first, second) => second.area - first.area);
   const selected = candidates[0];
   return selected === undefined ? undefined : { x: selected.x, y: selected.y };
-}
-
-function nodeActionError(
-  code: string,
-  message: string,
-  input: NodeActionInput,
-): McpToolError {
-  return new McpToolError(code, message, {
-    backendNodeId: input.backendNodeId,
-    ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
-  }, code === 'MCP_NODE_STALE');
-}
-
-async function executeNodeAction(
-  client: McpChromeDebuggerBridgeClient,
-  input: NodeActionInput,
-  action: NodeAction,
-  signal: AbortSignal,
-): Promise<unknown> {
-  const methods = [
-    'DOM.describeNode',
-    'DOM.getContentQuads',
-    'DOM.getNodeForLocation',
-    'DOM.resolveNode',
-    'DOM.scrollIntoViewIfNeeded',
-    'Runtime.callFunctionOn',
-    'Runtime.releaseObjectGroup',
-    ...(action === 'click' || action === 'hover' ? ['Input.dispatchMouseEvent'] : []),
-    ...(action === 'focus' || action === 'type' ? ['DOM.focus'] : []),
-    ...(action === 'type' ? ['Input.insertText'] : []),
-  ];
-  const objectGroup = `cdb-node-${randomUUID()}`;
-  return executeInputAction(client, input, methods, signal, async (execute, executeCleanup) => {
-    const results: unknown[] = [];
-    try {
-      try {
-        results.push(await execute('DOM.describeNode', {
-          backendNodeId: input.backendNodeId,
-          depth: 0,
-          pierce: true,
-        }));
-      } catch {
-        throw nodeActionError('MCP_NODE_STALE', 'The snapshot node is detached or stale.', input);
-      }
-      let resolvedNode: unknown;
-      try {
-        resolvedNode = await execute('DOM.resolveNode', {
-          backendNodeId: input.backendNodeId,
-          objectGroup,
-        });
-      } catch {
-        throw nodeActionError('MCP_NODE_STALE', 'The snapshot node is detached or stale.', input);
-      }
-      results.push(resolvedNode);
-      const objectId = remoteObjectId(resolvedNode);
-      if (objectId === undefined)
-        throw nodeActionError('MCP_NODE_STALE', 'The snapshot node cannot be resolved.', input);
-      let probeResult: unknown;
-      try {
-        probeResult = await execute('Runtime.callFunctionOn', {
-          functionDeclaration: nodeProbeFunction,
-          objectId,
-          returnByValue: true,
-        });
-      } catch {
-        throw nodeActionError('MCP_NODE_STALE', 'The snapshot node is detached or stale.', input);
-      }
-      results.push(probeResult);
-      const probe = parseNodeProbe(probeResult);
-      if (probe === undefined || !probe.connected)
-        throw nodeActionError('MCP_NODE_STALE', 'The snapshot node is detached or stale.', input);
-      if (!probe.visible)
-        throw nodeActionError('MCP_NODE_NOT_VISIBLE', 'The snapshot node is not visible.', input);
-      if (action !== 'hover' && probe.disabled)
-        throw nodeActionError('MCP_NODE_DISABLED', 'The snapshot node is disabled.', input);
-      if (action === 'type' && !probe.editable)
-        throw nodeActionError('MCP_NODE_NOT_EDITABLE', 'The snapshot node does not accept text.', input);
-      try {
-        results.push(await execute('DOM.scrollIntoViewIfNeeded', {
-          backendNodeId: input.backendNodeId,
-        }));
-      } catch {
-        throw nodeActionError('MCP_NODE_STALE', 'The snapshot node became stale before scrolling.', input);
-      }
-      let quadResult: unknown;
-      try {
-        quadResult = await execute('DOM.getContentQuads', {
-          backendNodeId: input.backendNodeId,
-        });
-      } catch {
-        throw nodeActionError('MCP_NODE_NO_GEOMETRY', 'The snapshot node has no usable geometry.', input);
-      }
-      results.push(quadResult);
-      const point = contentQuadPoint(quadResult, probe.viewportWidth, probe.viewportHeight);
-      if (point === undefined)
-        throw nodeActionError('MCP_NODE_NO_GEOMETRY', 'The snapshot node has no visible viewport geometry.', input);
-      let hitResult: unknown;
-      try {
-        hitResult = await execute('DOM.getNodeForLocation', {
-          includeUserAgentShadowDOM: true,
-          x: point.x,
-          y: point.y,
-        });
-      } catch {
-        throw nodeActionError('MCP_NODE_OBSCURED', 'Chrome could not hit-test the snapshot node.', input);
-      }
-      results.push(hitResult);
-      const hitBackendNodeId = numberValue(property(commandResultValue(hitResult), 'backendNodeId'));
-      if (hitBackendNodeId === undefined)
-        throw nodeActionError('MCP_NODE_OBSCURED', 'Chrome could not hit-test the snapshot node.', input);
-      if (hitBackendNodeId !== input.backendNodeId) {
-        let hitNode: unknown;
-        try {
-          hitNode = await execute('DOM.resolveNode', {
-            backendNodeId: hitBackendNodeId,
-            objectGroup,
-          });
-        } catch {
-          throw nodeActionError('MCP_NODE_OBSCURED', 'Another element obscures the snapshot node.', input);
-        }
-        results.push(hitNode);
-        const hitObjectId = remoteObjectId(hitNode);
-        if (hitObjectId === undefined)
-          throw nodeActionError('MCP_NODE_OBSCURED', 'Another element obscures the snapshot node.', input);
-        const containsResult = await execute('Runtime.callFunctionOn', {
-          arguments: [{ objectId: hitObjectId }],
-          functionDeclaration: 'function (hit) { return this === hit || this.contains(hit); }',
-          objectId,
-          returnByValue: true,
-        });
-        results.push(containsResult);
-        if (runtimeResultValue(containsResult) !== true)
-          throw nodeActionError('MCP_NODE_OBSCURED', 'Another element obscures the snapshot node.', input);
-      }
-      if (action === 'hover') {
-        results.push(await execute('Input.dispatchMouseEvent', {
-          modifiers: encodeInputModifiers(input.modifiers ?? []),
-          type: 'mouseMoved',
-          ...point,
-        }));
-        return results;
-      }
-      if (action === 'click') {
-        const button = input.button ?? 'left';
-        const requestedClickCount = input.clickCount ?? 1;
-        let buttonPressed = false;
-        try {
-          for (let clickCount = 1; clickCount <= requestedClickCount; clickCount += 1) {
-            results.push(await execute('Input.dispatchMouseEvent', {
-              button,
-              clickCount,
-              modifiers: encodeInputModifiers(input.modifiers ?? []),
-              type: 'mousePressed',
-              ...point,
-            }));
-            buttonPressed = true;
-            results.push(await execute('Input.dispatchMouseEvent', {
-              button,
-              clickCount,
-              modifiers: encodeInputModifiers(input.modifiers ?? []),
-              type: 'mouseReleased',
-              ...point,
-            }));
-            buttonPressed = false;
-          }
-        } finally {
-          if (buttonPressed) {
-            await executeCleanup('Input.dispatchMouseEvent', {
-              button,
-              clickCount: requestedClickCount,
-              modifiers: encodeInputModifiers(input.modifiers ?? []),
-              type: 'mouseReleased',
-              ...point,
-            });
-          }
-        }
-        return results;
-      }
-      results.push(await execute('DOM.focus', { backendNodeId: input.backendNodeId }));
-      if (action === 'type')
-        results.push(await execute('Input.insertText', { text: input.text ?? '' }));
-      return results;
-    } finally {
-      await executeCleanup('Runtime.releaseObjectGroup', { objectGroup });
-    }
-  });
 }
 
 type NavigationWaitUntil = 'commit' | 'domcontentloaded' | 'load';
@@ -1425,9 +1191,1184 @@ export interface CdbToolDefinition {
   ) => Promise<CallToolResult>;
 }
 
-/** Builds the canonical CDB tool catalogue without taking ownership of an MCP server or transport. */
-export function createCdbToolDefinitions(
+export interface SemanticTarget {
+  readonly availability: PublishedTarget['availability'];
+  readonly capabilities: PublishedTarget['capabilities'];
+  readonly targetRef: string;
+  readonly title?: string;
+  readonly type: PublishedTarget['type'];
+  readonly url?: string;
+}
+
+export interface CdbToolSession {
+  readonly definitions: readonly CdbToolDefinition[];
+  dispose: () => void;
+  projectTarget: (target: PublishedTarget) => SemanticTarget | undefined;
+  revokeTarget: (targetId: string) => void;
+  targetIdForReference: (targetRef: string) => string | undefined;
+}
+
+interface ElementReference {
+  readonly backendNodeId: number;
+  readonly generation: number;
+  readonly sessionId?: string;
+  readonly targetId: string;
+}
+
+interface CdbToolSessionState {
+  disposed: boolean;
+  nextElementReference: number;
+  nextTargetReference: number;
+  readonly elementReferences: Map<string, ElementReference>;
+  readonly targetIdsByReference: Map<string, string>;
+  readonly targetReferencesById: Map<string, string>;
+}
+
+interface AccessibilityCandidate extends ElementReference {
+  readonly attributes?: Readonly<Record<string, string>>;
+  readonly name?: string;
+  readonly nodeName?: string;
+  readonly role: string;
+}
+
+interface LocatorContext {
+  readonly rootBackendNodeId?: number;
+  readonly sessionId?: string;
+}
+
+interface TextMatch {
+  readonly flags?: 'i' | 'iu' | 'u' | undefined;
+  readonly match: 'exact' | 'regex' | 'substring';
+  readonly pattern?: string;
+  readonly value?: string;
+}
+
+interface SemanticLocatorStrategy {
+  readonly altText?: TextMatch | undefined;
+  readonly css?: string | undefined;
+  readonly label?: TextMatch | undefined;
+  readonly name?: TextMatch | undefined;
+  readonly placeholder?: TextMatch | undefined;
+  readonly role?: string | undefined;
+  readonly testId?: TextMatch | undefined;
+  readonly text?: TextMatch | undefined;
+  readonly title?: TextMatch | undefined;
+}
+
+interface SemanticLocator extends SemanticLocatorStrategy {
+  readonly descendants?: readonly SemanticLocatorStrategy[] | undefined;
+  readonly exclude?: SemanticLocatorStrategy | undefined;
+  readonly frameChain?: readonly SemanticLocatorStrategy[] | undefined;
+  readonly has?: SemanticLocatorStrategy | undefined;
+  readonly hasNotText?: TextMatch | undefined;
+  readonly hasText?: TextMatch | undefined;
+  readonly nth?: number | undefined;
+  readonly visible?: boolean | undefined;
+}
+
+const interactiveAccessibilityRoles = new Set([
+  'button',
+  'checkbox',
+  'combobox',
+  'gridcell',
+  'link',
+  'listbox',
+  'menuitem',
+  'menuitemcheckbox',
+  'menuitemradio',
+  'option',
+  'radio',
+  'searchbox',
+  'slider',
+  'spinbutton',
+  'switch',
+  'tab',
+  'textbox',
+  'treeitem',
+]);
+
+function createCdbToolSessionState(): CdbToolSessionState {
+  return {
+    disposed: false,
+    elementReferences: new Map(),
+    nextElementReference: 1,
+    nextTargetReference: 1,
+    targetIdsByReference: new Map(),
+    targetReferencesById: new Map(),
+  };
+}
+
+function projectSemanticTarget(
+  state: CdbToolSessionState,
+  target: PublishedTarget,
+): SemanticTarget | undefined {
+  if (state.disposed) return undefined;
+  let targetRef = state.targetReferencesById.get(target.id);
+  if (targetRef === undefined) {
+    targetRef = `t${state.nextTargetReference}`;
+    state.nextTargetReference += 1;
+    state.targetReferencesById.set(target.id, targetRef);
+    state.targetIdsByReference.set(targetRef, target.id);
+  }
+  return {
+    availability: target.availability,
+    capabilities: target.capabilities,
+    targetRef,
+    ...(target.title === undefined ? {} : { title: target.title }),
+    type: target.type,
+    ...(target.url === undefined ? {} : { url: target.url }),
+  };
+}
+
+async function resolveSemanticTarget(
+  client: McpChromeDebuggerBridgeClient,
+  state: CdbToolSessionState,
+  targetRef: string,
+): Promise<PublishedTarget> {
+  const targetId = state.targetIdsByReference.get(targetRef);
+  if (targetId === undefined)
+    throw new McpToolError('MCP_TARGET_REF_STALE', `Target reference ${targetRef} is no longer available.`);
+  const target = (await client.listTargets()).find(candidate => candidate.id === targetId);
+  if (target === undefined)
+    throw new McpToolError('MCP_TARGET_REF_STALE', `Target reference ${targetRef} is no longer available.`);
+  return target;
+}
+
+function accessibilityValue(value: unknown): string | undefined {
+  const rawValue = property(value, 'value');
+  if (typeof rawValue === 'string') return rawValue;
+  if (typeof rawValue === 'number' || typeof rawValue === 'boolean')
+    return String(rawValue);
+  return undefined;
+}
+
+function matchesText(value: string | undefined, matcher: TextMatch | undefined): boolean {
+  if (matcher === undefined) return true;
+  if (value === undefined) return false;
+  if (matcher.match === 'regex')
+    return new RegExp(matcher.pattern ?? '', matcher.flags ?? 'u').test(value);
+  const expected = matcher.value ?? '';
+  return matcher.match === 'exact' ? value === expected : value.includes(expected);
+}
+
+function accessibilityCandidates(value: unknown, reference: Omit<ElementReference, 'backendNodeId'>): AccessibilityCandidate[] {
+  return arrayValue(property(value, 'nodes')).flatMap((node) => {
+    if (property(node, 'ignored') === true) return [];
+    const backendNodeId = numberValue(property(node, 'backendDOMNodeId'));
+    if (backendNodeId === undefined) return [];
+    const name = accessibilityValue(property(node, 'name'));
+    return [{
+      ...reference,
+      backendNodeId,
+      ...(name === undefined ? {} : { name }),
+      role: accessibilityValue(property(node, 'role')) ?? 'generic',
+    }];
+  });
+}
+
+function allocateElementReference(
+  state: CdbToolSessionState,
+  element: ElementReference,
+): string {
+  const reference = `e${state.nextElementReference}`;
+  state.nextElementReference += 1;
+  state.elementReferences.set(reference, element);
+  return reference;
+}
+
+async function collectAccessibilityCandidates(
+  client: McpChromeDebuggerBridgeClient,
+  target: PublishedTarget,
+  signal: AbortSignal,
+  locator: SemanticLocatorStrategy,
+  contexts?: readonly LocatorContext[],
+): Promise<AccessibilityCandidate[]> {
+  const authority = { targetGeneration: target.generation, targetId: target.id };
+  const resolvedContexts = contexts ?? await (async (): Promise<LocatorContext[]> => {
+    const listedSessions = await executeSemanticCommand(
+      client,
+      authority,
+      'shared-read',
+      'Bridge.listChildSessions',
+      {},
+      signal,
+    );
+    return [
+      {},
+      ...childSessionReferences(listedSessions)
+        .filter(session => session.type === 'iframe')
+        .slice(0, 16)
+        .map(session => ({ sessionId: session.id })),
+    ];
+  })();
+  const candidates: AccessibilityCandidate[] = [];
+  for (const context of resolvedContexts) {
+    const sessionAuthority = {
+      ...authority,
+      ...(context.sessionId === undefined ? {} : { sessionId: context.sessionId }),
+    };
+    const exactAccessibleName = [locator.name, locator.text, locator.label].find(
+      matcher => matcher?.match === 'exact',
+    )?.value;
+    const canQueryAccessibilityTree = locator.role !== undefined || exactAccessibleName !== undefined;
+    const commandValue = canQueryAccessibilityTree
+      ? await (async (): Promise<unknown> => {
+          const documentValue = commandResultValue(await executeSemanticCommand(
+            client,
+            sessionAuthority,
+            'shared-read',
+            'DOM.getDocument',
+            { depth: 0, pierce: true },
+            signal,
+          ));
+          const documentBackendNodeId = numberValue(property(property(documentValue, 'root'), 'backendNodeId'));
+          const backendNodeId = context.rootBackendNodeId ?? documentBackendNodeId;
+          if (backendNodeId === undefined) return { nodes: [] };
+          return executeArtifactCommand(
+            client,
+            sessionAuthority,
+            'Accessibility.queryAXTree',
+            {
+              ...(exactAccessibleName === undefined ? {} : { accessibleName: exactAccessibleName }),
+              backendNodeId,
+              ...(locator.role === undefined ? {} : { role: locator.role }),
+            },
+          );
+        })()
+      : executeArtifactCommand(
+          client,
+          sessionAuthority,
+          'Accessibility.getFullAXTree',
+          {},
+        );
+    const contextCandidates = accessibilityCandidates(await readableCommandValue(
+      client,
+      authority,
+      commandValue,
+      signal,
+    ), {
+      generation: target.generation,
+      ...(context.sessionId === undefined ? {} : { sessionId: context.sessionId }),
+      targetId: target.id,
+    });
+    if (context.rootBackendNodeId === undefined) {
+      candidates.push(...contextCandidates);
+      continue;
+    }
+    const rootCandidate: AccessibilityCandidate = {
+      backendNodeId: context.rootBackendNodeId,
+      generation: target.generation,
+      role: 'document',
+      ...(context.sessionId === undefined ? {} : { sessionId: context.sessionId }),
+      targetId: target.id,
+    };
+    for (const candidate of contextCandidates)
+      if (await candidateContains(client, target, rootCandidate, candidate, signal)) candidates.push(candidate);
+  }
+  return candidates;
+}
+
+function matchesAccessibilityLocator(candidate: AccessibilityCandidate, locator: SemanticLocator): boolean {
+  if (locator.role !== undefined && candidate.role !== locator.role) return false;
+  if (!matchesText(candidate.name, locator.name)) return false;
+  if (!matchesText(candidate.name, locator.text)) return false;
+  if (!matchesText(candidate.name, locator.label)) return false;
+  if (!matchesText(candidate.attributes?.placeholder, locator.placeholder)) return false;
+  if (!matchesText(candidate.attributes?.alt, locator.altText)) return false;
+  if (!matchesText(candidate.attributes?.title, locator.title)) return false;
+  return matchesText(candidate.attributes?.['data-testid'], locator.testId);
+}
+
+function domNodeAttributes(node: unknown): Readonly<Record<string, string>> {
+  const attributes = arrayValue(property(node, 'attributes'));
+  const output: Record<string, string> = {};
+  for (let index = 0; index < attributes.length; index += 2) {
+    const name = stringValue(attributes[index]);
+    const value = stringValue(attributes[index + 1]);
+    if (name !== undefined && value !== undefined) output[name] = value;
+  }
+  return output;
+}
+
+function locatorDomQuery(locator: SemanticLocatorStrategy): string | undefined {
+  if (locator.css !== undefined) return locator.css;
+  const attributeLocator = [
+    ['placeholder', locator.placeholder],
+    ['alt', locator.altText],
+    ['title', locator.title],
+    ['data-testid', locator.testId],
+  ] as const;
+  for (const [attribute, matcher] of attributeLocator) {
+    if (matcher === undefined) continue;
+    if (matcher.match === 'exact')
+      return `[${attribute}=${JSON.stringify(matcher.value ?? '')}]`;
+    if (matcher.match === 'substring')
+      return `[${attribute}*=${JSON.stringify(matcher.value ?? '')}]`;
+    return `[${attribute}]`;
+  }
+  return undefined;
+}
+
+async function collectDomSearchCandidates(
+  client: McpChromeDebuggerBridgeClient,
+  target: PublishedTarget,
+  locator: SemanticLocatorStrategy,
+  signal: AbortSignal,
+  contexts?: readonly LocatorContext[],
+): Promise<AccessibilityCandidate[]> {
+  const query = locatorDomQuery(locator);
+  if (query === undefined) return [];
+  const authority = { targetGeneration: target.generation, targetId: target.id };
+  const resolvedContexts = contexts ?? await (async (): Promise<LocatorContext[]> => {
+    const listedSessions = await executeSemanticCommand(
+      client,
+      authority,
+      'shared-read',
+      'Bridge.listChildSessions',
+      {},
+      signal,
+    );
+    return [
+      {},
+      ...childSessionReferences(listedSessions)
+        .filter(session => session.type === 'iframe')
+        .slice(0, 16)
+        .map(session => ({ sessionId: session.id })),
+    ];
+  })();
+  const candidates: AccessibilityCandidate[] = [];
+  for (const context of resolvedContexts) {
+    const sessionId = context.sessionId;
+    const sessionAuthority = {
+      ...authority,
+      ...(sessionId === undefined ? {} : { sessionId }),
+    };
+    await withLease(
+      client,
+      authority,
+      'shared-read',
+      [
+        'Accessibility.getPartialAXTree',
+        'DOM.describeNode',
+        'DOM.discardSearchResults',
+        'DOM.getDocument',
+        'DOM.getSearchResults',
+        'DOM.performSearch',
+      ],
+      async (lease) => {
+        const execute = async (method: string, parameters: JsonObject): Promise<unknown> => {
+          if (signal.aborted)
+            throw new McpToolError('MCP_WAIT_CANCELLED', 'The locator search was cancelled.');
+          return client.executeCommand({
+            leaseId: lease.id,
+            method,
+            operationId: randomUUID(),
+            parameters,
+            ...(sessionAuthority.sessionId === undefined ? {} : { sessionId: sessionAuthority.sessionId }),
+            targetGeneration: target.generation,
+            targetId: target.id,
+          });
+        };
+        await execute('DOM.getDocument', { depth: 0, pierce: true });
+        const search = commandResultValue(await execute('DOM.performSearch', {
+          includeUserAgentShadowDOM: false,
+          query,
+        }));
+        const searchId = stringValue(property(search, 'searchId'));
+        const resultCount = numberValue(property(search, 'resultCount')) ?? 0;
+        if (searchId === undefined || resultCount === 0) return;
+        try {
+          const results = commandResultValue(await execute('DOM.getSearchResults', {
+            fromIndex: 0,
+            searchId,
+            toIndex: Math.min(resultCount, 100),
+          }));
+          for (const nodeIdValue of arrayValue(property(results, 'nodeIds'))) {
+            const nodeId = numberValue(nodeIdValue);
+            if (nodeId === undefined) continue;
+            const described = commandResultValue(await execute('DOM.describeNode', {
+              depth: 0,
+              nodeId,
+              pierce: true,
+            }));
+            const node = property(described, 'node');
+            const backendNodeId = numberValue(property(node, 'backendNodeId'));
+            if (backendNodeId === undefined) continue;
+            const partialTree = commandResultValue(await execute('Accessibility.getPartialAXTree', {
+              backendNodeId,
+              fetchRelatives: false,
+            }));
+            const accessibilityNode = arrayValue(property(partialTree, 'nodes'))[0];
+            const name = accessibilityValue(property(accessibilityNode, 'name'));
+            const nodeName = stringValue(property(node, 'nodeName'));
+            const candidate: AccessibilityCandidate = {
+              attributes: domNodeAttributes(node),
+              backendNodeId,
+              generation: target.generation,
+              ...(name === undefined ? {} : { name }),
+              ...(nodeName === undefined ? {} : { nodeName }),
+              role: accessibilityValue(property(accessibilityNode, 'role')) ?? 'generic',
+              ...(sessionId === undefined ? {} : { sessionId }),
+              targetId: target.id,
+            };
+            if (context.rootBackendNodeId === undefined) {
+              candidates.push(candidate);
+            } else {
+              const rootCandidate: AccessibilityCandidate = {
+                backendNodeId: context.rootBackendNodeId,
+                generation: target.generation,
+                role: 'document',
+                ...(sessionId === undefined ? {} : { sessionId }),
+                targetId: target.id,
+              };
+              if (await candidateContains(client, target, rootCandidate, candidate, signal)) candidates.push(candidate);
+            }
+          }
+        } finally {
+          try {
+            await execute('DOM.discardSearchResults', { searchId });
+          } catch {
+            /** Search state is scoped to the current document and can disappear during navigation. */
+          }
+        }
+      },
+    );
+  }
+  return candidates;
+}
+
+async function resolveLocatorCandidates(
+  client: McpChromeDebuggerBridgeClient,
+  target: PublishedTarget,
+  locator: SemanticLocator,
+  signal: AbortSignal,
+): Promise<AccessibilityCandidate[]> {
+  const resolveStrategy = async (
+    strategy: SemanticLocatorStrategy,
+    contexts: readonly LocatorContext[],
+  ): Promise<AccessibilityCandidate[]> => {
+    const candidates = locatorDomQuery(strategy) === undefined
+      ? await collectAccessibilityCandidates(client, target, signal, strategy, contexts)
+      : await collectDomSearchCandidates(client, target, strategy, signal, contexts);
+    return candidates.filter(candidate => matchesAccessibilityLocator(candidate, strategy));
+  };
+  let contexts: LocatorContext[] = [{}];
+  if ((locator.frameChain?.length ?? 0) > 0) {
+    const authority = { targetGeneration: target.generation, targetId: target.id };
+    const listedSessions = await executeSemanticCommand(
+      client,
+      authority,
+      'shared-read',
+      'Bridge.listChildSessions',
+      {},
+      signal,
+    );
+    const childSessions = childSessionReferences(listedSessions).filter(session => session.type === 'iframe');
+    for (const frameLocator of locator.frameChain ?? []) {
+      const frameCandidates = await resolveStrategy(frameLocator, contexts);
+      if (frameCandidates.length === 0)
+        throw new McpToolError('MCP_LOCATOR_NOT_FOUND', 'A frame locator did not match a frame.', undefined, true);
+      if (frameCandidates.length > 1)
+        throw new McpToolError('MCP_LOCATOR_AMBIGUOUS', `A frame locator matched ${frameCandidates.length} frames.`);
+      const frameCandidate = frameCandidates[0];
+      if (frameCandidate === undefined)
+        throw new McpToolError('MCP_LOCATOR_NOT_FOUND', 'A frame locator did not match a frame.', undefined, true);
+      const described = commandResultValue(await executeSemanticCommand(
+        client,
+        {
+          ...(frameCandidate.sessionId === undefined ? {} : { sessionId: frameCandidate.sessionId }),
+          ...authority,
+        },
+        'shared-read',
+        'DOM.describeNode',
+        { backendNodeId: frameCandidate.backendNodeId, depth: 1, pierce: true },
+        signal,
+      ));
+      const frameNode = property(described, 'node');
+      const frameId = stringValue(property(frameNode, 'frameId'));
+      const childSession = frameId === undefined
+        ? undefined
+        : childSessions.find(session => session.frameId === frameId);
+      if (childSession !== undefined) {
+        contexts = [{ sessionId: childSession.id }];
+        continue;
+      }
+      const contentDocumentBackendNodeId = numberValue(
+        property(property(frameNode, 'contentDocument'), 'backendNodeId'),
+      );
+      if (contentDocumentBackendNodeId === undefined)
+        throw new McpToolError('MCP_ELEMENT_DETACHED', 'The selected frame document is not attached.', undefined, true);
+      contexts = [{
+        rootBackendNodeId: contentDocumentBackendNodeId,
+        ...(frameCandidate.sessionId === undefined ? {} : { sessionId: frameCandidate.sessionId }),
+      }];
+    }
+  }
+  const rootStrategy: SemanticLocatorStrategy = {
+    ...(locator.altText === undefined ? {} : { altText: locator.altText }),
+    ...(locator.css === undefined ? {} : { css: locator.css }),
+    ...(locator.label === undefined ? {} : { label: locator.label }),
+    ...(locator.name === undefined ? {} : { name: locator.name }),
+    ...(locator.placeholder === undefined ? {} : { placeholder: locator.placeholder }),
+    ...(locator.role === undefined ? {} : { role: locator.role }),
+    ...(locator.testId === undefined ? {} : { testId: locator.testId }),
+    ...(locator.text === undefined ? {} : { text: locator.text }),
+    ...(locator.title === undefined ? {} : { title: locator.title }),
+  };
+  let candidates = await resolveStrategy(rootStrategy, contexts);
+  for (const descendant of locator.descendants ?? []) {
+    const descendantCandidates = await resolveStrategy(descendant, contexts);
+    const retained: AccessibilityCandidate[] = [];
+    for (const descendantCandidate of descendantCandidates) {
+      if (await anyCandidateContains(client, target, candidates, [descendantCandidate], signal))
+        retained.push(descendantCandidate);
+    }
+    candidates = retained;
+  }
+  if (locator.has !== undefined) {
+    const requiredDescendants = await resolveStrategy(locator.has, contexts);
+    const retained: AccessibilityCandidate[] = [];
+    for (const candidate of candidates) {
+      if (await anyCandidateContains(client, target, [candidate], requiredDescendants, signal))
+        retained.push(candidate);
+    }
+    candidates = retained;
+  }
+  if (locator.exclude !== undefined) {
+    const excluded = await resolveStrategy(locator.exclude, contexts);
+    const retained: AccessibilityCandidate[] = [];
+    for (const candidate of candidates) {
+      const containsExcluded = await anyCandidateContains(client, target, [candidate], excluded, signal);
+      const isExcluded = excluded.some(excludedCandidate => sameElement(candidate, excludedCandidate));
+      if (!containsExcluded && !isExcluded) retained.push(candidate);
+    }
+    candidates = retained;
+  }
+  if (locator.hasText !== undefined) {
+    const textCandidates = await resolveStrategy({ text: locator.hasText }, contexts);
+    const retained: AccessibilityCandidate[] = [];
+    for (const candidate of candidates) {
+      if (
+        matchesText(candidate.name, locator.hasText)
+        || await anyCandidateContains(client, target, [candidate], textCandidates, signal)
+      ) retained.push(candidate);
+    }
+    candidates = retained;
+  }
+  if (locator.hasNotText !== undefined) {
+    const excludedTextCandidates = await resolveStrategy({ text: locator.hasNotText }, contexts);
+    const retained: AccessibilityCandidate[] = [];
+    for (const candidate of candidates) {
+      if (
+        !matchesText(candidate.name, locator.hasNotText)
+        && !await anyCandidateContains(client, target, [candidate], excludedTextCandidates, signal)
+      ) retained.push(candidate);
+    }
+    candidates = retained;
+  }
+  if (locator.visible !== undefined) {
+    const retained: AccessibilityCandidate[] = [];
+    for (const candidate of candidates) {
+      const visible = await candidateIsVisible(client, target, candidate, signal);
+      if (visible === locator.visible) retained.push(candidate);
+    }
+    candidates = retained;
+  }
+  if (locator.nth !== undefined) {
+    const index = locator.nth < 0 ? candidates.length + locator.nth : locator.nth;
+    const candidate = candidates[index];
+    candidates = candidate === undefined ? [] : [candidate];
+  }
+  return candidates;
+}
+
+function sameElement(first: ElementReference, second: ElementReference): boolean {
+  return first.backendNodeId === second.backendNodeId
+    && first.sessionId === second.sessionId
+    && first.targetId === second.targetId;
+}
+
+function collectBackendNodeIds(value: unknown, output = new Set<number>()): Set<number> {
+  const backendNodeId = numberValue(property(value, 'backendNodeId'));
+  if (backendNodeId !== undefined) output.add(backendNodeId);
+  for (const key of ['children', 'contentDocument', 'pseudoElements', 'shadowRoots', 'templateContent']) {
+    const childValue = property(value, key);
+    if (Array.isArray(childValue)) {
+      for (const child of childValue) collectBackendNodeIds(child, output);
+    } else if (childValue !== undefined) {
+      collectBackendNodeIds(childValue, output);
+    }
+  }
+  return output;
+}
+
+async function candidateContains(
+  client: McpChromeDebuggerBridgeClient,
+  target: PublishedTarget,
+  ancestor: AccessibilityCandidate,
+  descendant: AccessibilityCandidate,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (ancestor.sessionId !== descendant.sessionId) return false;
+  if (sameElement(ancestor, descendant)) return false;
+  const result = await executeSemanticCommand(
+    client,
+    {
+      ...(ancestor.sessionId === undefined ? {} : { sessionId: ancestor.sessionId }),
+      targetGeneration: target.generation,
+      targetId: target.id,
+    },
+    'shared-read',
+    'DOM.describeNode',
+    { backendNodeId: ancestor.backendNodeId, depth: -1, pierce: true },
+    signal,
+  );
+  const node = property(commandResultValue(result), 'node');
+  return collectBackendNodeIds(node).has(descendant.backendNodeId);
+}
+
+async function anyCandidateContains(
+  client: McpChromeDebuggerBridgeClient,
+  target: PublishedTarget,
+  ancestors: readonly AccessibilityCandidate[],
+  descendants: readonly AccessibilityCandidate[],
+  signal: AbortSignal,
+): Promise<boolean> {
+  for (const ancestor of ancestors) {
+    for (const descendant of descendants) {
+      if (await candidateContains(client, target, ancestor, descendant, signal)) return true;
+    }
+  }
+  return false;
+}
+
+async function candidateIsVisible(
+  client: McpChromeDebuggerBridgeClient,
+  target: PublishedTarget,
+  candidate: AccessibilityCandidate,
+  signal: AbortSignal,
+): Promise<boolean> {
+  try {
+    const result = await executeSemanticCommand(
+      client,
+      {
+        ...(candidate.sessionId === undefined ? {} : { sessionId: candidate.sessionId }),
+        targetGeneration: target.generation,
+        targetId: target.id,
+      },
+      'shared-read',
+      'DOM.getContentQuads',
+      { backendNodeId: candidate.backendNodeId },
+      signal,
+    );
+    return contentQuadPoint(result, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+function accessibilityProperty(node: unknown, name: string): unknown {
+  const matchingProperty = arrayValue(property(node, 'properties'))
+    .find(candidate => property(candidate, 'name') === name);
+  return property(property(matchingProperty, 'value'), 'value');
+}
+
+async function executeElementClick(
+  client: McpChromeDebuggerBridgeClient,
+  target: PublishedTarget,
+  element: ElementReference,
+  input: {
+    readonly button: keyof typeof pointerButtonValues;
+    readonly clickCount: number;
+    readonly modifiers: readonly InputModifier[];
+    readonly timeoutMilliseconds: number;
+  },
+  signal: AbortSignal,
+): Promise<unknown> {
+  const actionInput = {
+    ...(element.sessionId === undefined ? {} : { sessionId: element.sessionId }),
+    targetGeneration: target.generation,
+    targetId: target.id,
+  };
+  return executeInputAction(
+    client,
+    actionInput,
+    [
+      'Accessibility.getPartialAXTree',
+      'DOM.describeNode',
+      'DOM.getContentQuads',
+      'DOM.getNodeForLocation',
+      'DOM.scrollIntoViewIfNeeded',
+      'Input.dispatchMouseEvent',
+    ],
+    signal,
+    async (execute, executeCleanup) => {
+      const deadline = Date.now() + input.timeoutMilliseconds;
+      let point: ViewportPoint | undefined;
+      while (point === undefined) {
+        let retryableError: McpToolError | undefined;
+        try {
+          const describedElement = commandResultValue(await execute('DOM.describeNode', {
+            backendNodeId: element.backendNodeId,
+            depth: -1,
+            pierce: true,
+          }));
+          const accessibility = commandResultValue(await execute('Accessibility.getPartialAXTree', {
+            backendNodeId: element.backendNodeId,
+            fetchRelatives: false,
+          }));
+          const accessibilityNode = arrayValue(property(accessibility, 'nodes'))[0];
+          if (accessibilityProperty(accessibilityNode, 'disabled') === true)
+            throw new McpToolError('MCP_ELEMENT_DISABLED', 'The element is disabled.', undefined, true);
+          await execute('DOM.scrollIntoViewIfNeeded', { backendNodeId: element.backendNodeId });
+          const firstGeometry = await execute('DOM.getContentQuads', { backendNodeId: element.backendNodeId });
+          await waitForInputStep(50, signal);
+          const secondGeometry = await execute('DOM.getContentQuads', { backendNodeId: element.backendNodeId });
+          const firstPoint = contentQuadPoint(firstGeometry, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+          const candidatePoint = contentQuadPoint(secondGeometry, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+          if (firstPoint === undefined || candidatePoint === undefined)
+            throw new McpToolError('MCP_ELEMENT_HIDDEN', 'The element has no visible geometry.', undefined, true);
+          if (firstPoint.x !== candidatePoint.x || firstPoint.y !== candidatePoint.y)
+            throw new McpToolError('MCP_ELEMENT_UNSTABLE', 'The element geometry is still moving.', undefined, true);
+          const hitResult = commandResultValue(await execute('DOM.getNodeForLocation', {
+            includeUserAgentShadowDOM: false,
+            x: candidatePoint.x,
+            y: candidatePoint.y,
+          }));
+          const hitBackendNodeId = numberValue(property(hitResult, 'backendNodeId'));
+          if (
+            hitBackendNodeId !== element.backendNodeId
+            && (hitBackendNodeId === undefined
+              || !collectBackendNodeIds(property(describedElement, 'node')).has(hitBackendNodeId))
+          )
+            throw new McpToolError('MCP_ELEMENT_COVERED', 'Another element covers the requested element.', undefined, true);
+          point = candidatePoint;
+        } catch (error) {
+          if (error instanceof McpToolError && error.retryable)
+            retryableError = error;
+          else if (property(error, 'code') === 'TARGET_GENERATION_STALE')
+            throw error;
+          else
+            throw new McpToolError('MCP_ELEMENT_DETACHED', 'The element is detached from the current document.');
+        }
+        if (point === undefined) {
+          if (Date.now() >= deadline && retryableError !== undefined) throw retryableError;
+          await waitForInputStep(Math.min(100, Math.max(0, deadline - Date.now())), signal);
+        }
+      }
+      const modifiers = encodeInputModifiers(input.modifiers);
+      const results: unknown[] = [];
+      let inputDispatched = false;
+      let buttonPressed = false;
+      try {
+        inputDispatched = true;
+        results.push(await execute('Input.dispatchMouseEvent', {
+          modifiers,
+          type: 'mouseMoved',
+          ...point,
+        }));
+        for (let clickCount = 1; clickCount <= input.clickCount; clickCount += 1) {
+          results.push(await execute('Input.dispatchMouseEvent', {
+            button: input.button,
+            clickCount,
+            modifiers,
+            type: 'mousePressed',
+            ...point,
+          }));
+          buttonPressed = true;
+          results.push(await execute('Input.dispatchMouseEvent', {
+            button: input.button,
+            clickCount,
+            modifiers,
+            type: 'mouseReleased',
+            ...point,
+          }));
+          buttonPressed = false;
+        }
+      } catch (error) {
+        if (inputDispatched)
+          throw new McpToolError('MCP_ACTION_OUTCOME_UNKNOWN', 'Input may have been dispatched before the action failed. The action was not replayed.');
+        throw error;
+      } finally {
+        if (buttonPressed) {
+          await executeCleanup('Input.dispatchMouseEvent', {
+            button: input.button,
+            clickCount: input.clickCount,
+            modifiers,
+            type: 'mouseReleased',
+            ...point,
+          });
+        }
+      }
+      return results;
+    },
+  );
+}
+
+async function resolveSemanticElement(
+  client: McpChromeDebuggerBridgeClient,
+  state: CdbToolSessionState,
+  target: PublishedTarget,
+  input: { readonly locator?: SemanticLocator | undefined; readonly ref?: string | undefined },
+  signal: AbortSignal,
+): Promise<ElementReference> {
+  if (input.ref !== undefined) {
+    const referencedElement = state.elementReferences.get(input.ref);
+    if (
+      referencedElement === undefined
+      || referencedElement.targetId !== target.id
+      || referencedElement.generation !== target.generation
+    )
+      throw new McpToolError('MCP_ELEMENT_REF_STALE', `Element reference ${input.ref} is stale.`);
+    return referencedElement;
+  }
+  const matches = await resolveLocatorCandidates(client, target, input.locator ?? {}, signal);
+  if (matches.length === 0)
+    throw new McpToolError('MCP_LOCATOR_NOT_FOUND', 'The locator did not match an element.', undefined, true);
+  if (matches.length > 1)
+    throw new McpToolError('MCP_LOCATOR_AMBIGUOUS', `The locator matched ${matches.length} elements.`);
+  const match = matches[0];
+  if (match === undefined)
+    throw new McpToolError('MCP_LOCATOR_NOT_FOUND', 'The locator did not match an element.', undefined, true);
+  return match;
+}
+
+async function resolveSemanticElementWithRetry(
+  client: McpChromeDebuggerBridgeClient,
+  state: CdbToolSessionState,
+  target: PublishedTarget,
+  input: {
+    readonly locator?: SemanticLocator | undefined;
+    readonly ref?: string | undefined;
+    readonly timeoutMilliseconds: number;
+  },
+  signal: AbortSignal,
+): Promise<ElementReference> {
+  const deadline = Date.now() + input.timeoutMilliseconds;
+  while (true) {
+    try {
+      return await resolveSemanticElement(client, state, target, input, signal);
+    } catch (error) {
+      if (
+        input.locator === undefined
+        || property(error, 'code') !== 'MCP_LOCATOR_NOT_FOUND'
+        || Date.now() >= deadline
+      ) throw error;
+      await waitForInputStep(Math.min(100, Math.max(0, deadline - Date.now())), signal);
+    }
+  }
+}
+
+async function executeWithRenewedLocatorRetry<Value>(
+  client: McpChromeDebuggerBridgeClient,
+  state: CdbToolSessionState,
+  input: { readonly locator?: SemanticLocator | undefined; readonly targetRef: string },
+  action: (target: PublishedTarget) => Promise<Value>,
+): Promise<Value> {
+  const attempt = async (): Promise<Value> => action(await resolveSemanticTarget(client, state, input.targetRef));
+  try {
+    return await attempt();
+  } catch (error) {
+    if (input.locator === undefined || property(error, 'code') !== 'TARGET_GENERATION_STALE') throw error;
+    return attempt();
+  }
+}
+
+type ElementInteraction
+  = | { readonly kind: 'fill' | 'type'; readonly text: string }
+    | { readonly key: string; readonly kind: 'press' }
+    | { readonly kind: 'focus' | 'hover' | 'scroll-into-view' };
+
+async function executeElementInteraction(
+  client: McpChromeDebuggerBridgeClient,
+  target: PublishedTarget,
+  element: ElementReference,
+  interaction: ElementInteraction,
+  modifiers: readonly InputModifier[],
+  timeoutMilliseconds: number,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const needsPointer = interaction.kind === 'hover';
+  const needsFocus = interaction.kind === 'fill'
+    || interaction.kind === 'focus'
+    || interaction.kind === 'press'
+    || interaction.kind === 'type';
+  const methods = [
+    'Accessibility.getPartialAXTree',
+    'DOM.describeNode',
+    'DOM.getContentQuads',
+    'DOM.scrollIntoViewIfNeeded',
+    ...(needsPointer ? ['DOM.getNodeForLocation', 'Input.dispatchMouseEvent'] : []),
+    ...(needsFocus ? ['DOM.focus'] : []),
+    ...(interaction.kind === 'fill' || interaction.kind === 'press' ? ['Input.dispatchKeyEvent'] : []),
+    ...(interaction.kind === 'fill' || interaction.kind === 'type' ? ['Input.insertText'] : []),
+  ];
+  return executeInputAction(
+    client,
+    {
+      ...(element.sessionId === undefined ? {} : { sessionId: element.sessionId }),
+      targetGeneration: target.generation,
+      targetId: target.id,
+    },
+    methods,
+    signal,
+    async (execute, executeCleanup) => {
+      const deadline = Date.now() + timeoutMilliseconds;
+      let point: ViewportPoint | undefined;
+      while (point === undefined) {
+        let retryableError: McpToolError | undefined;
+        try {
+          const describedElement = commandResultValue(await execute('DOM.describeNode', {
+            backendNodeId: element.backendNodeId,
+            depth: -1,
+            pierce: true,
+          }));
+          const accessibility = commandResultValue(await execute('Accessibility.getPartialAXTree', {
+            backendNodeId: element.backendNodeId,
+            fetchRelatives: false,
+          }));
+          const accessibilityNode = arrayValue(property(accessibility, 'nodes'))[0];
+          if (
+            !['focus', 'hover', 'scroll-into-view'].includes(interaction.kind)
+            && accessibilityProperty(accessibilityNode, 'disabled') === true
+          ) throw new McpToolError('MCP_ELEMENT_DISABLED', 'The element is disabled.', undefined, true);
+          if (
+            (interaction.kind === 'fill' || interaction.kind === 'type')
+            && accessibilityProperty(accessibilityNode, 'editable') !== true
+            && !['searchbox', 'textbox'].includes(accessibilityValue(property(accessibilityNode, 'role')) ?? '')
+          ) throw new McpToolError('MCP_ELEMENT_NOT_EDITABLE', 'The element does not accept text.', undefined, true);
+          await execute('DOM.scrollIntoViewIfNeeded', { backendNodeId: element.backendNodeId });
+          const firstGeometry = await execute('DOM.getContentQuads', { backendNodeId: element.backendNodeId });
+          await waitForInputStep(50, signal);
+          const secondGeometry = await execute('DOM.getContentQuads', { backendNodeId: element.backendNodeId });
+          const firstPoint = contentQuadPoint(firstGeometry, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+          const candidatePoint = contentQuadPoint(secondGeometry, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+          if (firstPoint === undefined || candidatePoint === undefined)
+            throw new McpToolError('MCP_ELEMENT_HIDDEN', 'The element has no visible geometry.', undefined, true);
+          if (firstPoint.x !== candidatePoint.x || firstPoint.y !== candidatePoint.y)
+            throw new McpToolError('MCP_ELEMENT_UNSTABLE', 'The element geometry is still moving.', undefined, true);
+          if (needsPointer) {
+            const hitResult = commandResultValue(await execute('DOM.getNodeForLocation', {
+              includeUserAgentShadowDOM: false,
+              x: candidatePoint.x,
+              y: candidatePoint.y,
+            }));
+            const hitBackendNodeId = numberValue(property(hitResult, 'backendNodeId'));
+            if (
+              hitBackendNodeId !== element.backendNodeId
+              && (hitBackendNodeId === undefined
+                || !collectBackendNodeIds(property(describedElement, 'node')).has(hitBackendNodeId))
+            ) throw new McpToolError('MCP_ELEMENT_COVERED', 'Another element covers the requested element.', undefined, true);
+          }
+          point = candidatePoint;
+        } catch (error) {
+          if (error instanceof McpToolError && error.retryable) retryableError = error;
+          else if (property(error, 'code') === 'TARGET_GENERATION_STALE') throw error;
+          else throw new McpToolError('MCP_ELEMENT_DETACHED', 'The element is detached from the current document.');
+        }
+        if (point === undefined) {
+          if (Date.now() >= deadline && retryableError !== undefined) throw retryableError;
+          await waitForInputStep(Math.min(100, Math.max(0, deadline - Date.now())), signal);
+        }
+      }
+      if (interaction.kind === 'scroll-into-view') return { scrolled: true };
+      if (needsPointer) {
+        try {
+          return await execute('Input.dispatchMouseEvent', {
+            modifiers: encodeInputModifiers(modifiers),
+            type: 'mouseMoved',
+            ...point,
+          });
+        } catch {
+          throw new McpToolError('MCP_ACTION_OUTCOME_UNKNOWN', 'Pointer input may have been dispatched before the action failed. The action was not replayed.');
+        }
+      }
+      await execute('DOM.focus', { backendNodeId: element.backendNodeId });
+      if (interaction.kind === 'focus') return { focused: true };
+      let inputDispatched = false;
+      try {
+        if (interaction.kind === 'type') {
+          inputDispatched = true;
+          return await execute('Input.insertText', { text: interaction.text });
+        }
+        if (interaction.kind === 'fill') {
+          let keyPressed = false;
+          try {
+            inputDispatched = true;
+            await execute('Input.dispatchKeyEvent', {
+              commands: ['SelectAll'],
+              key: 'a',
+              type: 'rawKeyDown',
+            });
+            keyPressed = true;
+            await execute('Input.dispatchKeyEvent', { key: 'a', type: 'keyUp' });
+            keyPressed = false;
+            await execute('Input.dispatchKeyEvent', { key: 'Backspace', type: 'keyDown' });
+            keyPressed = true;
+            await execute('Input.dispatchKeyEvent', { key: 'Backspace', type: 'keyUp' });
+            keyPressed = false;
+            return await execute('Input.insertText', { text: interaction.text });
+          } finally {
+            if (keyPressed)
+              await executeCleanup('Input.dispatchKeyEvent', { key: 'Unidentified', type: 'keyUp' });
+          }
+        }
+        if (interaction.kind !== 'press')
+          throw new McpToolError('MCP_TOOL_FAILED', 'The element interaction is unsupported.');
+        let keyPressed = false;
+        try {
+          const encodedModifiers = encodeInputModifiers(modifiers);
+          inputDispatched = true;
+          await execute('Input.dispatchKeyEvent', {
+            key: interaction.key,
+            modifiers: encodedModifiers,
+            type: 'keyDown',
+          });
+          keyPressed = true;
+          const result = await execute('Input.dispatchKeyEvent', {
+            key: interaction.key,
+            modifiers: encodedModifiers,
+            type: 'keyUp',
+          });
+          keyPressed = false;
+          return result;
+        } finally {
+          if (keyPressed)
+            await executeCleanup('Input.dispatchKeyEvent', { key: interaction.key, type: 'keyUp' });
+        }
+      } catch (error) {
+        if (inputDispatched)
+          throw new McpToolError('MCP_ACTION_OUTCOME_UNKNOWN', 'Input may have been dispatched before the action failed. The action was not replayed.');
+        throw error;
+      }
+    },
+  );
+}
+
+async function elementCheckedState(
+  client: McpChromeDebuggerBridgeClient,
+  target: PublishedTarget,
+  element: ElementReference,
+  signal: AbortSignal,
+): Promise<boolean | undefined> {
+  const result = await executeSemanticCommand(
+    client,
+    {
+      ...(element.sessionId === undefined ? {} : { sessionId: element.sessionId }),
+      targetGeneration: target.generation,
+      targetId: target.id,
+    },
+    'shared-read',
+    'Accessibility.getPartialAXTree',
+    { backendNodeId: element.backendNodeId, fetchRelatives: false },
+    signal,
+  );
+  const node = arrayValue(property(commandResultValue(result), 'nodes'))[0];
+  const checked = accessibilityProperty(node, 'checked');
+  return typeof checked === 'boolean' ? checked : undefined;
+}
+
+async function elementCenterPoint(
+  client: McpChromeDebuggerBridgeClient,
+  target: PublishedTarget,
+  element: ElementReference,
+  signal: AbortSignal,
+): Promise<ViewportPoint> {
+  const authority = {
+    ...(element.sessionId === undefined ? {} : { sessionId: element.sessionId }),
+    targetGeneration: target.generation,
+    targetId: target.id,
+  };
+  await executeSemanticCommand(
+    client,
+    authority,
+    'exclusive-control',
+    'DOM.scrollIntoViewIfNeeded',
+    { backendNodeId: element.backendNodeId },
+    signal,
+  );
+  const geometry = await executeSemanticCommand(
+    client,
+    authority,
+    'shared-read',
+    'DOM.getContentQuads',
+    { backendNodeId: element.backendNodeId },
+    signal,
+  );
+  const point = contentQuadPoint(geometry, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+  if (point === undefined)
+    throw new McpToolError('MCP_ELEMENT_HIDDEN', 'The element has no visible geometry.', undefined, true);
+  return point;
+}
+
+function formatAccessibilityTree(
+  value: unknown,
+  options: {
+    readonly generation: number;
+    readonly maximumDepth: number;
+    readonly maximumNodes: number;
+    readonly mode: 'accessibility' | 'interactive';
+    readonly sessionId?: string;
+    readonly state: CdbToolSessionState;
+    readonly targetId: string;
+  },
+): string {
+  const nodes = arrayValue(property(value, 'nodes'));
+  const nodesById = new Map<string, unknown>();
+  const childNodeIds = new Set<string>();
+  for (const node of nodes) {
+    const nodeId = stringValue(property(node, 'nodeId'));
+    if (nodeId !== undefined) nodesById.set(nodeId, node);
+    for (const childId of arrayValue(property(node, 'childIds'))) {
+      const childNodeId = stringValue(childId);
+      if (childNodeId !== undefined) childNodeIds.add(childNodeId);
+    }
+  }
+  const roots = [...nodesById.entries()]
+    .filter(([nodeId]) => !childNodeIds.has(nodeId))
+    .map(([, node]) => node);
+  const lines: string[] = [];
+  let renderedNodes = 0;
+  const visit = (node: unknown, depth: number): void => {
+    if (renderedNodes >= options.maximumNodes || depth > options.maximumDepth)
+      return;
+    const ignored = property(node, 'ignored') === true;
+    const role = accessibilityValue(property(node, 'role')) ?? 'generic';
+    const name = accessibilityValue(property(node, 'name'));
+    const backendNodeId = numberValue(property(node, 'backendDOMNodeId'));
+    const actionable = interactiveAccessibilityRoles.has(role) && backendNodeId !== undefined;
+    if (!ignored && (options.mode === 'accessibility' || actionable)) {
+      const reference = actionable
+        ? `e${options.state.nextElementReference}`
+        : undefined;
+      if (reference !== undefined && backendNodeId !== undefined) {
+        options.state.nextElementReference += 1;
+        options.state.elementReferences.set(reference, {
+          backendNodeId,
+          generation: options.generation,
+          ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+          targetId: options.targetId,
+        });
+      }
+      const accessibleName = name === undefined || name.length === 0
+        ? ''
+        : ` ${JSON.stringify(name)}`;
+      lines.push(`${'  '.repeat(depth)}- ${role}${accessibleName}${reference === undefined ? '' : ` [ref=${reference}]`}`);
+      renderedNodes += 1;
+    }
+    for (const childId of arrayValue(property(node, 'childIds'))) {
+      const child = nodesById.get(stringValue(childId) ?? '');
+      if (child !== undefined) visit(child, ignored ? depth : depth + 1);
+    }
+  };
+  for (const root of roots) visit(root, 0);
+  return lines.length === 0 ? '(no matching accessibility nodes)' : lines.join('\n');
+}
+
+/** Builds the canonical CDB tool catalogue for one principal-owned tool session. */
+function createCdbToolDefinitionsForSession(
   options: RegisterCdbToolsOptions,
+  sessionState: CdbToolSessionState,
 ): CdbToolDefinition[] {
   const definitions: CdbToolDefinition[] = [];
   const register = <InputSchema extends z.ZodObject>(
@@ -1442,6 +2383,8 @@ export function createCdbToolDefinitions(
       description: config.description,
       inputSchema: z.toJSONSchema(config.inputSchema, { io: 'input' }),
       async invoke(input, context = { signal: new AbortController().signal }) {
+        if (sessionState.disposed)
+          return toolError(new McpToolError('MCP_TOOL_SESSION_DISPOSED', 'The browser tool session has been disposed.'));
         const parsedInput = await config.inputSchema.parseAsync(input);
         return handler(parsedInput, { mcpReq: { signal: context.signal } });
       },
@@ -1459,10 +2402,60 @@ export function createCdbToolDefinitions(
   const pointerButtonSchema = z
     .enum(['back', 'forward', 'left', 'middle', 'right'])
     .default('left');
-  const nodeReferenceSchema = z.object({
-    backendNodeId: z.number().int().positive(),
-    sessionId: z.string().uuid().optional(),
-  });
+  const textMatchSchema = z.discriminatedUnion('match', [
+    z.strictObject({
+      match: z.literal('exact'),
+      value: z.string().max(2_000),
+    }),
+    z.strictObject({
+      match: z.literal('substring'),
+      value: z.string().max(2_000),
+    }),
+    z.strictObject({
+      flags: z.enum(['i', 'iu', 'u']).optional(),
+      match: z.literal('regex'),
+      pattern: z.string().min(1).max(256),
+    }),
+  ]);
+  const locatorStrategyShape = {
+    altText: textMatchSchema.optional(),
+    css: z.string().min(1).max(2_000).optional(),
+    label: textMatchSchema.optional(),
+    name: textMatchSchema.optional(),
+    placeholder: textMatchSchema.optional(),
+    role: z.string().min(1).max(64).optional(),
+    testId: textMatchSchema.optional(),
+    text: textMatchSchema.optional(),
+    title: textMatchSchema.optional(),
+  };
+  const locatorStrategySchema = z.strictObject(locatorStrategyShape).refine(
+    locator => Object.values(locator).some(value => value !== undefined),
+    { message: 'A locator strategy must contain at least one selector.' },
+  );
+  const locatorSchema = z.strictObject({
+    ...locatorStrategyShape,
+    descendants: z.array(locatorStrategySchema).max(16).optional(),
+    exclude: locatorStrategySchema.optional(),
+    frameChain: z.array(locatorStrategySchema).max(8).optional(),
+    has: locatorStrategySchema.optional(),
+    hasNotText: textMatchSchema.optional(),
+    hasText: textMatchSchema.optional(),
+    nth: z.number().int().min(-1_000).max(1_000).optional(),
+    visible: z.boolean().optional(),
+  }).refine(
+    locator => Object.entries(locator).some(([key, value]) =>
+      !['descendants', 'exclude', 'frameChain', 'has', 'hasNotText', 'hasText', 'nth', 'visible'].includes(key)
+      && value !== undefined),
+    { message: 'A locator must contain a root selector.' },
+  );
+  const elementTargetShape = {
+    locator: locatorSchema.optional(),
+    ref: z.string().regex(elementReferencePattern).optional(),
+    targetRef: z.string().regex(targetReferencePattern),
+    timeoutMilliseconds: z.number().int().positive().max(30_000).default(10_000),
+  };
+  const hasExactlyOneElementTarget = (input: { readonly locator?: unknown; readonly ref?: unknown }): boolean =>
+    (input.ref === undefined) !== (input.locator === undefined);
   const inputActionTiming = {
     durationMilliseconds: z
       .number()
@@ -1478,8 +2471,7 @@ export function createCdbToolDefinitions(
       .default(1),
   };
   const lifecycleInput = {
-    ...targetInput,
-    sessionId: z.string().uuid().optional(),
+    targetRef: z.string().regex(targetReferencePattern),
     timeoutMilliseconds: z.number().int().positive().max(30_000).default(10_000),
     waitUntil: z.enum(['commit', 'domcontentloaded', 'load']).default('load'),
   };
@@ -1508,12 +2500,61 @@ export function createCdbToolDefinitions(
     'browser.list_targets',
     {
       description:
-        'List currently granted Chrome targets. A target generation can change after navigation without revoking its grant; retry with the returned generation when a tool reports TARGET_GENERATION_STALE.',
+        'List currently granted browser targets using stable session-local references. Target references survive navigation and authority renewal.',
       inputSchema: z.object({}),
     },
     async () => {
       try {
-        return jsonContent(await client.listTargets());
+        const targets = await client.listTargets();
+        return jsonContent(targets.flatMap((target) => {
+          const projected = projectSemanticTarget(sessionState, target);
+          return projected === undefined ? [] : [projected];
+        }));
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  if (enableRawCdp)
+    register(
+      'browser.list_target_authorities',
+      {
+        description: 'List trusted diagnostic target IDs, generations, and scopes for raw CDB operations.',
+        inputSchema: z.object({}),
+      },
+      async () => {
+        try {
+          return jsonContent(await client.listTargets());
+        } catch (error) {
+          return toolError(error);
+        }
+      },
+    );
+  register(
+    'browser.find',
+    {
+      description: 'Find fresh element refs using a strict semantic locator. Refs are disposable and must be refreshed after page changes.',
+      inputSchema: z.object({
+        locator: locatorSchema,
+        maximumMatches: z.number().int().positive().max(100).default(20),
+        targetRef: z.string().regex(targetReferencePattern),
+      }),
+    },
+    async (input, context) => {
+      try {
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        for (const [reference, element] of sessionState.elementReferences) {
+          if (element.targetId === target.id)
+            sessionState.elementReferences.delete(reference);
+        }
+        const matches = (await resolveLocatorCandidates(client, target, input.locator, context.mcpReq.signal))
+          .slice(0, input.maximumMatches)
+          .map(candidate => ({
+            ...(candidate.name === undefined ? {} : { name: candidate.name }),
+            ref: allocateElementReference(sessionState, candidate),
+            role: candidate.role,
+          }));
+        return jsonContent(matches);
       } catch (error) {
         return toolError(error);
       }
@@ -1658,41 +2699,91 @@ export function createCdbToolDefinitions(
     'browser.inspect',
     {
       description:
-        'Evaluate a read-only inspection expression through an authorized lease.',
+        'Read structured page or element attributes, accessibility state, and geometry without executing JavaScript.',
       inputSchema: z.object({
-        expression: z.string().min(1),
-        leaseId: z.string().uuid(),
-        targetGeneration: z.number().int().nonnegative(),
-        targetId: z.string().uuid(),
+        include: z.array(z.enum(['accessibility', 'attributes', 'geometry'])).max(3).default([
+          'accessibility',
+          'attributes',
+          'geometry',
+        ]),
+        locator: locatorSchema.optional(),
+        ref: z.string().regex(elementReferencePattern).optional(),
+        targetRef: z.string().regex(targetReferencePattern),
+      }).refine(input => input.ref === undefined || input.locator === undefined, {
+        message: 'Provide at most one of ref or locator.',
       }),
     },
     async (input, ctx) => {
-      const operationId = randomUUID();
-      const abort = (): void => {
-        void client
-          .cancelCommand({
-            operationId,
-            targetGeneration: input.targetGeneration,
-            targetId: input.targetId,
-          })
-          .catch(() => {});
-      };
-      ctx.mcpReq.signal.addEventListener('abort', abort, { once: true });
       try {
-        return jsonContent(
-          await client.executeCommand({
-            leaseId: input.leaseId,
-            method: 'Runtime.evaluate',
-            operationId,
-            parameters: { expression: input.expression, returnByValue: true },
-            targetGeneration: input.targetGeneration,
-            targetId: input.targetId,
-          }),
-        );
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        if (input.ref === undefined && input.locator === undefined) {
+          const layout = await executeSemanticCommand(
+            client,
+            { targetGeneration: target.generation, targetId: target.id },
+            'shared-read',
+            'Page.getLayoutMetrics',
+            {},
+            ctx.mcpReq.signal,
+          );
+          return jsonContent({
+            layout: commandResultValue(layout),
+            target: projectSemanticTarget(sessionState, target),
+          });
+        }
+        const element = await resolveSemanticElement(client, sessionState, target, input, ctx.mcpReq.signal);
+        const authority = {
+          ...(element.sessionId === undefined ? {} : { sessionId: element.sessionId }),
+          targetGeneration: target.generation,
+          targetId: target.id,
+        };
+        const output: Record<string, unknown> = {};
+        if (input.include.includes('attributes')) {
+          const described = commandResultValue(await executeSemanticCommand(
+            client,
+            authority,
+            'shared-read',
+            'DOM.describeNode',
+            { backendNodeId: element.backendNodeId, depth: 0, pierce: true },
+            ctx.mcpReq.signal,
+          ));
+          const node = property(described, 'node');
+          output.attributes = domNodeAttributes(node);
+          output.nodeName = stringValue(property(node, 'nodeName'));
+        }
+        if (input.include.includes('accessibility')) {
+          const accessibility = commandResultValue(await executeSemanticCommand(
+            client,
+            authority,
+            'shared-read',
+            'Accessibility.getPartialAXTree',
+            { backendNodeId: element.backendNodeId, fetchRelatives: false },
+            ctx.mcpReq.signal,
+          ));
+          const node = arrayValue(property(accessibility, 'nodes'))[0];
+          output.accessibility = {
+            name: accessibilityValue(property(node, 'name')),
+            properties: arrayValue(property(node, 'properties')).flatMap((candidate) => {
+              const name = stringValue(property(candidate, 'name'));
+              const value = accessibilityValue(property(candidate, 'value'));
+              return name === undefined || value === undefined ? [] : [{ name, value }];
+            }),
+            role: accessibilityValue(property(node, 'role')),
+          };
+        }
+        if (input.include.includes('geometry')) {
+          const geometry = commandResultValue(await executeSemanticCommand(
+            client,
+            authority,
+            'shared-read',
+            'DOM.getContentQuads',
+            { backendNodeId: element.backendNodeId },
+            ctx.mcpReq.signal,
+          ));
+          output.quads = property(geometry, 'quads');
+        }
+        return jsonContent(output);
       } catch (error) {
         return toolError(error);
-      } finally {
-        ctx.mcpReq.signal.removeEventListener('abort', abort);
       }
     },
   );
@@ -1748,18 +2839,26 @@ export function createCdbToolDefinitions(
     'browser.snapshot',
     {
       description:
-        'Capture an agent-readable structural DOM tree through read leases, including backendNodeId and opaque child-session references for semantic node actions. Large CDP responses are read and released internally; use browser.raw_cdp with DOMSnapshot.captureSnapshot only when the lossless response is required.',
+        'Capture a fresh accessibility snapshot with disposable element refs. Interactive mode is compact and actionable; accessibility is complete and bounded; DOM is diagnostic.',
       inputSchema: z.object({
-        ...targetInput,
+        targetRef: z.string().regex(targetReferencePattern),
+        mode: z.enum(['interactive', 'accessibility', 'dom']).default('interactive'),
         maximumDepth: z.number().int().nonnegative().max(50).default(20),
-        maximumNodes: z.number().int().positive().max(5_000).default(1_500),
+        maximumNodes: z.number().int().positive().max(5_000).optional(),
       }),
     },
     async (input, context) => {
       try {
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        const maximumNodes = input.maximumNodes ?? (input.mode === 'interactive' ? 500 : 1_500);
+        const targetAuthority = { targetGeneration: target.generation, targetId: target.id };
+        for (const [reference, element] of sessionState.elementReferences) {
+          if (element.targetId === target.id)
+            sessionState.elementReferences.delete(reference);
+        }
         const listedSessions = await executeSemanticCommand(
           client,
-          input,
+          targetAuthority,
           'shared-read',
           'Bridge.listChildSessions',
           {},
@@ -1768,13 +2867,45 @@ export function createCdbToolDefinitions(
         const iframeSessions = childSessionReferences(listedSessions)
           .filter(session => session.type === 'iframe')
           .slice(0, 16);
+        if (input.mode !== 'dom') {
+          const accessibilityMode = input.mode;
+          const captureAccessibility = async (sessionId?: string): Promise<string> => {
+            const commandValue = await executeArtifactCommand(
+              client,
+              { ...targetAuthority, ...(sessionId === undefined ? {} : { sessionId }) },
+              'Accessibility.getFullAXTree',
+              {},
+            );
+            return formatAccessibilityTree(await readableCommandValue(
+              client,
+              targetAuthority,
+              commandValue,
+              context.mcpReq.signal,
+            ), {
+              generation: target.generation,
+              maximumDepth: input.maximumDepth,
+              maximumNodes,
+              mode: accessibilityMode,
+              ...(sessionId === undefined ? {} : { sessionId }),
+              state: sessionState,
+              targetId: target.id,
+            });
+          };
+          const sections = [`# Root session\n${await captureAccessibility()}`];
+          for (const session of iframeSessions)
+            sections.push(`# Frame session\n${await captureAccessibility(session.id)}`);
+          return textContent(sections.join('\n\n').slice(
+            0,
+            input.mode === 'interactive' ? maximumInteractiveSnapshotCharacters : maximumSnapshotCharacters,
+          ));
+        }
         const capture = async (
           maximumNodes: number,
           sessionId?: string,
         ): Promise<FormattedDomSnapshot> => {
           const commandValue = await executeArtifactCommand(
             client,
-            { ...input, ...(sessionId === undefined ? {} : { sessionId }) },
+            { ...targetAuthority, ...(sessionId === undefined ? {} : { sessionId }) },
             'DOMSnapshot.captureSnapshot',
             {
               computedStyles: [],
@@ -1785,7 +2916,7 @@ export function createCdbToolDefinitions(
           return formatDomSnapshot(
             await readableCommandValue(
               client,
-              input,
+              targetAuthority,
               commandValue,
               context.mcpReq.signal,
             ),
@@ -1795,11 +2926,11 @@ export function createCdbToolDefinitions(
             },
           );
         };
-        const rootSnapshot = await capture(input.maximumNodes);
+        const rootSnapshot = await capture(maximumNodes);
         const sections = [`# Root session\n${rootSnapshot.text}`];
         let remainingNodes = Math.max(
           0,
-          input.maximumNodes - rootSnapshot.renderedNodes,
+          maximumNodes - rootSnapshot.renderedNodes,
         );
         for (const [sessionIndex, session] of iframeSessions.entries()) {
           if (remainingNodes === 0) break;
@@ -1831,16 +2962,17 @@ export function createCdbToolDefinitions(
       description:
         'Capture a screenshot, returning the bridge inline-or-artifact result without base64 expansion.',
       inputSchema: z.object({
-        ...targetInput,
         format: z.enum(['jpeg', 'png', 'webp']).default('png'),
+        targetRef: z.string().regex(targetReferencePattern),
       }),
     },
     async (input) => {
       try {
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
         return jsonContent(
           await executeArtifactCommand(
             client,
-            input,
+            { targetGeneration: target.generation, targetId: target.id },
             'Page.captureScreenshot',
             { format: input.format },
           ),
@@ -1855,14 +2987,18 @@ export function createCdbToolDefinitions(
     {
       description:
         'Read a network response body, returning the bridge inline-or-artifact result without base64 expansion.',
-      inputSchema: z.object({ ...targetInput, requestId: z.string().min(1) }),
+      inputSchema: z.object({
+        requestId: z.string().min(1),
+        targetRef: z.string().regex(targetReferencePattern),
+      }),
     },
     async (input) => {
       try {
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
         return jsonContent(
           await executeArtifactCommand(
             client,
-            input,
+            { targetGeneration: target.generation, targetId: target.id },
             'Network.getResponseBody',
             { requestId: input.requestId },
           ),
@@ -1876,15 +3012,19 @@ export function createCdbToolDefinitions(
     'browser.evaluate',
     {
       description:
-        'Evaluate page JavaScript, which may mutate page state, through an exclusive interact lease.',
-      inputSchema: z.object({ ...targetInput, expression: z.string().min(1) }),
+        'Debug escape hatch: evaluate page JavaScript. This bypasses locator guarantees and visible pointer presentation.',
+      inputSchema: z.object({
+        expression: z.string().min(1),
+        targetRef: z.string().regex(targetReferencePattern),
+      }),
     },
     async (input, ctx) => {
       try {
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
         return jsonContent(
           await executeSemanticCommand(
             client,
-            input,
+            { targetGeneration: target.generation, targetId: target.id },
             'exclusive-control',
             'Runtime.evaluate',
             { expression: input.expression, returnByValue: true },
@@ -1900,20 +3040,26 @@ export function createCdbToolDefinitions(
     'browser.navigate',
     {
       description:
-        'Navigate an authorized target, wait for a bounded lifecycle milestone, and return the current target generation.',
+        'Navigate a target and retain its stable target reference across the new document.',
       inputSchema: z.object({ ...lifecycleInput, url: z.url() }),
     },
     async (input, ctx) => {
       try {
-        return jsonContent(
-          await executeLifecycleAction(
-            client,
-            input,
-            ['Page.navigate'],
-            async execute => execute('Page.navigate', { url: input.url }),
-            ctx.mcpReq.signal,
-          ),
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        const result = await executeLifecycleAction(
+          client,
+          {
+            targetGeneration: target.generation,
+            targetId: target.id,
+            timeoutMilliseconds: input.timeoutMilliseconds,
+            waitUntil: input.waitUntil,
+          },
+          ['Page.navigate'],
+          async execute => execute('Page.navigate', { url: input.url }),
+          ctx.mcpReq.signal,
         );
+        await resolveSemanticTarget(client, sessionState, input.targetRef);
+        return jsonContent(semanticLifecycleResult(result, input.targetRef));
       } catch (error) {
         return toolError(error);
       }
@@ -1922,12 +3068,19 @@ export function createCdbToolDefinitions(
   register(
     'browser.back',
     {
-      description: 'Navigate one entry back and return the current target generation after a bounded lifecycle wait.',
+      description: 'Navigate one entry back while retaining the stable target reference.',
       inputSchema: z.object(lifecycleInput),
     },
     async (input, ctx) => {
       try {
-        return jsonContent(await navigateHistory(input, -1, ctx.mcpReq.signal));
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        const result = await navigateHistory({
+          targetGeneration: target.generation,
+          targetId: target.id,
+          timeoutMilliseconds: input.timeoutMilliseconds,
+          waitUntil: input.waitUntil,
+        }, -1, ctx.mcpReq.signal);
+        return jsonContent(semanticLifecycleResult(result, input.targetRef));
       } catch (error) {
         return toolError(error);
       }
@@ -1936,12 +3089,19 @@ export function createCdbToolDefinitions(
   register(
     'browser.forward',
     {
-      description: 'Navigate one entry forward and return the current target generation after a bounded lifecycle wait.',
+      description: 'Navigate one entry forward while retaining the stable target reference.',
       inputSchema: z.object(lifecycleInput),
     },
     async (input, ctx) => {
       try {
-        return jsonContent(await navigateHistory(input, 1, ctx.mcpReq.signal));
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        const result = await navigateHistory({
+          targetGeneration: target.generation,
+          targetId: target.id,
+          timeoutMilliseconds: input.timeoutMilliseconds,
+          waitUntil: input.waitUntil,
+        }, 1, ctx.mcpReq.signal);
+        return jsonContent(semanticLifecycleResult(result, input.targetRef));
       } catch (error) {
         return toolError(error);
       }
@@ -1950,18 +3110,25 @@ export function createCdbToolDefinitions(
   register(
     'browser.reload',
     {
-      description: 'Reload an authorized target and return its current generation after a bounded lifecycle wait.',
+      description: 'Reload a target while retaining the stable target reference.',
       inputSchema: z.object(lifecycleInput),
     },
     async (input, ctx) => {
       try {
-        return jsonContent(await executeLifecycleAction(
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        const result = await executeLifecycleAction(
           client,
-          input,
+          {
+            targetGeneration: target.generation,
+            targetId: target.id,
+            timeoutMilliseconds: input.timeoutMilliseconds,
+            waitUntil: input.waitUntil,
+          },
           ['Page.reload'],
           async execute => execute('Page.reload', {}),
           ctx.mcpReq.signal,
-        ));
+        );
+        return jsonContent(semanticLifecycleResult(result, input.targetRef));
       } catch (error) {
         return toolError(error);
       }
@@ -1970,29 +3137,75 @@ export function createCdbToolDefinitions(
   register(
     'browser.click',
     {
-      description:
-        'Click explicit viewport coordinates. Prefer browser.click_node when a snapshot reference is available.',
+      description: 'Click one element by a fresh ref or a strict locator after bounded actionability checks.',
       inputSchema: z.object({
-        ...targetInput,
+        button: pointerButtonSchema,
+        clickCount: z.number().int().positive().max(3).default(1),
+        locator: locatorSchema.optional(),
+        modifiers: inputModifiersSchema,
+        ref: z.string().regex(elementReferencePattern).optional(),
+        targetRef: z.string().regex(targetReferencePattern),
+        timeoutMilliseconds: z.number().int().positive().max(30_000).default(10_000),
+      }).refine(input => (input.ref === undefined) !== (input.locator === undefined), {
+        message: 'Provide exactly one of ref or locator.',
+      }),
+    },
+    async (input, context) => {
+      try {
+        const attempt = async (): Promise<unknown> => {
+          const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+          const element = await resolveSemanticElementWithRetry(client, sessionState, target, input, context.mcpReq.signal);
+          return executeElementClick(client, target, element, input, context.mcpReq.signal);
+        };
+        try {
+          return jsonContent(await attempt());
+        } catch (error) {
+          if (input.locator === undefined || property(error, 'code') !== 'TARGET_GENERATION_STALE') throw error;
+          return jsonContent(await attempt());
+        }
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  register(
+    'browser.click_at',
+    {
+      description:
+        'Click explicit viewport coordinates. Prefer browser.click with a ref or locator.',
+      inputSchema: z.object({
         button: pointerButtonSchema,
         clickCount: z.number().int().positive().max(3).default(1),
         modifiers: inputModifiersSchema,
+        targetRef: z.string().regex(targetReferencePattern),
         x: z.number().nonnegative(),
         y: z.number().nonnegative(),
       }),
     },
     async (input, ctx) => {
       try {
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        const actionInput = {
+          ...input,
+          targetGeneration: target.generation,
+          targetId: target.id,
+        };
         const results: unknown[] = [];
         let buttonPressed = false;
         const modifiers = encodeInputModifiers(input.modifiers);
         await executeInputAction(
           client,
-          input,
+          actionInput,
           ['Input.dispatchMouseEvent'],
           ctx.mcpReq.signal,
           async (execute, executeCleanup) => {
             try {
+              results.push(await execute('Input.dispatchMouseEvent', {
+                modifiers,
+                type: 'mouseMoved',
+                x: input.x,
+                y: input.y,
+              }));
               for (let clickCount = 1; clickCount <= input.clickCount; clickCount += 1) {
                 results.push(await execute('Input.dispatchMouseEvent', {
                   button: input.button,
@@ -2027,7 +3240,7 @@ export function createCdbToolDefinitions(
             }
           },
         );
-        pointerPositions.set(pointerPositionKey(input), { x: input.x, y: input.y });
+        pointerPositions.set(pointerPositionKey(actionInput), { x: input.x, y: input.y });
         return jsonContent(results);
       } catch (error) {
         return toolError(error);
@@ -2035,23 +3248,25 @@ export function createCdbToolDefinitions(
     },
   );
   register(
-    'browser.move',
+    'browser.move_at',
     {
       description:
-        'Move or hover the pointer at explicit viewport coordinates. Prefer browser.hover_node when a snapshot reference is available.',
+        'Move or hover the pointer at explicit viewport coordinates. Prefer browser.hover when a snapshot reference or locator is available.',
       inputSchema: z.object({
-        ...targetInput,
         ...inputActionTiming,
         modifiers: inputModifiersSchema,
+        targetRef: z.string().regex(targetReferencePattern),
         x: z.number().nonnegative(),
         y: z.number().nonnegative(),
       }),
     },
     async (input, ctx) => {
       try {
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        const actionInput = { ...input, targetGeneration: target.generation, targetId: target.id };
         const destination = { x: input.x, y: input.y };
         const points = interpolateViewportPoints(
-          pointerPositions.get(pointerPositionKey(input)) ?? destination,
+          pointerPositions.get(pointerPositionKey(actionInput)) ?? destination,
           destination,
           input.steps,
         );
@@ -2060,7 +3275,7 @@ export function createCdbToolDefinitions(
         const results: unknown[] = [];
         await executeInputAction(
           client,
-          input,
+          actionInput,
           ['Input.dispatchMouseEvent'],
           ctx.mcpReq.signal,
           async (execute) => {
@@ -2074,7 +3289,7 @@ export function createCdbToolDefinitions(
             }
           },
         );
-        pointerPositions.set(pointerPositionKey(input), destination);
+        pointerPositions.set(pointerPositionKey(actionInput), destination);
         return jsonContent(results);
       } catch (error) {
         return toolError(error);
@@ -2082,21 +3297,23 @@ export function createCdbToolDefinitions(
     },
   );
   register(
-    'browser.scroll',
+    'browser.scroll_at',
     {
       description: 'Dispatch a bounded mouse-wheel scroll at explicit viewport coordinates.',
       inputSchema: z.object({
-        ...targetInput,
         ...inputActionTiming,
         deltaX: z.number().finite(),
         deltaY: z.number().finite(),
         modifiers: inputModifiersSchema,
+        targetRef: z.string().regex(targetReferencePattern),
         x: z.number().nonnegative(),
         y: z.number().nonnegative(),
       }),
     },
     async (input, ctx) => {
       try {
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        const actionInput = { ...input, targetGeneration: target.generation, targetId: target.id };
         if (input.deltaX === 0 && input.deltaY === 0)
           throw new McpToolError('MCP_TOOL_FAILED', 'At least one scroll delta must be non-zero.');
         const modifiers = encodeInputModifiers(input.modifiers);
@@ -2104,7 +3321,7 @@ export function createCdbToolDefinitions(
         const results: unknown[] = [];
         await executeInputAction(
           client,
-          input,
+          actionInput,
           ['Input.dispatchMouseEvent'],
           ctx.mcpReq.signal,
           async (execute) => {
@@ -2138,14 +3355,14 @@ export function createCdbToolDefinitions(
     },
   );
   register(
-    'browser.drag',
+    'browser.drag_at',
     {
       description: 'Drag the pointer along a bounded viewport path.',
       inputSchema: z.object({
-        ...targetInput,
         button: pointerButtonSchema,
         durationMilliseconds: inputActionTiming.durationMilliseconds,
         modifiers: inputModifiersSchema,
+        targetRef: z.string().regex(targetReferencePattern),
         path: z.array(z.object({
           x: z.number().nonnegative(),
           y: z.number().nonnegative(),
@@ -2154,6 +3371,8 @@ export function createCdbToolDefinitions(
     },
     async (input, ctx) => {
       try {
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        const actionInput = { ...input, targetGeneration: target.generation, targetId: target.id };
         const firstPoint = input.path[0];
         const lastPoint = input.path.at(-1);
         if (firstPoint === undefined || lastPoint === undefined)
@@ -2165,7 +3384,7 @@ export function createCdbToolDefinitions(
         let currentPoint = firstPoint;
         await executeInputAction(
           client,
-          input,
+          actionInput,
           ['Input.cancelDragging', 'Input.dispatchMouseEvent'],
           ctx.mcpReq.signal,
           async (execute, executeCleanup) => {
@@ -2218,170 +3437,308 @@ export function createCdbToolDefinitions(
             }
           },
         );
-        pointerPositions.set(pointerPositionKey(input), lastPoint);
+        pointerPositions.set(pointerPositionKey(actionInput), lastPoint);
         return jsonContent(results);
       } catch (error) {
         return toolError(error);
       }
     },
   );
+  const nestedElementTargetSchema = z.object({
+    locator: locatorSchema.optional(),
+    ref: z.string().regex(elementReferencePattern).optional(),
+  }).refine(hasExactlyOneElementTarget, { message: 'Provide exactly one of ref or locator.' });
   register(
-    'browser.click_node',
+    'browser.drag',
     {
-      description:
-        'Click a fresh, visible snapshot node after scrolling and hit-testing it. Prefer this over coordinate clicks.',
+      description: 'Drag from one element to another using fresh refs or strict locators.',
       inputSchema: z.object({
-        ...targetInput,
         button: pointerButtonSchema,
-        clickCount: z.number().int().positive().max(3).default(1),
+        destination: nestedElementTargetSchema,
+        durationMilliseconds: inputActionTiming.durationMilliseconds,
         modifiers: inputModifiersSchema,
-        node: nodeReferenceSchema,
+        source: nestedElementTargetSchema,
+        targetRef: z.string().regex(targetReferencePattern),
+        timeoutMilliseconds: z.number().int().positive().max(30_000).default(10_000),
       }),
     },
-    async (input, ctx) => {
+    async (input, context) => {
       try {
-        return jsonContent(await executeNodeAction(client, {
-          ...input,
-          ...input.node,
-        }, 'click', ctx.mcpReq.signal));
-      } catch (error) {
-        return toolError(error);
-      }
-    },
-  );
-  register(
-    'browser.hover_node',
-    {
-      description:
-        'Move the pointer to a fresh, visible snapshot node after scrolling and hit-testing it.',
-      inputSchema: z.object({
-        ...targetInput,
-        modifiers: inputModifiersSchema,
-        node: nodeReferenceSchema,
-      }),
-    },
-    async (input, ctx) => {
-      try {
-        return jsonContent(await executeNodeAction(client, {
-          ...input,
-          ...input.node,
-        }, 'hover', ctx.mcpReq.signal));
-      } catch (error) {
-        return toolError(error);
-      }
-    },
-  );
-  register(
-    'browser.focus_node',
-    {
-      description:
-        'Focus a fresh, visible snapshot node after scrolling and hit-testing it.',
-      inputSchema: z.object({
-        ...targetInput,
-        node: nodeReferenceSchema,
-      }),
-    },
-    async (input, ctx) => {
-      try {
-        return jsonContent(await executeNodeAction(client, {
-          ...input,
-          ...input.node,
-        }, 'focus', ctx.mcpReq.signal));
-      } catch (error) {
-        return toolError(error);
-      }
-    },
-  );
-  register(
-    'browser.type_node',
-    {
-      description:
-        'Focus a fresh, visible editable snapshot node and insert text into it.',
-      inputSchema: z.object({
-        ...targetInput,
-        node: nodeReferenceSchema,
-        text: z.string().min(1),
-      }),
-    },
-    async (input, ctx) => {
-      try {
-        return jsonContent(await executeNodeAction(client, {
-          ...input,
-          ...input.node,
-        }, 'type', ctx.mcpReq.signal));
-      } catch (error) {
-        return toolError(error);
-      }
-    },
-  );
-  register(
-    'browser.type',
-    {
-      description: 'Insert text through an exclusive lease.',
-      inputSchema: z.object({ ...targetInput, text: z.string().min(1) }),
-    },
-    async (input) => {
-      try {
-        return jsonContent(
-          await executeSemanticCommand(
-            client,
-            input,
-            'exclusive-control',
-            'Input.insertText',
-            { text: input.text },
-          ),
-        );
-      } catch (error) {
-        return toolError(error);
-      }
-    },
-  );
-  register(
-    'browser.press',
-    {
-      description: 'Dispatch a key through an exclusive lease.',
-      inputSchema: z.object({ ...targetInput, key: z.string().min(1) }),
-    },
-    async (input, ctx) => {
-      try {
-        const results: unknown[] = [];
-        let keyPressed = false;
-        await executeInputAction(
+        const retryLocator = input.source.locator !== undefined && input.destination.locator !== undefined
+          ? input.source.locator
+          : undefined;
+        return jsonContent(await executeWithRenewedLocatorRetry(
           client,
-          input,
-          ['Input.dispatchKeyEvent'],
-          ctx.mcpReq.signal,
-          async (execute, executeCleanup) => {
+          sessionState,
+          { locator: retryLocator, targetRef: input.targetRef },
+          async (target) => {
+            const source = await resolveSemanticElementWithRetry(
+              client,
+              sessionState,
+              target,
+              { ...input.source, timeoutMilliseconds: input.timeoutMilliseconds },
+              context.mcpReq.signal,
+            );
+            const destination = await resolveSemanticElementWithRetry(
+              client,
+              sessionState,
+              target,
+              { ...input.destination, timeoutMilliseconds: input.timeoutMilliseconds },
+              context.mcpReq.signal,
+            );
+            if (source.sessionId !== destination.sessionId)
+              throw new McpToolError('MCP_DRAG_CROSS_FRAME_UNSUPPORTED', 'A drag cannot cross frame sessions.');
+            const firstPoint = await elementCenterPoint(client, target, source, context.mcpReq.signal);
+            const lastPoint = await elementCenterPoint(client, target, destination, context.mcpReq.signal);
+            const path = interpolateViewportPoints(firstPoint, lastPoint, Math.max(2, Math.ceil(input.durationMilliseconds / 50)));
+            const actionInput = {
+              ...(source.sessionId === undefined ? {} : { sessionId: source.sessionId }),
+              targetGeneration: target.generation,
+              targetId: target.id,
+            };
+            let buttonPressed = false;
+            let currentPoint = firstPoint;
+            const dispatchState = { inputDispatched: false };
+            const results: unknown[] = [];
             try {
-              results.push(await execute('Input.dispatchKeyEvent', {
-                key: input.key,
-                text: input.key,
-                type: 'keyDown',
-              }));
-              keyPressed = true;
-              results.push(await execute('Input.dispatchKeyEvent', {
-                key: input.key,
-                type: 'keyUp',
-              }));
-              keyPressed = false;
-            } finally {
-              if (keyPressed) {
-                await executeCleanup('Input.dispatchKeyEvent', {
-                  key: input.key,
-                  type: 'keyUp',
-                });
-              }
+              await executeInputAction(
+                client,
+                actionInput,
+                ['Input.cancelDragging', 'Input.dispatchMouseEvent'],
+                context.mcpReq.signal,
+                async (execute, executeCleanup) => {
+                  try {
+                    dispatchState.inputDispatched = true;
+                    results.push(await execute('Input.dispatchMouseEvent', {
+                      modifiers: encodeInputModifiers(input.modifiers),
+                      type: 'mouseMoved',
+                      ...firstPoint,
+                    }));
+                    results.push(await execute('Input.dispatchMouseEvent', {
+                      button: input.button,
+                      buttons: pointerButtonValues[input.button],
+                      clickCount: 1,
+                      modifiers: encodeInputModifiers(input.modifiers),
+                      type: 'mousePressed',
+                      ...firstPoint,
+                    }));
+                    buttonPressed = true;
+                    for (const point of path.slice(1)) {
+                      currentPoint = point;
+                      results.push(await execute('Input.dispatchMouseEvent', {
+                        button: input.button,
+                        buttons: pointerButtonValues[input.button],
+                        modifiers: encodeInputModifiers(input.modifiers),
+                        type: 'mouseMoved',
+                        ...point,
+                      }));
+                      await waitForInputStep(input.durationMilliseconds / Math.max(1, path.length - 1), context.mcpReq.signal);
+                    }
+                    results.push(await execute('Input.dispatchMouseEvent', {
+                      button: input.button,
+                      clickCount: 1,
+                      modifiers: encodeInputModifiers(input.modifiers),
+                      type: 'mouseReleased',
+                      ...lastPoint,
+                    }));
+                    buttonPressed = false;
+                  } finally {
+                    if (buttonPressed) {
+                      await executeCleanup('Input.dispatchMouseEvent', {
+                        button: input.button,
+                        clickCount: 1,
+                        modifiers: encodeInputModifiers(input.modifiers),
+                        type: 'mouseReleased',
+                        ...currentPoint,
+                      });
+                    }
+                    if (context.mcpReq.signal.aborted)
+                      await executeCleanup('Input.cancelDragging', {});
+                  }
+                },
+              );
+            } catch (error) {
+              if (dispatchState.inputDispatched)
+                throw new McpToolError('MCP_ACTION_OUTCOME_UNKNOWN', 'Drag input may have been dispatched before the action failed. The action was not replayed.');
+              throw error;
             }
+            return results;
           },
-        );
-        return jsonContent(results);
+        ));
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  const registerElementInteraction = (
+    name: 'browser.fill' | 'browser.focus' | 'browser.hover' | 'browser.press' | 'browser.scroll_into_view' | 'browser.type',
+    description: string,
+    interaction: 'fill' | 'focus' | 'hover' | 'press' | 'scroll-into-view' | 'type',
+  ): void => {
+    register(
+      name,
+      {
+        description,
+        inputSchema: z.object({
+          ...elementTargetShape,
+          ...(interaction === 'fill' || interaction === 'type'
+            ? { text: z.string().max(100_000) }
+            : {}),
+          ...(interaction === 'press' ? { key: z.string().min(1).max(64) } : {}),
+          modifiers: inputModifiersSchema,
+        }).refine(hasExactlyOneElementTarget, { message: 'Provide exactly one of ref or locator.' }),
+      },
+      async (input, context) => {
+        try {
+          const interactionInput: ElementInteraction = interaction === 'fill' || interaction === 'type'
+            ? { kind: interaction, text: String(property(input, 'text') ?? '') }
+            : interaction === 'press'
+              ? { key: String(property(input, 'key') ?? ''), kind: 'press' }
+              : { kind: interaction };
+          return jsonContent(await executeWithRenewedLocatorRetry(
+            client,
+            sessionState,
+            input,
+            async (target) => {
+              const element = await resolveSemanticElementWithRetry(
+                client,
+                sessionState,
+                target,
+                input,
+                context.mcpReq.signal,
+              );
+              return executeElementInteraction(
+                client,
+                target,
+                element,
+                interactionInput,
+                input.modifiers,
+                input.timeoutMilliseconds,
+                context.mcpReq.signal,
+              );
+            },
+          ));
+        } catch (error) {
+          return toolError(error);
+        }
+      },
+    );
+  };
+  registerElementInteraction('browser.hover', 'Move the visible agent pointer to an element selected by ref or locator.', 'hover');
+  registerElementInteraction('browser.focus', 'Focus an element selected by ref or locator.', 'focus');
+  registerElementInteraction('browser.fill', 'Replace the value of an editable element selected by ref or locator.', 'fill');
+  registerElementInteraction('browser.type', 'Insert text into an editable element selected by ref or locator.', 'type');
+  registerElementInteraction('browser.press', 'Focus an element and dispatch a key.', 'press');
+  registerElementInteraction('browser.scroll_into_view', 'Scroll an element into the viewport.', 'scroll-into-view');
+  for (const [name, desiredState] of [
+    ['browser.check', true],
+    ['browser.uncheck', false],
+  ] as const) {
+    register(
+      name,
+      {
+        description: `${desiredState ? 'Check' : 'Uncheck'} a checkbox or switch selected by ref or locator.`,
+        inputSchema: z.object({
+          ...elementTargetShape,
+          modifiers: inputModifiersSchema,
+        }).refine(hasExactlyOneElementTarget, { message: 'Provide exactly one of ref or locator.' }),
+      },
+      async (input, context) => {
+        try {
+          return jsonContent(await executeWithRenewedLocatorRetry(
+            client,
+            sessionState,
+            input,
+            async (target) => {
+              const element = await resolveSemanticElementWithRetry(
+                client,
+                sessionState,
+                target,
+                input,
+                context.mcpReq.signal,
+              );
+              const currentState = await elementCheckedState(client, target, element, context.mcpReq.signal);
+              if (currentState === undefined)
+                throw new McpToolError('MCP_ELEMENT_NOT_CHECKABLE', 'The element is not checkable.');
+              if (currentState === desiredState) return { changed: false, checked: currentState };
+              await executeElementClick(client, target, element, {
+                button: 'left',
+                clickCount: 1,
+                modifiers: input.modifiers,
+                timeoutMilliseconds: input.timeoutMilliseconds,
+              }, context.mcpReq.signal);
+              return { changed: true, checked: desiredState };
+            },
+          ));
+        } catch (error) {
+          return toolError(error);
+        }
+      },
+    );
+  }
+  register(
+    'browser.select_option',
+    {
+      description: 'Focus a select element and choose an option by its visible label.',
+      inputSchema: z.object({
+        ...elementTargetShape,
+        label: z.string().min(1).max(2_000),
+      }).refine(hasExactlyOneElementTarget, { message: 'Provide exactly one of ref or locator.' }),
+    },
+    async (input, context) => {
+      try {
+        return jsonContent(await executeWithRenewedLocatorRetry(
+          client,
+          sessionState,
+          input,
+          async (target) => {
+            const element = await resolveSemanticElementWithRetry(
+              client,
+              sessionState,
+              target,
+              input,
+              context.mcpReq.signal,
+            );
+            await executeElementInteraction(
+              client,
+              target,
+              element,
+              { kind: 'focus' },
+              [],
+              input.timeoutMilliseconds,
+              context.mcpReq.signal,
+            );
+            await executeSemanticCommand(
+              client,
+              {
+                ...(element.sessionId === undefined ? {} : { sessionId: element.sessionId }),
+                targetGeneration: target.generation,
+                targetId: target.id,
+              },
+              'exclusive-control',
+              'Input.insertText',
+              { text: input.label },
+              context.mcpReq.signal,
+            );
+            await executeElementInteraction(
+              client,
+              target,
+              element,
+              { key: 'Enter', kind: 'press' },
+              [],
+              input.timeoutMilliseconds,
+              context.mcpReq.signal,
+            );
+            return { selected: input.label };
+          },
+        ));
       } catch (error) {
         return toolError(error);
       }
     },
   );
   const eventWaitInput = {
-    ...targetInput,
+    targetRef: z.string().regex(targetReferencePattern),
     leaseId: z.string().uuid().optional(),
     sessionId: z.string().uuid().optional(),
     timeoutMilliseconds: z.number().int().positive().max(30_000).default(5_000),
@@ -2393,22 +3750,26 @@ export function createCdbToolDefinitions(
       inputSchema: z.object(lifecycleInput),
     },
     async (input, ctx) => {
+      const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+      const lifecycleAuthority: LifecycleInput = {
+        targetGeneration: target.generation,
+        targetId: target.id,
+        timeoutMilliseconds: input.timeoutMilliseconds,
+        waitUntil: input.waitUntil,
+      };
       const renewalAbortController = new AbortController();
-      const renewedTarget = input.sessionId === undefined
-        ? waitForRenewedTarget(client, input, renewalAbortController.signal)
-        : undefined;
-      renewedTarget?.catch(() => {});
+      const renewedTarget = waitForRenewedTarget(client, lifecycleAuthority, renewalAbortController.signal);
+      renewedTarget.catch(() => {});
       try {
-        const event = await waitForNavigationEvent(client, input, ctx.mcpReq.signal);
-        let currentTarget = (await client.listTargets()).find(target => target.id === input.targetId);
+        const event = await waitForNavigationEvent(client, lifecycleAuthority, ctx.mcpReq.signal);
+        let currentTarget = (await client.listTargets()).find(candidate => candidate.id === target.id);
         if (currentTarget === undefined)
           throw new McpToolError('TARGET_NOT_FOUND', 'The navigated target is no longer available.');
         if (
-          renewedTarget !== undefined
-          && event.method !== 'Page.navigatedWithinDocument'
-          && currentTarget.generation <= input.targetGeneration
+          event.method !== 'Page.navigatedWithinDocument'
+          && currentTarget.generation <= target.generation
         ) currentTarget = await renewedTarget;
-        return jsonContent({ event, target: currentTarget });
+        return jsonContent({ event: semanticEvent(event), target: projectSemanticTarget(sessionState, currentTarget) });
       } catch (error) {
         return toolError(error);
       } finally {
@@ -2424,12 +3785,16 @@ export function createCdbToolDefinitions(
     },
     async (input, ctx) => {
       try {
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
         const { leaseId, ...eventInput } = input;
-        return jsonContent(await waitForEvent(client, {
-          ...eventInput,
+        return jsonContent(semanticEvent(await waitForEvent(client, {
+          sessionId: eventInput.sessionId,
+          targetGeneration: target.generation,
+          targetId: target.id,
+          timeoutMilliseconds: eventInput.timeoutMilliseconds,
           ...(leaseId === undefined ? {} : { leaseId }),
           method: 'Page.javascriptDialogOpening',
-        }, ctx.mcpReq.signal));
+        }, ctx.mcpReq.signal)));
       } catch (error) {
         return toolError(error);
       }
@@ -2440,7 +3805,7 @@ export function createCdbToolDefinitions(
     {
       description: 'Accept or dismiss the current JavaScript dialog through an exclusive lease.',
       inputSchema: z.object({
-        ...targetInput,
+        targetRef: z.string().regex(targetReferencePattern),
         accept: z.boolean(),
         promptText: z.string().optional(),
         sessionId: z.string().uuid().optional(),
@@ -2448,9 +3813,14 @@ export function createCdbToolDefinitions(
     },
     async (input, ctx) => {
       try {
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
         return jsonContent(await executeSemanticCommand(
           client,
-          input,
+          {
+            ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+            targetGeneration: target.generation,
+            targetId: target.id,
+          },
           'exclusive-control',
           'Page.handleJavaScriptDialog',
           {
@@ -2473,17 +3843,21 @@ export function createCdbToolDefinitions(
     },
     async (input, ctx) => {
       try {
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
         const { leaseId, ...eventInput } = input;
         return jsonContent(
-          await waitForEvent(
+          semanticEvent(await waitForEvent(
             client,
             {
-              ...eventInput,
+              sessionId: eventInput.sessionId,
+              targetGeneration: target.generation,
+              targetId: target.id,
+              timeoutMilliseconds: eventInput.timeoutMilliseconds,
               ...(leaseId === undefined ? {} : { leaseId }),
               method: 'Runtime.consoleAPICalled',
             },
             ctx.mcpReq.signal,
-          ),
+          )),
         );
       } catch (error) {
         return toolError(error);
@@ -2499,17 +3873,21 @@ export function createCdbToolDefinitions(
     },
     async (input, ctx) => {
       try {
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
         const { leaseId, ...eventInput } = input;
         return jsonContent(
-          await waitForEvent(
+          semanticEvent(await waitForEvent(
             client,
             {
-              ...eventInput,
+              sessionId: eventInput.sessionId,
+              targetGeneration: target.generation,
+              targetId: target.id,
+              timeoutMilliseconds: eventInput.timeoutMilliseconds,
               ...(leaseId === undefined ? {} : { leaseId }),
               method: 'Network.responseReceived',
             },
             ctx.mcpReq.signal,
-          ),
+          )),
         );
       } catch (error) {
         return toolError(error);
@@ -2528,13 +3906,21 @@ export function createCdbToolDefinitions(
     },
     async (input, ctx) => {
       try {
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
         const { leaseId, ...eventInput } = input;
         return jsonContent(
-          await waitForEvent(
+          semanticEvent(await waitForEvent(
             client,
-            { ...eventInput, ...(leaseId === undefined ? {} : { leaseId }) },
+            {
+              method: eventInput.method,
+              sessionId: eventInput.sessionId,
+              targetGeneration: target.generation,
+              targetId: target.id,
+              timeoutMilliseconds: eventInput.timeoutMilliseconds,
+              ...(leaseId === undefined ? {} : { leaseId }),
+            },
             ctx.mcpReq.signal,
-          ),
+          )),
         );
       } catch (error) {
         return toolError(error);
@@ -2542,6 +3928,40 @@ export function createCdbToolDefinitions(
     },
   );
   return definitions;
+}
+
+/** Creates one stateful semantic tool session owned by an MCP principal. */
+export function createCdbToolSession(
+  options: RegisterCdbToolsOptions,
+): CdbToolSession {
+  const state = createCdbToolSessionState();
+  const definitions = createCdbToolDefinitionsForSession(options, state);
+  return {
+    definitions,
+    dispose() {
+      state.disposed = true;
+      state.elementReferences.clear();
+      state.targetIdsByReference.clear();
+      state.targetReferencesById.clear();
+    },
+    projectTarget: target => projectSemanticTarget(state, target),
+    revokeTarget(targetId) {
+      const targetRef = state.targetReferencesById.get(targetId);
+      if (targetRef === undefined) return;
+      state.targetReferencesById.delete(targetId);
+      state.targetIdsByReference.delete(targetRef);
+      for (const [elementRef, element] of state.elementReferences)
+        if (element.targetId === targetId) state.elementReferences.delete(elementRef);
+    },
+    targetIdForReference: targetRef => state.targetIdsByReference.get(targetRef),
+  };
+}
+
+/** @deprecated Hosts should keep one createCdbToolSession result per principal. */
+export function createCdbToolDefinitions(
+  options: RegisterCdbToolsOptions,
+): CdbToolDefinition[] {
+  return [...createCdbToolSession(options).definitions];
 }
 
 /**
@@ -2553,7 +3973,13 @@ export function registerCdbTools(
   server: McpServer,
   options: RegisterCdbToolsOptions,
 ): void {
-  const definitions = createCdbToolDefinitions(options);
+  registerCdbToolDefinitions(server, createCdbToolSession(options).definitions);
+}
+
+function registerCdbToolDefinitions(
+  server: McpServer,
+  definitions: readonly CdbToolDefinition[],
+): void {
   const registeredTools = (
     server as unknown as { readonly _registeredTools?: Record<string, unknown> }
   )._registeredTools;
@@ -2579,14 +4005,13 @@ export function registerCdbTools(
 }
 
 function createMcpServer(
-  client: McpChromeDebuggerBridgeClient,
-  enableRawCdp = false,
+  definitions: readonly CdbToolDefinition[],
 ): McpServer {
   const server = new McpServer({
     name: 'chrome-debugger-bridge',
     version: '0.0.0',
   });
-  registerCdbTools(server, { client, enableRawCdp });
+  registerCdbToolDefinitions(server, definitions);
   return server;
 }
 
@@ -2595,8 +4020,9 @@ export function mountMcpStreamableHttp(
   options: MountMcpStreamableHttpOptions,
 ): MountedMcpStreamableHttp {
   const path = options.path ?? '/cdb/mcp';
+  const session = createCdbToolSession(options);
   const handler = createMcpHandler(
-    () => createMcpServer(options.client, options.enableRawCdp),
+    () => createMcpServer(session.definitions),
     { legacy: 'reject', responseMode: 'sse' },
   );
   const nodeHandler = toNodeHandler(handler);
@@ -2619,14 +4045,22 @@ export function mountMcpStreamableHttp(
       closed = true;
       options.server.off('request', listener);
       await handler.close();
+      session.dispose();
     },
   };
 }
 
 /** Starts an optional stdio adapter around the same MCP tool surface without owning broker lifecycle. */
 export function mountMcpStdio(options: MountMcpStdioOptions): MountedMcpStdio {
-  return serveStdio(
-    () => createMcpServer(options.client, options.enableRawCdp),
+  const session = createCdbToolSession(options);
+  const mounted = serveStdio(
+    () => createMcpServer(session.definitions),
     { ...options.stdio, legacy: 'reject' },
   );
+  return {
+    async close() {
+      await mounted.close();
+      session.dispose();
+    },
+  };
 }

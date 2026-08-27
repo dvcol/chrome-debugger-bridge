@@ -8,13 +8,15 @@ import {
 
 describe('generated CDP capability catalogue', () => {
   it('classifies representative commands and events by their direct purpose', () => {
-    expect.assertions(10);
+    expect.assertions(12);
 
     expect(cdpCapabilityCatalogue['Inspector.detached']).toEqual({ kind: 'event', level: 'observe' });
     expect(cdpCapabilityCatalogue['DOM.getDocument']).toEqual({ kind: 'command', level: 'inspect' });
     expect(cdpCapabilityCatalogue['Network.responseReceived']).toEqual({ kind: 'event', level: 'inspect' });
     expect(cdpCapabilityCatalogue['Page.navigate']).toEqual({ kind: 'command', level: 'interact' });
-    expect(cdpCapabilityCatalogue['Runtime.evaluate']).toEqual({ kind: 'command', level: 'interact' });
+    expect(cdpCapabilityCatalogue['Runtime.evaluate']).toEqual({ kind: 'command', level: 'debug' });
+    expect(cdpCapabilityCatalogue['Runtime.callFunctionOn']).toEqual({ kind: 'command', level: 'debug' });
+    expect(cdpCapabilityCatalogue['Runtime.runScript']).toEqual({ kind: 'command', level: 'debug' });
     expect(cdpCapabilityCatalogue['Debugger.pause']).toEqual({ kind: 'command', level: 'debug' });
     expect(cdpCapabilityCatalogue['Fetch.requestPaused']).toEqual({ kind: 'event', level: 'debug' });
     expect(cdpCapabilityCatalogue['Page.crash']).toEqual({ kind: 'command', level: 'unsafe' });

@@ -41,14 +41,20 @@ principals independently against one stable target; QA Helper renews that target
 tab crosses HTTP(S) origins. CDB only fences generations and applies the per-principal authority it
 receives.
 
-Agents do not need to infer page structure from screenshots. `browser.snapshot` captures a
-structural DOM snapshot and returns a bounded text tree with backend node IDs and opaque child-session
-references. Semantic tools resolve those references immediately before click, hover, focus, or text
-entry. Coordinate pointer tools cover move, multi-button click, wheel scrolling, and drag. Navigation
-tools cover URL navigation, history, reload, bounded load milestones, and JavaScript dialogs. It
-consumes any broker artifact internally and omits inline `script`, `style`, and `noscript` bodies from
-this default agent-readable view. Hosts can expose the generated raw CDP command catalogue when an
-authorized agent needs the lossless response or another protocol operation.
+Each authenticated MCP principal owns one `createCdbToolSession`. The session projects authorized
+targets as short `tN` references that survive document and generation renewal, and disposes them when
+the target is revoked or the principal disconnects. Raw target IDs and generations remain available
+only through the diagnostic listing and trusted host UI.
+
+Agents do not need to infer page structure from screenshots. `browser.snapshot` defaults to a compact
+interactive accessibility tree and returns monotonic disposable `eN` element references. Complete
+bounded accessibility and diagnostic DOM modes are available explicitly. `browser.find` and semantic
+actions accept serializable Playwright-style locators for roles, names, text, labels, placeholders,
+alt text, titles, test IDs, CSS, frames, descendants, and filters. Locator actions re-resolve before
+input, traverse author shadow roots, wait for actionability, and never replay after input might have
+been dispatched. Coordinate-only controls are named with an `_at` suffix. `browser.evaluate` is a
+debug-level escape hatch: it bypasses locator guarantees and visible pointer feedback. Hosts can also
+expose the generated raw CDP catalogue for lossless protocol access.
 
 Extension hosts can opt into `@dvcol/cdb-extension/presentation`. It renders an isolated pointer and
 temporary control favicon from sanitized successful input events. The host still owns installation,
@@ -80,7 +86,7 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the protocol and failure model. See
 | `@dvcol/cdb`           | Broker, client facade, protocol types, target authorization, leases, and command routing |
 | `@dvcol/cdb-birpc`     | RPC transport adapter                                                                    |
 | `@dvcol/cdb-extension` | Browser-extension helpers for publication, recovery, and opt-in control presentation |
-| `@dvcol/cdb-mcp`       | Transport-neutral MCP tool definitions over a CDB client                                 |
+| `@dvcol/cdb-mcp`       | Principal-scoped semantic and raw MCP tool sessions over a CDB client                    |
 | `@dvcol/cdb-websocket` | Authenticated browser and Node WebSocket transports                                      |
 
 ## Local linking

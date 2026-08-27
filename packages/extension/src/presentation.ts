@@ -30,6 +30,7 @@ export interface AgentControlInputCommand {
 }
 
 const presentersByDocument = new WeakMap<Document, AgentControlPresenter>();
+const relationWhitespacePattern = /\s+/u;
 
 function finiteCoordinate(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
@@ -104,6 +105,42 @@ export function createAgentControlPresenter(
   let controllerCount = 1;
   let disposed = false;
   let favicon: HTMLLinkElement | undefined;
+  const pageFaviconStates = new Map<HTMLLinkElement, {
+    desiredRel: string;
+    neutralRel: string;
+  }>();
+
+  const neutralRel = (rel: string): string => rel
+    .split(relationWhitespacePattern)
+    .filter(token => token.length > 0 && token.toLowerCase() !== 'icon')
+    .join(' ');
+  const neutralizePageFavicon = (candidate: HTMLLinkElement): void => {
+    if (candidate === favicon || candidate.dataset.cdbAgentControl === 'favicon') return;
+    const currentRel = candidate.getAttribute('rel') ?? '';
+    const priorState = pageFaviconStates.get(candidate);
+    if (priorState !== undefined && currentRel === priorState.neutralRel) return;
+    if (!candidate.relList.contains('icon')) {
+      if (priorState !== undefined) priorState.desiredRel = currentRel;
+      return;
+    }
+    const state = priorState ?? { desiredRel: currentRel, neutralRel: '' };
+    state.desiredRel = currentRel;
+    state.neutralRel = neutralRel(currentRel);
+    pageFaviconStates.set(candidate, state);
+    candidate.setAttribute('rel', state.neutralRel);
+  };
+  const neutralizePageFavicons = (root: ParentNode): void => {
+    if (root instanceof document.defaultView!.HTMLLinkElement)
+      neutralizePageFavicon(root);
+    for (const candidate of root.querySelectorAll<HTMLLinkElement>('link'))
+      neutralizePageFavicon(candidate);
+  };
+  const restorePageFavicons = (): void => {
+    for (const [candidate, state] of pageFaviconStates) {
+      if (candidate.isConnected) candidate.setAttribute('rel', state.desiredRel);
+    }
+    pageFaviconStates.clear();
+  };
 
   const removeFavicon = (): void => {
     favicon?.remove();
@@ -111,6 +148,7 @@ export function createAgentControlPresenter(
   };
   const ensureFavicon = (): void => {
     if (!active || disposed || document.head === null) return;
+    neutralizePageFavicons(document.head);
     if (favicon === undefined) {
       favicon = document.createElement('link');
       favicon.rel = 'icon';
@@ -122,9 +160,25 @@ export function createAgentControlPresenter(
   const MutationObserverConstructor = document.defaultView?.MutationObserver;
   const faviconObserver = MutationObserverConstructor === undefined
     ? undefined
-    : new MutationObserverConstructor(() => ensureFavicon());
+    : new MutationObserverConstructor((records) => {
+        if (!active || disposed) return;
+        for (const record of records) {
+          if (record.type === 'attributes' && record.target instanceof document.defaultView!.HTMLLinkElement)
+            neutralizePageFavicon(record.target);
+          for (const addedNode of record.addedNodes) {
+            if (addedNode instanceof document.defaultView!.Element)
+              neutralizePageFavicons(addedNode);
+          }
+        }
+        ensureFavicon();
+      });
   if (document.head !== null)
-    faviconObserver?.observe(document.head, { childList: true, subtree: true });
+    faviconObserver?.observe(document.head, {
+      attributeFilter: ['rel'],
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
 
   function position(x: number, y: number): void {
     const transform = `translate3d(${x}px, ${y}px, 0)`;
@@ -138,6 +192,7 @@ export function createAgentControlPresenter(
       disposed = true;
       faviconObserver?.disconnect();
       removeFavicon();
+      restorePageFavicons();
       host.remove();
       if (presentersByDocument.get(document) === presenter)
         presentersByDocument.delete(document);
@@ -159,7 +214,10 @@ export function createAgentControlPresenter(
       controllerCount = Math.max(1, Math.trunc(state.controllerCount ?? 1));
       host.hidden = !active;
       if (active) ensureFavicon();
-      else removeFavicon();
+      else {
+        removeFavicon();
+        restorePageFavicons();
+      }
     },
   };
   presentersByDocument.set(document, presenter);

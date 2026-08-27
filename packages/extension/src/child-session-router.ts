@@ -1,11 +1,16 @@
 export interface PublicChildSession {
+  readonly frameId?: string;
   readonly generation: number;
   readonly id: string;
   readonly type: string;
+  readonly url?: string;
 }
 
 export interface ChildSessionRouter {
-  attach: (chromeSessionId: string, type?: string) => PublicChildSession;
+  attach: (
+    chromeSessionId: string,
+    metadata?: string | { readonly frameId?: string; readonly type?: string; readonly url?: string },
+  ) => PublicChildSession;
   detach: (chromeSessionId: string) => PublicChildSession | undefined;
   list: () => readonly PublicChildSession[];
   publicSessionForChromeId: (chromeSessionId: string) => PublicChildSession | undefined;
@@ -20,10 +25,17 @@ export function createChildSessionRouter(): ChildSessionRouter {
   let generation = 0;
 
   return {
-    attach(chromeSessionId, type = 'unknown') {
+    attach(chromeSessionId, metadata = {}) {
       const existing = publicSessionByChromeId.get(chromeSessionId);
       if (existing !== undefined) return existing;
-      const session = { generation: ++generation, id: globalThis.crypto.randomUUID(), type };
+      const sessionMetadata = typeof metadata === 'string' ? { type: metadata } : metadata;
+      const session = {
+        ...(sessionMetadata.frameId === undefined ? {} : { frameId: sessionMetadata.frameId }),
+        generation: ++generation,
+        id: globalThis.crypto.randomUUID(),
+        type: sessionMetadata.type ?? 'unknown',
+        ...(sessionMetadata.url === undefined ? {} : { url: sessionMetadata.url }),
+      };
       chromeSessionIdByPublicId.set(session.id, chromeSessionId);
       publicSessionByChromeId.set(chromeSessionId, session);
       return session;

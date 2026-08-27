@@ -412,7 +412,10 @@ it('configures recursive flat sessions and exposes only eligible child-session i
   });
   const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
   sendCommand.mockClear();
-  publisher.debuggerEvent({ tabId: 42 }, 'Target.attachedToTarget', { sessionId: 'private-frame-session', targetInfo: { type: 'iframe' } });
+  publisher.debuggerEvent({ tabId: 42 }, 'Target.attachedToTarget', {
+    sessionId: 'private-frame-session',
+    targetInfo: { targetId: 'frame-target', type: 'iframe', url: 'https://frame.example.test/' },
+  });
   publisher.debuggerEvent({ tabId: 42 }, 'Target.attachedToTarget', { sessionId: 'private-page-session', targetInfo: { type: 'page' } });
   await new Promise(resolve => setTimeout(resolve, 0));
   const child = publisher.attachChildSession('private-frame-session');
@@ -438,7 +441,15 @@ it('configures recursive flat sessions and exposes only eligible child-session i
 
   expect(sendCommand).toHaveBeenNthCalledWith(1, { sessionId: 'private-frame-session', tabId: 42 }, 'Target.setAutoAttach', { autoAttach: true, filter: [{ exclude: false, type: 'iframe' }, { exclude: false, type: 'service_worker' }, { exclude: false, type: 'shared_worker' }, { exclude: false, type: 'worker' }], flatten: true, waitForDebuggerOnStart: true });
   expect(sendCommand).toHaveBeenNthCalledWith(3, { sessionId: 'private-frame-session', tabId: 42 }, 'Runtime.evaluate', undefined);
-  expect(listedSessions).toEqual({ sessions: [{ generation: child.generation, id: child.id, type: 'iframe' }] });
+  expect(listedSessions).toEqual({
+    sessions: [{
+      frameId: 'frame-target',
+      generation: child.generation,
+      id: child.id,
+      type: 'iframe',
+      url: 'https://frame.example.test/',
+    }],
+  });
   await expect(execute?.(childCommand, new AbortController().signal, lease)).rejects.toThrow('not available');
   expect(publisher.attachChildSession('private-frame-session').id).not.toBe(child.id);
   expect(() => publisher.attachChildSession('private-page-session')).not.toThrow();

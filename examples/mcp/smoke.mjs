@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 
 import { createEmbeddedChromeDebuggerBridge } from '@dvcol/cdb';
-import { createCdbToolDefinitions, mountMcpStdio, mountMcpStreamableHttp, supportedMcpProtocolVersions, supportedMcpSdkVersion } from '@dvcol/cdb-mcp';
+import { createCdbToolSession, mountMcpStdio, mountMcpStreamableHttp, supportedMcpProtocolVersions, supportedMcpSdkVersion } from '@dvcol/cdb-mcp';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 const target = {
@@ -48,11 +48,12 @@ async function main() {
       bridge.broker.cancelCommand(operationId);
     },
   };
-  const toolDefinitions = createCdbToolDefinitions({ client: bridgeClient });
+  const toolSession = createCdbToolSession({ client: bridgeClient });
   assert.equal(
-    toolDefinitions.some(toolDefinition => toolDefinition.name === 'browser.list_targets'),
+    toolSession.definitions.some(toolDefinition => toolDefinition.name === 'browser.list_targets'),
     true,
   );
+  toolSession.dispose();
   const mountedHttp = mountMcpStreamableHttp({
     client: bridgeClient,
     path: '/mcp',
@@ -91,53 +92,31 @@ async function main() {
       tools.tools.some(tool => tool.name === 'browser.raw_cdp'),
       false,
     );
-    assert.deepEqual(JSON.parse((await client.callTool({ arguments: {}, name: 'browser.list_targets' })).content[0].text), [target]);
-
-    const inspectionLease = JSON.parse(
-      (
-        await client.callTool({
-          arguments: {
-            durationMilliseconds: 30_000,
-            mode: 'exclusive-control',
-            requestedMethods: ['Runtime.evaluate'],
-            targetGeneration: target.generation,
-            targetId: target.id,
-          },
-          name: 'browser.acquire',
-        })
-      ).content[0].text,
-    );
+    const semanticTargets = JSON.parse((await client.callTool({ arguments: {}, name: 'browser.list_targets' })).content[0].text);
+    assert.equal(semanticTargets.length, 1);
+    assert.equal(semanticTargets[0].targetRef, 't1');
+    assert.equal('generation' in semanticTargets[0], false);
+    const targetRef = semanticTargets[0].targetRef;
     assert.equal(
       JSON.parse(
         (
           await client.callTool({
             arguments: {
               expression: 'document.title',
-              leaseId: inspectionLease.id,
-              targetGeneration: target.generation,
-              targetId: target.id,
+              targetRef,
             },
-            name: 'browser.inspect',
+            name: 'browser.evaluate',
           })
         ).content[0].text,
       ).value.method,
       'Runtime.evaluate',
     );
-    await client.callTool({
-      arguments: {
-        leaseId: inspectionLease.id,
-        targetGeneration: target.generation,
-        targetId: target.id,
-      },
-      name: 'browser.release',
-    });
 
     const navigation = JSON.parse(
       (
         await client.callTool({
           arguments: {
-            targetGeneration: target.generation,
-            targetId: target.id,
+            targetRef,
             url: 'https://example.test/',
           },
           name: 'browser.navigate',
@@ -152,8 +131,7 @@ async function main() {
       (
         await client.callTool({
           arguments: {
-            targetGeneration: target.generation,
-            targetId: target.id,
+            targetRef,
           },
           name: 'browser.screenshot',
         })
@@ -193,44 +171,20 @@ async function main() {
       name: 'browser.release',
     });
 
-    const cancellationLease = JSON.parse(
-      (
-        await client.callTool({
-          arguments: {
-            durationMilliseconds: 30_000,
-            mode: 'exclusive-control',
-            requestedMethods: ['Runtime.evaluate'],
-            targetGeneration: target.generation,
-            targetId: target.id,
-          },
-          name: 'browser.acquire',
-        })
-      ).content[0].text,
-    );
     const cancellation = new AbortController();
     const cancelledInspection = client.callTool(
       {
         arguments: {
           expression: 'await-cancellation',
-          leaseId: cancellationLease.id,
-          targetGeneration: target.generation,
-          targetId: target.id,
+          targetRef,
         },
-        name: 'browser.inspect',
+        name: 'browser.evaluate',
       },
       { signal: cancellation.signal },
     );
     await cancellationStarted;
     cancellation.abort();
     await assert.rejects(cancelledInspection);
-    await client.callTool({
-      arguments: {
-        leaseId: cancellationLease.id,
-        targetGeneration: target.generation,
-        targetId: target.id,
-      },
-      name: 'browser.release',
-    });
     assert.equal(stdioStarted, true);
   } finally {
     await transport.terminateSession();

@@ -12,7 +12,7 @@ import { expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 
 import {
-  createCdbToolDefinitions,
+  createCdbToolSession,
   mountMcpStdio,
   mountMcpStreamableHttp,
   registerCdbTools,
@@ -69,7 +69,15 @@ it('registers the CDB surface on an application-owned official MCP server', asyn
       { text: 'healthy', type: 'text' },
     ]);
     expect(targetsResult.content).toEqual([
-      { text: JSON.stringify([target]), type: 'text' },
+      {
+        text: JSON.stringify([{
+          availability: 'available',
+          capabilities: { level: 'observe' },
+          targetRef: 't1',
+          type: 'page',
+        }]),
+        type: 'text',
+      },
     ]);
     expect(targetsResult.isError).toBeUndefined();
   } finally {
@@ -178,23 +186,24 @@ it('preserves a successful navigation when its temporary lease was fenced during
       };
     },
   } as unknown as McpChromeDebuggerBridgeClient;
-  const navigate = createCdbToolDefinitions({ client: bridgeClient }).find(
+  const session = createCdbToolSession({ client: bridgeClient });
+  const targetRef = session.projectTarget(target)?.targetRef;
+  const navigate = session.definitions.find(
     definition => definition.name === 'browser.navigate',
   );
-  if (navigate === undefined)
+  if (navigate === undefined || targetRef === undefined)
     throw new Error('browser.navigate was not registered');
 
   const result = await navigate.invoke({
-    targetGeneration: target.generation,
-    targetId: target.id,
+    targetRef,
     url: 'https://staging-app.contentsquare.com/#/benchmark/dashboard?project=1814',
   });
 
-  expect(releaseLease).toHaveBeenCalledOnce();
+  expect(releaseLease).toHaveBeenCalledTimes(2);
   expect(result.isError).toBeUndefined();
   expect(result.content[0]).toMatchObject({ type: 'text' });
   expect(JSON.parse((result.content[0] as { readonly text: string }).text)).toMatchObject({
-    target: { generation: 2 },
+    target: { targetRef: 't1' },
   });
 });
 
@@ -278,19 +287,24 @@ it('reads a DOM snapshot artifact without starving the root budget for child ses
       };
     },
     readArtifact,
+    async listTargets() {
+      return [target];
+    },
     releaseArtifact,
     releaseLease,
   } as unknown as McpChromeDebuggerBridgeClient;
-  const snapshot = createCdbToolDefinitions({ client: bridgeClient }).find(
+  const session = createCdbToolSession({ client: bridgeClient });
+  const targetRef = session.projectTarget(target)?.targetRef;
+  const snapshot = session.definitions.find(
     definition => definition.name === 'browser.snapshot',
   );
-  if (snapshot === undefined)
+  if (snapshot === undefined || targetRef === undefined)
     throw new Error('browser.snapshot was not registered');
 
   const result = await snapshot.invoke({
     maximumNodes: 6,
-    targetGeneration: target.generation,
-    targetId: target.id,
+    mode: 'dom',
+    targetRef,
   });
 
   expect(acquireLease).toHaveBeenCalledWith(
@@ -319,7 +333,7 @@ it('reads a DOM snapshot artifact without starving the root budget for child ses
 });
 
 it('serves target discovery through the official SDK Streamable HTTP client', async () => {
-  expect.assertions(44);
+  expect.assertions(42);
   const server = createServer();
   const acquiredLeases: unknown[] = [];
   const cancelledCommands: unknown[] = [];
@@ -564,6 +578,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     const tools = await client.listTools();
     expect(tools.tools.map(tool => tool.name)).toEqual([
       'browser.list_targets',
+      'browser.find',
       'browser.acquire',
       'browser.renew',
       'browser.release',
@@ -579,15 +594,20 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       'browser.forward',
       'browser.reload',
       'browser.click',
-      'browser.move',
-      'browser.scroll',
+      'browser.click_at',
+      'browser.move_at',
+      'browser.scroll_at',
+      'browser.drag_at',
       'browser.drag',
-      'browser.click_node',
-      'browser.hover_node',
-      'browser.focus_node',
-      'browser.type_node',
+      'browser.hover',
+      'browser.focus',
+      'browser.fill',
       'browser.type',
       'browser.press',
+      'browser.scroll_into_view',
+      'browser.check',
+      'browser.uncheck',
+      'browser.select_option',
       'browser.wait_for_navigation',
       'browser.wait_for_dialog',
       'browser.handle_dialog',
@@ -604,15 +624,24 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     });
     expect(result.isError).toBeUndefined();
     expect(result.content).toEqual([
-      { text: JSON.stringify([target]), type: 'text' },
+      {
+        text: JSON.stringify([{
+          availability: 'available',
+          capabilities: { level: 'observe' },
+          targetRef: 't1',
+          type: 'page',
+        }]),
+        type: 'text',
+      },
     ]);
+    const targetRef = 't1';
     const snapshot = await client.callTool({
-      arguments: { targetGeneration: target.generation, targetId: target.id },
+      arguments: { mode: 'dom', targetRef },
       name: 'browser.snapshot',
     });
     expect(snapshot.isError).toBeUndefined();
     const screenshot = await client.callTool({
-      arguments: { targetGeneration: target.generation, targetId: target.id },
+      arguments: { targetRef },
       name: 'browser.screenshot',
     });
     expect(screenshot.isError).toBeUndefined();
@@ -627,8 +656,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     const networkBody = await client.callTool({
       arguments: {
         requestId: 'request-1',
-        targetGeneration: target.generation,
-        targetId: target.id,
+        targetRef,
       },
       name: 'browser.network_body',
     });
@@ -745,8 +773,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     await expect(cancelledArtifactRead).rejects.toThrow();
     const navigation = await client.callTool({
       arguments: {
-        targetGeneration: target.generation,
-        targetId: target.id,
+        targetRef,
         url: 'https://example.test/',
       },
       name: 'browser.navigate',
@@ -754,27 +781,16 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     expect(navigation.isError).toBeUndefined();
     const click = await client.callTool({
       arguments: {
-        targetGeneration: target.generation,
-        targetId: target.id,
+        targetRef,
         x: 10,
         y: 20,
       },
-      name: 'browser.click',
+      name: 'browser.click_at',
     });
     expect(click.isError).toBeUndefined();
-    const press = await client.callTool({
-      arguments: {
-        key: 'A',
-        targetGeneration: target.generation,
-        targetId: target.id,
-      },
-      name: 'browser.press',
-    });
-    expect(press.isError).toBeUndefined();
     const consoleEvent = await client.callTool({
       arguments: {
-        targetGeneration: target.generation,
-        targetId: target.id,
+        targetRef,
         timeoutMilliseconds: 100,
       },
       name: 'browser.console',
@@ -784,8 +800,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       arguments: {
         leaseId: '017c10a7-e0af-40ec-879f-cd87dffaf036',
         method: 'Debugger.paused',
-        targetGeneration: target.generation,
-        targetId: target.id,
+        targetRef,
         timeoutMilliseconds: 100,
       },
       name: 'browser.wait_for',
@@ -798,8 +813,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     const evaluation = await client.callTool({
       arguments: {
         expression: 'document.title',
-        targetGeneration: target.generation,
-        targetId: target.id,
+        targetRef,
       },
       name: 'browser.evaluate',
     });
@@ -816,8 +830,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     const failedEvaluation = await client.callTool({
       arguments: {
         expression: 'cdp-failure',
-        targetGeneration: target.generation,
-        targetId: target.id,
+        targetRef,
       },
       name: 'browser.evaluate',
     });
@@ -837,8 +850,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       {
         arguments: {
           expression: 'await-cancellation',
-          targetGeneration: target.generation,
-          targetId: target.id,
+          targetRef,
         },
         name: 'browser.evaluate',
       },
@@ -847,26 +859,10 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     await inspectionStarted;
     evaluationCancellationController.abort();
     await expect(cancelledEvaluation).rejects.toThrow();
-    const inspectionCancellationController = new AbortController();
-    const cancelledInspection = client.callTool(
-      {
-        arguments: {
-          expression: 'await-cancellation',
-          leaseId: '017c10a7-e0af-40ec-879f-cd87dffaf036',
-          targetGeneration: target.generation,
-          targetId: target.id,
-        },
-        name: 'browser.inspect',
-      },
-      { signal: inspectionCancellationController.signal },
-    );
-    await inspectionStarted;
-    inspectionCancellationController.abort();
-    await expect(cancelledInspection).rejects.toThrow();
     await expect
       .poll(() => cancelledCommands)
       .toMatchObject([
-        { targetGeneration: target.generation, targetId: target.id },
+        { targetGeneration: 2, targetId: target.id },
       ]);
     expect(acquiredLeases).toMatchObject([
       {
@@ -892,10 +888,6 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
         mode: 'exclusive-control',
         requestedMethods: ['Input.dispatchMouseEvent'],
       },
-      {
-        mode: 'exclusive-control',
-        requestedMethods: ['Input.dispatchKeyEvent'],
-      },
       { mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'] },
       { mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'] },
       { mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'] },
@@ -909,16 +901,14 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       'Page.navigate',
       'Input.dispatchMouseEvent',
       'Input.dispatchMouseEvent',
-      'Input.dispatchKeyEvent',
-      'Input.dispatchKeyEvent',
+      'Input.dispatchMouseEvent',
     ]);
-    expect(releasedLeases).toHaveLength(11);
+    expect(releasedLeases).toHaveLength(10);
     expect(closedSubscriptions).toBe(4);
     const timedOutWait = await client.callTool({
       arguments: {
         method: 'Network.loadingFinished',
-        targetGeneration: target.generation,
-        targetId: target.id,
+        targetRef,
         timeoutMilliseconds: 10,
       },
       name: 'browser.wait_for',
@@ -936,7 +926,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       },
     ]);
     expect(closedSubscriptions).toBe(5);
-    expect(releasedLeases).toHaveLength(12);
+    expect(releasedLeases).toHaveLength(11);
     subscriptionStarted = new Promise<void>((resolve) => {
       resolveSubscriptionStarted = resolve;
     });
@@ -945,8 +935,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       {
         arguments: {
           method: 'Network.loadingFinished',
-          targetGeneration: target.generation,
-          targetId: target.id,
+          targetRef,
           timeoutMilliseconds: 5_000,
         },
         name: 'browser.wait_for',
@@ -957,7 +946,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     cancellationController.abort();
     await expect(cancelledWait).rejects.toThrow();
     await expect.poll(() => closedSubscriptions).toBe(6);
-    expect(releasedLeases).toHaveLength(13);
+    expect(releasedLeases).toHaveLength(12);
     expect(supportedMcpSdkVersion).toBe('2.0.0');
     expect(supportedMcpProtocolVersions).toEqual(['2026-07-28']);
   } finally {

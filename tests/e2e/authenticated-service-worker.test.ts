@@ -363,10 +363,16 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   });
   const mcpTools = await mcpClient.listTools();
   const mcpTargetList = await mcpClient.callTool({ arguments: {}, name: 'browser.list_targets' });
+  const mcpTargetListContent = mcpTargetList.content[0];
+  if (mcpTargetListContent?.type !== 'text') throw new Error('Expected a semantic target list.');
+  const parsedMcpTargets: unknown = JSON.parse(mcpTargetListContent.text);
+  if (!Array.isArray(parsedMcpTargets)) throw new Error('Expected semantic targets.');
+  const firstMcpTarget: unknown = parsedMcpTargets[0];
+  if (typeof firstMcpTarget !== 'object' || firstMcpTarget === null) throw new Error('Expected a semantic target.');
+  const mcpTargetRef = 'targetRef' in firstMcpTarget ? firstMcpTarget.targetRef : undefined;
+  if (typeof mcpTargetRef !== 'string') throw new Error('Expected a semantic target reference.');
   const mcpHealth = await mcpClient.callTool({ arguments: {}, name: 'application.health' });
-  const mcpLease = await nodeFacade.acquireLease({ durationMilliseconds: 5_000, mode: 'exclusive-control', requestedMethods: ['Runtime.evaluate'], targetGeneration: target.generation, targetId: target.id });
-  const mcpInspection = await mcpClient.callTool({ arguments: { expression: 'document.title', leaseId: mcpLease.id, targetGeneration: target.generation, targetId: target.id }, name: 'browser.inspect' });
-  await nodeFacade.releaseLease({ leaseId: mcpLease.id, targetGeneration: target.generation, targetId: target.id });
+  const mcpInspection = await mcpClient.callTool({ arguments: { expression: 'document.title', targetRef: mcpTargetRef }, name: 'browser.evaluate' });
   const firstReader = await connectNodeClientWebSocket({ authorization: 'Bearer mv3-agent-test-client', endpoint: clientEndpoint });
   const secondReader = await connectNodeClientWebSocket({ authorization: 'Bearer mv3-agent-test-client', endpoint: clientEndpoint });
   const controller = await connectNodeClientWebSocket({ authorization: 'Bearer mv3-agent-test-client', endpoint: clientEndpoint });
@@ -403,13 +409,13 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   const revocation = await targetWatcher.next();
   const renewedPublication = await targetWatcher.next();
   const staleTargetAfterRecovery = await sendClientRequest(firstReader, { kind: 'request', method: 'leases.acquire', parameters: { durationMilliseconds: 5_000, mode: 'shared-read', requestedMethods: ['Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id }, protocolVersion: 1, requestId: crypto.randomUUID() });
-  const staleMcpAccess = await mcpClient.callTool({ arguments: { targetGeneration: target.generation, targetId: target.id }, name: 'browser.snapshot' });
+  const renewedMcpAccess = await mcpClient.callTool({ arguments: { targetRef: mcpTargetRef }, name: 'browser.snapshot' });
   await serviceWorker.evaluate(async () => (globalThis as unknown as { interruptPublishedTargetAgentTest: () => Promise<void> }).interruptPublishedTargetAgentTest());
   const renewedRevocation = await targetWatcher.next();
 
   expect(publication).toMatchObject({ done: false, value: { kind: 'published', target: { generation: target.generation, id: target.id } } });
   expect(mcpTools.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['application.health', 'browser.list_targets', 'browser.inspect']));
-  expect(JSON.stringify(mcpTargetList)).toContain(target.id);
+  expect(JSON.stringify(mcpTargetList)).toContain(mcpTargetRef);
   expect(mcpHealth).toEqual({ content: [{ text: 'healthy', type: 'text' }] });
   expect(JSON.stringify(mcpInspection)).toContain('Broker command target');
   expect(mcpTools.tools.map(tool => tool.name)).not.toContain('browser.raw_cdp');
@@ -437,7 +443,7 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   expect(renewedPublication).toMatchObject({ done: false, value: { kind: 'published', target: { generation: renewedTarget.generation, id: renewedTarget.id } } });
   expect(renewedTarget).toMatchObject({ generation: target.generation + 1, id: target.id });
   expect(staleTargetAfterRecovery).toMatchObject({ kind: 'error', method: 'leases.acquire', error: { code: 'TARGET_GENERATION_STALE' } });
-  expect(staleMcpAccess).toMatchObject({ content: [{ text: JSON.stringify({ code: 'TARGET_GENERATION_STALE', message: 'The requested target operation is not available.', retryable: false }), type: 'text' }], isError: true });
+  expect(renewedMcpAccess.isError).toBeUndefined();
   expect(renewedRevocation).toMatchObject({ done: false, value: { kind: 'revoked', reason: 'detached', targetGeneration: renewedTarget.generation, targetId: renewedTarget.id } });
   expect(targetBroker.listTargets()).toEqual([]);
 }, 45_000);

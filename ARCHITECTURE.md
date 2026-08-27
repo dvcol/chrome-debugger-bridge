@@ -44,21 +44,34 @@ reinjection.
 
 ### MCP definitions
 
-`@dvcol/cdb-mcp` exports `createCdbToolDefinitions`. It maps an already-authorized CDB client to MCP
-tools without creating a server or choosing a transport. DevKit installs these definitions in its
-existing MCP aggregation surface, preserving the DevKit RPC session as the agent principal.
+`@dvcol/cdb-mcp` exports `createCdbToolSession`. A host creates one session for each authenticated
+principal and disposes it with that principal. The session owns tool definitions plus a private
+projection from broker targets to short `tN` references. A reference survives generation renewal for
+the same authorized target but disappears on target revocation or disposal. The compatibility
+`createCdbToolDefinitions` export has no stable cross-request projection and is not suitable for a
+long-lived MCP principal.
 
-The semantic catalogue includes structural DOM inspection through `browser.snapshot`, which uses
-`DOMSnapshot.captureSnapshot`; it is not a screenshot fallback. The tool consumes an externalized
-snapshot internally, releases its artifact and temporary lease, and returns a bounded text tree with
-backend node IDs. Out-of-process frame sections carry opaque public child-session IDs. Node actions
-resolve, scroll, measure, and hit-test those references immediately before input, so a prior
-coordinate is never reused after layout changes. The semantic catalogue also owns pointer actions,
-bounded navigation and history waits, and JavaScript dialog handling. Inline `script`, `style`, and
-`noscript` bodies are omitted from the default snapshot; the raw catalogue remains the explicit
-lossless path. Other large command results are returned as artifacts. Their temporary lease stays
-live until the caller reads and releases the artifact, and artifact reads count as lease activity in
-the embedding broker.
+`browser.snapshot` defaults to a compact actionable accessibility tree. Its `accessibility` mode is
+a complete bounded accessibility tree, while `dom` is the diagnostic structural snapshot. Every
+snapshot allocates fresh monotonic `eN` references bound to the principal, target, current generation,
+frame, snapshot, and backend node. A reference from an earlier document fails as stale; it is never
+silently rebound.
+
+Locators are the durable semantic address. The serializable model covers roles and accessible names,
+text, labels, placeholders, alt text, titles, test IDs, CSS, descendants, frame chains, `has`, text,
+visibility, exclusion, and `nth` filters with bounded text matching. Resolution uses CDP
+Accessibility and DOM data, traverses open and closed author shadow roots while excluding user-agent
+roots, and supports same-process and out-of-process frames. Actions re-resolve immediately, require a
+strict match, and retry visibility, stable geometry, enabled/editable state, scrolling, and hit-target
+checks for a bounded deadline. A generation renewal may be retried before pointer or keyboard input;
+after input may have been dispatched CDB returns `MCP_ACTION_OUTCOME_UNKNOWN` and does not replay.
+
+The semantic catalogue also owns navigation and history waits, dialogs, console/network inspection,
+and artifacts. Arbitrary JavaScript execution through `browser.evaluate`, `Runtime.evaluate`,
+`Runtime.callFunctionOn`, or `Runtime.runScript` requires `debug`; it bypasses locator actionability
+and pointer presentation. Other large command results are returned as artifacts. Their temporary
+lease stays live until the caller reads and releases the artifact, and artifact reads count as lease
+activity in the embedding broker.
 
 The broker owns lifecycle activation for catalogue domains with an `enable` command. A lease declares
 the command and event methods it needs; on first use CDB acquires the corresponding domain demand from
@@ -84,6 +97,11 @@ There are four distinct identifiers:
 Display names, tab IDs, target IDs, and generations are diagnostic metadata and may be shown to
 trusted localhost UIs. Pairing credentials, bearer material, and grant tokens are never projected
 into aggregate state.
+
+Generation is an internal authority epoch, not a render counter, DOM revision, snapshot version, or
+action counter. Semantic agent tools address `tN` references and resolve the current generation at
+operation start. Exact target IDs and generations remain mandatory on broker, lease, raw CDP, and
+provider interfaces.
 
 One provider instance may publish many targets across tabs and windows. Multiple installed browser
 profiles therefore appear as separate providers even when their display name and version match.

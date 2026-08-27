@@ -26,6 +26,10 @@ Preserve these invariants:
 - Scope grants and target visibility to the authenticated client principal.
 - Require target ID and target generation for every target-scoped operation.
 - Fence an old generation immediately when authority is renewed.
+- Keep generations internal to semantic MCP tools. Create one `createCdbToolSession` per principal,
+  route agents through its stable `tN` target references, and dispose it with the principal.
+- Prefer compact interactive accessibility snapshots, disposable `eN` references, and strict
+  re-resolving locators. Arbitrary JavaScript is a debug escape hatch, not a semantic action path.
 - Allow multiple grants, but reject conflicting exclusive leases without queuing or preemption.
 - Treat provider recovery as bounded and recoverable; treat broker death as revocation of all live
   authority.

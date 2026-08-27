@@ -28,7 +28,7 @@ it('translates only successful pointer-shaped CDP input data', () => {
 });
 
 it('isolates pointer presentation and preserves every page favicon', async () => {
-  expect.assertions(14);
+  expect.assertions(20);
   document.documentElement.innerHTML = '<head><link rel="icon" href="/first.ico"><link rel="shortcut icon" href="/second.ico"></head><body></body>';
   const pageFavicons = [...document.querySelectorAll<HTMLLinkElement>('link[rel~="icon"]')];
   const presenter = createAgentControlPresenter({ document });
@@ -43,6 +43,7 @@ it('isolates pointer presentation and preserves every page favicon', async () =>
   expect(controlFavicon?.href).toContain('data:image/svg+xml');
   expect(pageFavicons.every(favicon => favicon.isConnected)).toBe(true);
   expect(pageFavicons.map(favicon => favicon.getAttribute('href'))).toEqual(['/first.ico', '/second.ico']);
+  expect(pageFavicons.every(favicon => !favicon.relList.contains('icon'))).toBe(true);
 
   presenter.present({ kind: 'pointer-move', x: 30, y: 40 });
   presenter.present({ button: 'left', kind: 'pointer-press', x: 30, y: 40 });
@@ -57,9 +58,17 @@ it('isolates pointer presentation and preserves every page favicon', async () =>
   document.head.append(newPageFavicon);
   await new Promise(resolve => window.setTimeout(resolve, 0));
   expect(document.head.lastElementChild).toBe(controlFavicon);
+  expect(newPageFavicon.relList.contains('icon')).toBe(false);
+  newPageFavicon.rel = 'apple-touch-icon icon';
+  newPageFavicon.href = '/updated.ico';
+  await new Promise(resolve => window.setTimeout(resolve, 0));
+  expect(newPageFavicon.relList.contains('icon')).toBe(false);
 
   presenter.dispose();
   expect(document.querySelector('[data-cdb-agent-control="pointer"]')).toBeNull();
   expect(document.querySelector('[data-cdb-agent-control="favicon"]')).toBeNull();
   expect(pageFavicons.every(favicon => favicon.isConnected) && newPageFavicon.isConnected).toBe(true);
+  expect(pageFavicons.map(favicon => favicon.getAttribute('rel'))).toEqual(['icon', 'shortcut icon']);
+  expect(newPageFavicon.getAttribute('rel')).toBe('apple-touch-icon icon');
+  expect(newPageFavicon.getAttribute('href')).toBe('/updated.ico');
 });
