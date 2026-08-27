@@ -759,6 +759,37 @@ it('answers only a post-handshake heartbeat for the active connection generation
   activeDisconnect();
 });
 
+it('observes detached agent handshake and heartbeat sends', async () => {
+  expect.assertions(1);
+  const broker = createTargetBroker();
+  let listener: ((message: AgentToBrokerMessage) => void) | undefined;
+  const catchRejection = vi.spyOn(Promise.prototype, 'catch');
+  const disconnect = connectAgentTargetBroker(
+    {
+      onMessage(receivedListener) {
+        listener = receivedListener;
+        return () => (listener = undefined);
+      },
+      async send() {},
+    },
+    broker,
+  );
+
+  completeAgentHello(listener);
+  listener?.({
+    kind: 'request',
+    method: 'agent.heartbeat',
+    parameters: { connectionGeneration: 1 },
+    protocolVersion: 1,
+    requestId: '60000000-0000-4000-8000-000000000094',
+  });
+  await Promise.resolve();
+
+  expect(catchRejection).toHaveBeenCalledTimes(2);
+  catchRejection.mockRestore();
+  disconnect();
+});
+
 it('revokes every target when its authenticated agent connection closes', async () => {
   expect.assertions(2);
   const broker = createTargetBroker();

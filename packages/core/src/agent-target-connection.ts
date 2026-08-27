@@ -34,6 +34,10 @@ const defaultConnectionLimits: ConnectionLimits = {
 };
 const defaultHeartbeat: HeartbeatParameters = { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 };
 
+function observeDetachedSend(sendOperation: Promise<void> | undefined, onSettled?: () => void): void {
+  void Promise.resolve(sendOperation).catch(() => {}).finally(onSettled);
+}
+
 /** Connects one authenticated agent's opaque target lifecycle, commands, and events to a broker. */
 export function connectAgentTargetBroker(
   connection: AgentTargetConnection,
@@ -67,7 +71,7 @@ export function connectAgentTargetBroker(
     const cancelCommand = (): void => {
       pendingCommands.get(requestId)?.reject(new Error('The debugger command was cancelled.'));
       pendingCommands.delete(requestId);
-      void connection.send?.({ kind: 'notification', method: 'cdp.cancel', parameters: { operationId: command.operationId, targetGeneration: command.targetGeneration, targetId: command.targetId }, protocolVersion: 1 });
+      observeDetachedSend(connection.send?.({ kind: 'notification', method: 'cdp.cancel', parameters: { operationId: command.operationId, targetGeneration: command.targetGeneration, targetId: command.targetId }, protocolVersion: 1 }));
     };
     abortSignal.addEventListener('abort', cancelCommand, { once: true });
     try {
@@ -119,18 +123,18 @@ export function connectAgentTargetBroker(
         || message.parameters.protocolVersions.maximum < 1
       ) {
         handshakeFailed = true;
-        void Promise.resolve(connection.send?.({
+        observeDetachedSend(connection.send?.({
           error: { code: 'CAPABILITY_DENIED', message: 'Agent hello negotiation failed.', retryable: false },
           kind: 'error',
           method: 'agent.hello',
           protocolVersion: 1,
           requestId: message.requestId,
-        })).finally(() => connection.close?.(1008, 'Agent hello negotiation failed'));
+        }), () => connection.close?.(1008, 'Agent hello negotiation failed'));
         return;
       }
       handshakeComplete = true;
       clearTimeout(handshakeTimeout);
-      void connection.send?.({
+      observeDetachedSend(connection.send?.({
         kind: 'response',
         method: 'agent.hello',
         protocolVersion: 1,
@@ -143,7 +147,7 @@ export function connectAgentTargetBroker(
           limits: connectionLimits,
           protocolVersion: 1,
         },
-      });
+      }));
       return;
     }
     if (message.kind === 'request' && message.method === 'agent.hello') {
@@ -155,13 +159,13 @@ export function connectAgentTargetBroker(
         connection.close?.(1008, 'Agent heartbeat generation is invalid');
         return;
       }
-      void connection.send?.({
+      observeDetachedSend(connection.send?.({
         kind: 'response',
         method: 'agent.heartbeat',
         protocolVersion: 1,
         requestId: message.requestId,
         result: { connectionGeneration },
-      });
+      }));
       return;
     }
     if (message.kind === 'response' && message.method === 'cdp.execute') {

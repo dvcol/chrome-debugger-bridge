@@ -509,7 +509,7 @@ function createAgentConnection(
   let outboundSequence = 1;
   let pendingMessages = 0;
   let pendingReceive = Promise.resolve();
-  let pendingSend = Promise.resolve();
+  let sendQueue = Promise.resolve();
   let receiveFailed = false;
 
   const handleMessage = (data: Buffer, isBinary: boolean): void => {
@@ -568,7 +568,7 @@ function createAgentConnection(
       return () => listeners.delete(listener);
     },
     async send(message) {
-      pendingSend = pendingSend.then(async () => {
+      const sendOperation = sendQueue.then(async () => {
         const validation = await brokerToAgentMessageSchema['~standard'].validate(message);
         if ('issues' in validation) {
           throw new Error('Cannot send an invalid agent-plane message');
@@ -580,18 +580,26 @@ function createAgentConnection(
           outboundSequence,
           validation.value,
         );
+        if (webSocket.readyState !== WebSocket.OPEN) {
+          throw new Error(`WebSocket is not open: readyState ${webSocket.readyState}`);
+        }
         await new Promise<void>((resolve, reject) => {
-          webSocket.send(JSON.stringify(frame), (error) => {
-            if (error) {
-              reject(error);
-              return;
-            }
-            resolve();
-          });
+          try {
+            webSocket.send(JSON.stringify(frame), (error) => {
+              if (error) {
+                reject(error);
+                return;
+              }
+              resolve();
+            });
+          } catch (error) {
+            reject(error);
+          }
         });
         outboundSequence += 1;
       });
-      await pendingSend;
+      sendQueue = sendOperation.catch(() => {});
+      await sendOperation;
     },
   };
 }

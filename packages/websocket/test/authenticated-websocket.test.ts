@@ -294,6 +294,69 @@ it('authenticates a generic Node client separately and completes a validated rou
   connection.close();
 });
 
+it('recovers the authenticated agent send queue after a rejected send and rejects sends after close', async () => {
+  expect.assertions(3);
+  const brokerId = crypto.randomUUID();
+  const agentId = crypto.randomUUID();
+  const credentialId = crypto.randomUUID();
+  const credential = crypto.getRandomValues(new Uint8Array(32));
+  const origin = 'chrome-extension://send-race-test';
+  const principal: { readonly id: string; readonly role: 'agent' } = {
+    id: crypto.randomUUID(),
+    role: 'agent',
+  };
+  const activeRecord = {
+    agentId,
+    brokerId,
+    credential,
+    credentialId,
+    principalId: principal.id,
+    status: 'active' as const,
+  };
+  let authenticatedConnection: AuthenticatedAgentConnection<typeof principal> | undefined;
+  let notifyAgentConnected: (() => void) | undefined;
+  const agentConnected = new Promise<void>(resolve => notifyAgentConnected = resolve);
+  const bridge = await createTestBridge({
+    agentAuthentication: {
+      async activate() {
+        return undefined;
+      },
+      async authenticate(identity) {
+        return identity.credentialId === credentialId ? principal : undefined;
+      },
+      async load(requestedCredentialId) {
+        return requestedCredentialId === credentialId ? activeRecord : undefined;
+      },
+      async pair() {
+        return undefined;
+      },
+      async revoke() {},
+    },
+    brokerId,
+    onAgentConnection(connection) {
+      authenticatedConnection = connection;
+      notifyAgentConnected?.();
+    },
+  });
+  const webSocket = await openAgentWebSocket(bridge, origin);
+  await authenticateStoredAgentWebSocket(webSocket, { agentId, brokerId, credential, credentialId, origin });
+  await agentConnected;
+  const connection = authenticatedConnection!.connection;
+  const validMessage = {
+    kind: 'response',
+    method: 'agent.heartbeat',
+    protocolVersion: 1,
+    requestId: crypto.randomUUID(),
+    result: { connectionGeneration: 1 },
+  } as const;
+
+  await expect(connection.send({ invalid: true } as never)).rejects.toThrow('Cannot send an invalid agent-plane message');
+  await expect(connection.send(validMessage)).resolves.toBeUndefined();
+  connection.close(1000, 'Test complete');
+  await connection.closed;
+  await expect(connection.send(validMessage)).rejects.toThrow('WebSocket is not open');
+});
+
 it('rejects invalid client authority without creating a client connection', async () => {
   expect.assertions(1);
   const bridge = await createTestBridge();
