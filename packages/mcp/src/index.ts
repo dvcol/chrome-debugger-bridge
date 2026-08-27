@@ -506,10 +506,15 @@ function formatAttributes(strings: readonly unknown[], value: unknown): string {
   return joined.length <= 360 ? joined : `${joined.slice(0, 359)}…`;
 }
 
+interface FormattedDomSnapshot {
+  readonly renderedNodes: number;
+  readonly text: string;
+}
+
 function formatDomSnapshot(
   value: unknown,
   options: { readonly maximumDepth: number; readonly maximumNodes: number },
-): string {
+): FormattedDomSnapshot {
   const strings = arrayValue(property(value, 'strings'));
   const documents = arrayValue(property(value, 'documents'));
   const lines = ['# DOM snapshot'];
@@ -607,7 +612,10 @@ function formatDomSnapshot(
       '',
       `… snapshot truncated after ${renderedNodes} rendered nodes. Increase maximumNodes/maximumDepth or use browser.raw_cdp for the lossless response.`,
     );
-  return lines.join('\n').slice(0, maximumSnapshotCharacters);
+  return {
+    renderedNodes,
+    text: lines.join('\n').slice(0, maximumSnapshotCharacters),
+  };
 }
 
 function encodeInputModifiers(modifiers: readonly InputModifier[]): number {
@@ -1751,11 +1759,10 @@ export function createCdbToolDefinitions(
         const iframeSessions = childSessionReferences(listedSessions)
           .filter(session => session.type === 'iframe')
           .slice(0, 16);
-        const maximumNodesPerSession = Math.max(
-          1,
-          Math.floor(input.maximumNodes / (iframeSessions.length + 1)),
-        );
-        const capture = async (sessionId?: string): Promise<string> => {
+        const capture = async (
+          maximumNodes: number,
+          sessionId?: string,
+        ): Promise<FormattedDomSnapshot> => {
           const commandValue = await executeArtifactCommand(
             client,
             { ...input, ...(sessionId === undefined ? {} : { sessionId }) },
@@ -1775,14 +1782,30 @@ export function createCdbToolDefinitions(
             ),
             {
               maximumDepth: input.maximumDepth,
-              maximumNodes: maximumNodesPerSession,
+              maximumNodes,
             },
           );
         };
-        const sections = [`# Root session\n${await capture()}`];
-        for (const session of iframeSessions) {
+        const rootSnapshot = await capture(input.maximumNodes);
+        const sections = [`# Root session\n${rootSnapshot.text}`];
+        let remainingNodes = Math.max(
+          0,
+          input.maximumNodes - rootSnapshot.renderedNodes,
+        );
+        for (const [sessionIndex, session] of iframeSessions.entries()) {
+          if (remainingNodes === 0) break;
+          const remainingSessions = iframeSessions.length - sessionIndex;
+          const sessionMaximumNodes = Math.max(
+            1,
+            Math.floor(remainingNodes / remainingSessions),
+          );
+          const sessionSnapshot = await capture(sessionMaximumNodes, session.id);
           sections.push(
-            `# Child session [sessionId=${session.id}] [sessionGeneration=${session.generation}] [type=${session.type}]\n${await capture(session.id)}`,
+            `# Child session [sessionId=${session.id}] [sessionGeneration=${session.generation}] [type=${session.type}]\n${sessionSnapshot.text}`,
+          );
+          remainingNodes = Math.max(
+            0,
+            remainingNodes - sessionSnapshot.renderedNodes,
           );
         }
         return textContent(

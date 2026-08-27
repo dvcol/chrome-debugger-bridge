@@ -198,7 +198,7 @@ it('preserves a successful navigation when its temporary lease was fenced during
   });
 });
 
-it('reads and releases a DOM snapshot artifact before returning agent-readable text', async () => {
+it('reads a DOM snapshot artifact without starving the root budget for child sessions', async () => {
   expect.assertions(8);
   const lease = {
     expiresAt: '2030-01-01T00:00:00.000Z',
@@ -263,7 +263,15 @@ it('reads and releases a DOM snapshot artifact before returning agent-readable t
     acquireLease,
     async executeCommand(command: { readonly method: string }) {
       if (command.method === 'Bridge.listChildSessions')
-        return { value: { sessions: [] } };
+        return {
+          value: {
+            sessions: Array.from({ length: 16 }, (_value, index) => ({
+              generation: 1,
+              id: `iframe-${index}`,
+              type: 'iframe',
+            })),
+          },
+        };
       return {
         operationId: '30000000-0000-4000-8000-000000000002',
         value: { artifact },
@@ -280,6 +288,7 @@ it('reads and releases a DOM snapshot artifact before returning agent-readable t
     throw new Error('browser.snapshot was not registered');
 
   const result = await snapshot.invoke({
+    maximumNodes: 6,
     targetGeneration: target.generation,
     targetId: target.id,
   });
