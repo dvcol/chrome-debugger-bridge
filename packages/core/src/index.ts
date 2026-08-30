@@ -1,4 +1,10 @@
-export { type AgentTargetConnection, connectAgentTargetBroker } from './agent-target-connection.js';
+export {
+  type AgentConnectionTimingPolicy,
+  type AgentTargetConnection,
+  connectAgentTargetBroker,
+  defaultAgentConnectionTimingPolicy,
+} from './agent-target-connection.js';
+export { type AgentSession, type AgentTargetReference, createAgentSession } from './agent.js';
 export {
   type ArtifactAuthority,
   type ArtifactByteRange,
@@ -13,15 +19,54 @@ export {
   type MemoryArtifactStore,
 } from './artifact-store.js';
 export {
+  type AuthorityBinding,
+  type AuthorityRecord,
+  type AuthorityStore,
+  type AuthorityStoreChange,
+  createMemoryAuthorityStore,
+} from './authority.js';
+export {
+  type AutomationActionName,
+  type AutomationCdpEvent,
+  type AutomationElementHandle,
+  type AutomationExecutionMetrics,
+  type AutomationExecutionRequest,
+  type AutomationExecutionResult,
+  type AutomationLocator,
+  type AutomationLocatorStrategy,
+  type AutomationOperation,
+  type AutomationProvider,
+  type AutomationProviderCapabilities,
+  type AutomationProviderDescriptor,
+  type AutomationProviderElement,
+  AutomationProviderError,
+  type AutomationProviderErrorCode,
+  type AutomationProviderExecutionContext,
+  type AutomationProviderRequest,
+  type AutomationProviderResult,
+  type AutomationSnapshotMode,
+  type AutomationTextMatcher,
+  requiredAutomationLevel,
+} from './automation.js';
+export {
   type AcquireLeaseRequest,
   type ArtifactAccessRequest,
+  type BrokerTimingPolicy,
   type CdpSubscription,
+  type ClientAuthority,
+  type ClientTargetGrant,
   createTargetBroker,
+  defaultBrokerTimingPolicy,
   type ReleaseLeaseRequest,
   type RenewLeaseRequest,
   type TargetBroker,
 } from './broker.js';
-export { type ClientTargetConnection, connectClientTargetBroker } from './client-target-connection.js';
+export {
+  type ClientTargetConnection,
+  connectClientTargetBroker,
+  connectStoreBackedClientTargetBroker,
+  type StoreBackedClientTargetConnectionOptions,
+} from './client-target-connection.js';
 export {
   type ChromeDebuggerBridgeClient,
   type ClientFacadeAdapter,
@@ -44,3 +89,17 @@ export {
   type EmbeddedChromeDebuggerBridgeClient,
 } from './embedded.js';
 export * from './protocol.js';
+export {
+  createLogicalSessionManager,
+  type CreateLogicalSessionManagerOptions,
+  createMemoryCredentialStore,
+  type CredentialStore,
+  type CredentialStoreChange,
+  defaultLogicalSessionTimingPolicy,
+  type LogicalSessionCredential,
+  LogicalSessionError,
+  type LogicalSessionManager,
+  type LogicalSessionTimingPolicy,
+  type StoredCredential,
+} from './session.js';
+export { scheduleTimeout, type TimeoutMilliseconds, validateTimeoutMilliseconds } from './timing.js';

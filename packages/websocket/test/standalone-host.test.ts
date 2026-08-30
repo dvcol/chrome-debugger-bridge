@@ -69,6 +69,18 @@ it('starts explicit loopback endpoints, mediates command artifacts, and disposes
     onPairingPresentation(presentation) {
       pairingPresentation = presentation;
     },
+    resolveClientAuthority({ connectionId, principal }) {
+      return {
+        connectionId,
+        principalId: principal.id,
+        targetGrants: [{
+          bindingId: 'standalone-test-binding',
+          capabilities: target.capabilities,
+          targetGeneration: target.generation,
+          targetId: target.id,
+        }],
+      };
+    },
   });
   hosts.push(host);
   host.broker.publishTarget(target);

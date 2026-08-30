@@ -4,6 +4,7 @@ import type {
   ArtifactDescriptor,
   CdpSubscription,
   ChromeDebuggerBridgeClient,
+  ClientAuthority,
   ReleaseLeaseRequest,
   RenewLeaseRequest,
   TargetChange,
@@ -25,6 +26,7 @@ import type {
   Lease,
   PublishedTarget,
 } from '@dvcol/cdb/protocol';
+import type { TimeoutMilliseconds } from '@dvcol/cdb/timing';
 import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 
@@ -43,6 +45,7 @@ import {
   brokerToClientMessageSchema,
   clientToBrokerMessageSchema,
 } from '@dvcol/cdb/protocol';
+import { scheduleTimeout, validateTimeoutMilliseconds } from '@dvcol/cdb/timing';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { defaultArtifactHttpPath, mountAuthenticatedArtifactHttpEndpoint } from './artifact-http.js';
@@ -146,6 +149,7 @@ export interface AuthenticatedConnection<InboundMessage, OutboundMessage> {
 
 export interface AuthenticatedAgentConnection<Principal extends AuthenticatedPrincipal> {
   readonly connection: AuthenticatedConnection<AgentToBrokerMessage, BrokerToAgentMessage>;
+  readonly connectionGeneration: number;
   readonly connectionId: string;
   readonly credentialId: string;
   readonly principal: Principal;
@@ -160,13 +164,21 @@ export interface AuthenticatedClientConnection<Principal extends AuthenticatedPr
 }
 
 export interface WebSocketBridgeLimits {
-  readonly handshakeTimeoutMilliseconds?: number;
   readonly maximumMessageBytes?: number;
   readonly maximumPreAuthenticationBytes?: number;
   readonly maximumPreAuthenticationMessages?: number;
   readonly maximumUnauthenticatedConnections?: number;
-  readonly pairingTimeoutMilliseconds?: number;
 }
+
+export interface WebSocketBridgeTimingPolicy {
+  readonly handshakeTimeoutMilliseconds: TimeoutMilliseconds;
+  readonly pairingTimeoutMilliseconds: TimeoutMilliseconds;
+}
+
+export const defaultWebSocketBridgeTimingPolicy: Readonly<WebSocketBridgeTimingPolicy> = Object.freeze({
+  handshakeTimeoutMilliseconds: 5_000,
+  pairingTimeoutMilliseconds: 5 * 60_000,
+});
 
 export interface MountAuthenticatedWebSocketBridgeOptions<
   AgentPrincipal extends AuthenticatedPrincipal,
@@ -182,6 +194,7 @@ export interface MountAuthenticatedWebSocketBridgeOptions<
   readonly onClientConnection: (connection: AuthenticatedClientConnection<ClientPrincipal>) => void;
   readonly originPolicy: (input: TransportClaims, abortSignal: AbortSignal) => boolean | Promise<boolean>;
   readonly server: HttpServer;
+  readonly timing?: Partial<WebSocketBridgeTimingPolicy>;
 }
 
 export interface MountedAuthenticatedWebSocketBridge {
@@ -197,12 +210,10 @@ export interface StandaloneAuthenticatedWebSocketBridge extends MountedAuthentic
 type ConnectionListener<Message> = (message: Message) => void;
 
 const defaultLimits = {
-  handshakeTimeoutMilliseconds: 5_000,
   maximumMessageBytes: 16 * 1_024,
   maximumPreAuthenticationBytes: 16 * 1_024,
   maximumPreAuthenticationMessages: 4,
   maximumUnauthenticatedConnections: 8,
-  pairingTimeoutMilliseconds: 5 * 60_000,
 } as const;
 const maximumPendingAuthenticatedMessages = 32;
 const base64PaddingPattern = /=+$/u;
@@ -609,11 +620,13 @@ function attachAgentAuthentication<Principal extends AuthenticatedPrincipal>(inp
   readonly brokerId: string;
   readonly claims: TransportClaims;
   readonly isCredentialRevoked: (credentialId: string) => boolean;
+  readonly issueConnectionGeneration: (credentialId: string) => number;
   readonly limits: Required<WebSocketBridgeLimits>;
   readonly onAuthenticated: (connection: AuthenticatedAgentConnection<Principal>) => void;
   readonly onReleased: () => void;
   readonly registerCredentialConnection: (credentialId: string, webSocket: WebSocket) => void;
   readonly revokeCredential: (credentialId: string) => Promise<void>;
+  readonly timing: WebSocketBridgeTimingPolicy;
   readonly webSocket: WebSocket;
 }): void {
   const { webSocket } = input;
@@ -650,16 +663,16 @@ function attachAgentAuthentication<Principal extends AuthenticatedPrincipal>(inp
       input.onReleased();
     }
   };
-  let timeout: ReturnType<typeof setTimeout>;
-  const resetAuthenticationTimeout = (timeoutMilliseconds: number): void => {
-    clearTimeout(timeout);
-    timeout = setTimeout(() => {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const resetAuthenticationTimeout = (timeoutMilliseconds: TimeoutMilliseconds): void => {
+    if (timeout !== undefined) clearTimeout(timeout);
+    timeout = scheduleTimeout(() => {
       authenticationFailed = true;
       authenticationAbortController.abort();
       webSocket.close(1008, 'Authentication timed out');
     }, timeoutMilliseconds);
   };
-  resetAuthenticationTimeout(input.limits.handshakeTimeoutMilliseconds);
+  resetAuthenticationTimeout(input.timing.handshakeTimeoutMilliseconds);
   webSocket.once('close', () => {
     if (!authenticationAccepted) {
       authenticationFailed = true;
@@ -674,7 +687,7 @@ function attachAgentAuthentication<Principal extends AuthenticatedPrincipal>(inp
         });
       }
     }
-    clearTimeout(timeout);
+    if (timeout !== undefined) clearTimeout(timeout);
     release();
   });
 
@@ -739,10 +752,12 @@ function attachAgentAuthentication<Principal extends AuthenticatedPrincipal>(inp
           : undefined;
         const connectionId = createRandomIdentifier();
         const authenticationTimeoutMilliseconds = validCredential === undefined
-          ? input.limits.pairingTimeoutMilliseconds
-          : input.limits.handshakeTimeoutMilliseconds;
+          ? input.timing.pairingTimeoutMilliseconds
+          : input.timing.handshakeTimeoutMilliseconds;
         resetAuthenticationTimeout(authenticationTimeoutMilliseconds);
-        const expiresAt = new Date(Date.now() + authenticationTimeoutMilliseconds).toISOString();
+        const expiresAt = authenticationTimeoutMilliseconds === null
+          ? new Date(8_640_000_000_000_000).toISOString()
+          : new Date(Date.now() + authenticationTimeoutMilliseconds).toISOString();
         state.credentialRecord = validCredential;
         state.transcript = {
           agentId: message.parameters.agentId,
@@ -874,8 +889,9 @@ function attachAgentAuthentication<Principal extends AuthenticatedPrincipal>(inp
       )) {
         throw new Error('Authentication failed');
       }
+      const connectionGeneration = input.issueConnectionGeneration(credentialRecord.credentialId);
       const brokerClaims = {
-        connectionGeneration: 1,
+        connectionGeneration,
         principalId: credentialRecord.principalId,
       } as const;
       const brokerProof = await createBrokerAuthenticationProof(credentialKey, state.transcript, brokerClaims);
@@ -960,6 +976,7 @@ function attachAgentAuthentication<Principal extends AuthenticatedPrincipal>(inp
       try {
         input.onAuthenticated({
           connection,
+          connectionGeneration,
           connectionId: state.transcript.connectionId,
           credentialId: activeCredentialRecord.credentialId,
           principal,
@@ -974,7 +991,7 @@ function attachAgentAuthentication<Principal extends AuthenticatedPrincipal>(inp
       }
       authenticationAccepted = true;
       provisionalCredentialId = undefined;
-      clearTimeout(timeout);
+      if (timeout !== undefined) clearTimeout(timeout);
       release();
     }).catch(() => {
       authenticationFailed = true;
@@ -1007,6 +1024,9 @@ export function mountAuthenticatedWebSocketBridge<
     throw new Error('Agent and client WebSocket paths must be distinct');
   }
   const limits = { ...defaultLimits, ...options.limits };
+  const timing: WebSocketBridgeTimingPolicy = { ...defaultWebSocketBridgeTimingPolicy, ...options.timing };
+  validateTimeoutMilliseconds(timing.handshakeTimeoutMilliseconds, 'handshakeTimeoutMilliseconds');
+  validateTimeoutMilliseconds(timing.pairingTimeoutMilliseconds, 'pairingTimeoutMilliseconds');
   const webSocketServer = new WebSocketServer({
     maxPayload: limits.maximumMessageBytes,
     noServer: true,
@@ -1015,6 +1035,7 @@ export function mountAuthenticatedWebSocketBridge<
   const unauthenticatedConnections = new Set<WebSocket>();
   const pendingUpgrades = new Map<Duplex, AbortController>();
   const agentConnectionsByCredential = new Map<string, Set<WebSocket>>();
+  const agentConnectionGenerationsByCredential = new Map<string, number>();
   const revokedCredentialIds = new Set<string>();
   const credentialRevocations = new Map<string, Promise<void>>();
   const allConnections = new Set<WebSocket>();
@@ -1048,10 +1069,10 @@ export function mountAuthenticatedWebSocketBridge<
     }
     const upgradeAbortController = new AbortController();
     pendingUpgrades.set(socket, upgradeAbortController);
-    const upgradeTimeout = setTimeout(() => {
+    const upgradeTimeout = scheduleTimeout(() => {
       upgradeAbortController.abort();
       rejectUpgrade(socket, 408, 'Request Timeout');
-    }, limits.handshakeTimeoutMilliseconds);
+    }, timing.handshakeTimeoutMilliseconds);
     void (async () => {
       try {
         const requestUrl = getRequestUrl(request);
@@ -1127,8 +1148,18 @@ export function mountAuthenticatedWebSocketBridge<
             brokerId: options.brokerId,
             claims,
             isCredentialRevoked: credentialId => revokedCredentialIds.has(credentialId),
+            issueConnectionGeneration(credentialId) {
+              const nextGeneration = (agentConnectionGenerationsByCredential.get(credentialId) ?? 0) + 1;
+              agentConnectionGenerationsByCredential.set(credentialId, nextGeneration);
+              return nextGeneration;
+            },
             limits,
-            onAuthenticated: options.onAgentConnection,
+            onAuthenticated(connection) {
+              for (const existingConnection of agentConnectionsByCredential.get(connection.credentialId) ?? []) {
+                if (existingConnection !== webSocket) existingConnection.close(1008, 'Superseded provider connection');
+              }
+              options.onAgentConnection(connection);
+            },
             onReleased: () => unauthenticatedConnections.delete(webSocket),
             registerCredentialConnection(credentialId, liveWebSocket) {
               const connections = agentConnectionsByCredential.get(credentialId) ?? new Set<WebSocket>();
@@ -1136,6 +1167,7 @@ export function mountAuthenticatedWebSocketBridge<
               agentConnectionsByCredential.set(credentialId, connections);
             },
             revokeCredential,
+            timing,
             webSocket,
           });
         });
@@ -1144,7 +1176,7 @@ export function mountAuthenticatedWebSocketBridge<
           rejectUpgrade(socket, 500, 'Internal Server Error');
         }
       } finally {
-        clearTimeout(upgradeTimeout);
+        if (upgradeTimeout !== undefined) clearTimeout(upgradeTimeout);
         pendingUpgrades.delete(socket);
       }
     })();
@@ -1211,10 +1243,33 @@ export async function createStandaloneAuthenticatedWebSocketBridge<
 
 export type NodeClientConnection = AuthenticatedConnection<BrokerToClientMessage, ClientToBrokerMessage>;
 
+export interface NodeWebSocketTimingPolicy {
+  readonly handshakeTimeoutMilliseconds: TimeoutMilliseconds;
+  readonly initialReconnectDelayMilliseconds: TimeoutMilliseconds;
+  readonly maximumReconnectDelayMilliseconds: TimeoutMilliseconds;
+}
+
+export const defaultNodeWebSocketTimingPolicy: Readonly<NodeWebSocketTimingPolicy> = Object.freeze({
+  handshakeTimeoutMilliseconds: 5_000,
+  initialReconnectDelayMilliseconds: 25,
+  maximumReconnectDelayMilliseconds: 1_000,
+});
+
+function resolveNodeWebSocketTimingPolicy(
+  timing: Partial<NodeWebSocketTimingPolicy> | undefined,
+): NodeWebSocketTimingPolicy {
+  const resolved = { ...defaultNodeWebSocketTimingPolicy, ...timing };
+  validateTimeoutMilliseconds(resolved.handshakeTimeoutMilliseconds, 'handshakeTimeoutMilliseconds');
+  validateTimeoutMilliseconds(resolved.initialReconnectDelayMilliseconds, 'initialReconnectDelayMilliseconds');
+  validateTimeoutMilliseconds(resolved.maximumReconnectDelayMilliseconds, 'maximumReconnectDelayMilliseconds');
+  return resolved;
+}
+
 export interface ConnectNodeClientWebSocketOptions {
   readonly authorization: string;
   readonly endpoint: string;
   readonly origin?: string;
+  readonly timing?: Partial<NodeWebSocketTimingPolicy>;
 }
 
 export async function connectNodeClientWebSocket(options: ConnectNodeClientWebSocketOptions): Promise<NodeClientConnection> {
@@ -1230,10 +1285,38 @@ export async function connectNodeClientWebSocket(options: ConnectNodeClientWebSo
     },
     perMessageDeflate: false,
   });
+  const handshakeTimeoutMilliseconds = resolveNodeWebSocketTimingPolicy(options.timing).handshakeTimeoutMilliseconds;
   await new Promise<void>((resolve, reject) => {
-    webSocket.once('open', resolve);
-    webSocket.once('error', reject);
-    webSocket.once('unexpected-response', (_request, response) => reject(new Error(`WebSocket rejected with ${response.statusCode}`)));
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let handleOpen = (): void => {};
+    let handleError = (_error: Error): void => {};
+    let handleUnexpectedResponse = (_request: unknown, _response: { readonly statusCode?: number }): void => {};
+    const cleanup = (): void => {
+      if (timeout !== undefined) clearTimeout(timeout);
+      webSocket.off('open', handleOpen);
+      webSocket.off('error', handleError);
+      webSocket.off('unexpected-response', handleUnexpectedResponse);
+    };
+    handleOpen = (): void => {
+      cleanup();
+      resolve();
+    };
+    handleError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    handleUnexpectedResponse = (_request: unknown, response: { readonly statusCode?: number }): void => {
+      cleanup();
+      reject(new Error(`WebSocket rejected with ${response.statusCode}`));
+    };
+    timeout = scheduleTimeout(() => {
+      cleanup();
+      webSocket.close(1000, 'Handshake timed out');
+      reject(new Error('WebSocket connection timed out'));
+    }, handshakeTimeoutMilliseconds);
+    webSocket.once('open', handleOpen);
+    webSocket.once('error', handleError);
+    webSocket.once('unexpected-response', handleUnexpectedResponse);
   });
   if (webSocket.protocol !== clientWebSocketProtocol) {
     webSocket.close(1002, 'Invalid WebSocket subprotocol');
@@ -1251,7 +1334,6 @@ export interface NodeChromeDebuggerBridgeClient extends ChromeDebuggerBridgeClie
 
 export interface CreateNodeChromeDebuggerBridgeClientOptions extends ConnectNodeClientWebSocketOptions {
   readonly artifactEndpoint: string;
-  readonly reconnect?: { readonly initialDelayMilliseconds?: number; readonly maximumDelayMilliseconds?: number };
 }
 
 interface NodePendingRequest {
@@ -1327,8 +1409,9 @@ export async function createNodeChromeDebuggerBridgeClient(options: CreateNodeCh
   const subscriptions = new Map<string, NodeSubscriptionState>();
   const subscriptionStates = new Set<NodeSubscriptionState>();
   const targetChanges = createNodeAsyncQueue<TargetChange>(maximumPendingAuthenticatedMessages);
-  const initialDelayMilliseconds = options.reconnect?.initialDelayMilliseconds ?? 25;
-  const maximumDelayMilliseconds = options.reconnect?.maximumDelayMilliseconds ?? 1_000;
+  const timing = resolveNodeWebSocketTimingPolicy(options.timing);
+  const initialDelayMilliseconds = timing.initialReconnectDelayMilliseconds;
+  const maximumDelayMilliseconds = timing.maximumReconnectDelayMilliseconds;
   let manuallyClosed = false;
   let reconnecting: Promise<void> | undefined;
   let removeListener = (): void => {};
@@ -1399,6 +1482,10 @@ export async function createNodeChromeDebuggerBridgeClient(options: CreateNodeCh
         return;
       }
       failPendingRequests(new Error(`The Node client WebSocket disconnected (${close.code}).`));
+      if (initialDelayMilliseconds === null) {
+        finishClosed(close);
+        return;
+      }
       void reconnect();
     });
   };
@@ -1439,7 +1526,7 @@ export async function createNodeChromeDebuggerBridgeClient(options: CreateNodeCh
   async function reconnect(): Promise<void> {
     if (reconnecting !== undefined || manuallyClosed) return reconnecting;
     reconnecting = (async () => {
-      let delayMilliseconds = initialDelayMilliseconds;
+      let delayMilliseconds = initialDelayMilliseconds ?? 0;
       while (true) {
         if (manuallyClosed) return;
         try {
@@ -1455,7 +1542,9 @@ export async function createNodeChromeDebuggerBridgeClient(options: CreateNodeCh
           return;
         } catch {
           await wait(delayMilliseconds);
-          delayMilliseconds = Math.min(maximumDelayMilliseconds, delayMilliseconds * 2);
+          delayMilliseconds = maximumDelayMilliseconds === null
+            ? Math.min(Number.MAX_SAFE_INTEGER, delayMilliseconds * 2)
+            : Math.min(maximumDelayMilliseconds, delayMilliseconds * 2);
         }
       }
     })().finally(() => reconnecting = undefined);
@@ -1550,9 +1639,16 @@ export interface CreateStandaloneChromeDebuggerBridgeHostOptions extends CreateT
   readonly onPairingPresentation?: (presentation: StandalonePairingPresentation) => void;
   /** Applies the same local transport policy to agent, client, and artifact endpoints. */
   readonly originPolicy?: (claims: TransportClaims, abortSignal: AbortSignal) => boolean | Promise<boolean>;
-  readonly pairingLifetimeMilliseconds?: number;
+  readonly pairingLifetimeMilliseconds?: TimeoutMilliseconds;
   readonly port?: number;
+  /** Resolves product-owned authority for an authenticated client. The secure default grants no targets. */
+  readonly resolveClientAuthority?: (input: {
+    readonly connectionId: string;
+    readonly principal: { readonly id: string; readonly role: 'client' };
+    readonly transportClaims: TransportClaims;
+  }) => ClientAuthority;
   readonly webSocketLimits?: WebSocketBridgeLimits;
+  readonly webSocketTiming?: Partial<WebSocketBridgeTimingPolicy>;
 }
 
 export interface StandaloneChromeDebuggerBridgeHost {
@@ -1609,12 +1705,14 @@ export async function createStandaloneChromeDebuggerBridgeHost(
 ): Promise<StandaloneChromeDebuggerBridgeHost> {
   const host = options.host ?? '127.0.0.1';
   const brokerId = randomUUID();
-  const pairingLifetimeMilliseconds = options.pairingLifetimeMilliseconds ?? 5 * 60_000;
-  if (!Number.isSafeInteger(pairingLifetimeMilliseconds) || pairingLifetimeMilliseconds < 1) {
-    throw new Error('The pairing lifetime must be a positive integer.');
-  }
+  const pairingLifetimeMilliseconds = options.pairingLifetimeMilliseconds === undefined
+    ? 5 * 60_000
+    : options.pairingLifetimeMilliseconds;
+  validateTimeoutMilliseconds(pairingLifetimeMilliseconds, 'pairingLifetimeMilliseconds');
   const pairingCode = String(randomInt(0, 1_000_000)).padStart(6, '0');
-  const pairingExpiresAt = Date.now() + pairingLifetimeMilliseconds;
+  const pairingExpiresAt = pairingLifetimeMilliseconds === null
+    ? 8_640_000_000_000_000
+    : Date.now() + pairingLifetimeMilliseconds;
   let pairingConsumed = false;
   let disposed = false;
   const records = new Map<string, BrokerAgentCredentialRecord>();
@@ -1647,7 +1745,7 @@ export async function createStandaloneChromeDebuggerBridgeHost(
       if (
         input.abortSignal.aborted
         || pairingConsumed
-        || Date.now() > pairingExpiresAt
+        || Date.now() >= pairingExpiresAt
         || input.brokerId !== brokerId
         || input.pairingCode !== pairingCode
       ) return undefined;
@@ -1689,10 +1787,26 @@ export async function createStandaloneChromeDebuggerBridgeHost(
     brokerId,
     clientAuthentication: options.clientAuthentication,
     ...(options.webSocketLimits === undefined ? {} : { limits: options.webSocketLimits }),
+    ...(options.webSocketTiming === undefined ? {} : { timing: options.webSocketTiming }),
     onAgentConnection(connection) {
-      connectAgentTargetBroker(connection.connection, broker);
+      connectAgentTargetBroker(connection.connection, broker, {
+        authority: {
+          connectionGeneration: connection.connectionGeneration,
+          principalId: connection.principal.id,
+        },
+        connectionGeneration: connection.connectionGeneration,
+      });
     },
-    onClientConnection({ connection, connectionId, principal }) {
+    onClientConnection({ connection, connectionId, principal, transportClaims }) {
+      const clientAuthority = options.resolveClientAuthority?.({ connectionId, principal, transportClaims }) ?? {
+        connectionId,
+        principalId: principal.id,
+        targetGrants: [],
+      };
+      if (clientAuthority.connectionId !== connectionId || clientAuthority.principalId !== principal.id) {
+        connection.close(1008, 'Client authority identity mismatch');
+        return;
+      }
       const pendingArtifactAccesses = new Map<string, ArtifactAccessRequest>();
       const originalOnMessage = connection.onMessage;
       const originalSend = connection.send;
@@ -1721,7 +1835,7 @@ export async function createStandaloneChromeDebuggerBridgeHost(
           await originalSend(message);
         },
       };
-      const disconnect = connectClientTargetBroker(mediatedConnection, broker, { connectionId, principalId: principal.id });
+      const disconnect = connectClientTargetBroker(mediatedConnection, broker, clientAuthority);
       void connection.closed.then(disconnect, disconnect);
     },
     originPolicy,

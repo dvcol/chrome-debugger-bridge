@@ -57,9 +57,18 @@ it('maps the shared client facade through a Birpc birpc channel without owning t
       principal: { id: 'ecb4e5c2-7597-4fea-9fec-a7f0b6c181d7', role: 'agent' },
     }),
     agentPath: '/birpc-agent',
-    artifactLifetimeMilliseconds: 60_000,
     brokerId: 'a797a9c2-ad27-4ca1-87f7-5bf9f58f936d',
     channel: hostChannel,
+    channelAuthority: {
+      connectionId: 'birpc-channel',
+      principalId: 'birpc-channel',
+      targetGrants: [{
+        bindingId: 'birpc-test-binding',
+        capabilities: target.capabilities,
+        targetGeneration: target.generation,
+        targetId: target.id,
+      }],
+    },
     clientAuthentication: createStaticClientAuthenticationAdapter('Bearer birpc-client', { id: 'b4fd95e4-b7d4-43b2-b152-a86d07d0aad2', role: 'client' }),
     clientPath: '/birpc-client',
     maximumInlineResultBytes: 1,
@@ -67,6 +76,7 @@ it('maps the shared client facade through a Birpc birpc channel without owning t
       return true;
     },
     server,
+    timing: { artifactLifetimeMilliseconds: 60_000 },
   });
   const client = createBirpcBridgeClient(clientChannel);
   let resolveStarted: (() => void) | undefined;
@@ -133,6 +143,7 @@ it('releases Birpc routes and streams across repeated host mount cycles', async 
     agentPath: '/birpc-agent',
     brokerId: 'ad0ea525-155e-47b7-a218-4a4b2c91d1e0',
     channel,
+    channelAuthority: { connectionId: 'birpc-channel', principalId: 'birpc-channel', targetGrants: [] },
     clientAuthentication: createStaticClientAuthenticationAdapter('Bearer birpc-client', { id: 'ccc243ef-b45a-4c1b-8877-8da4ca3b4dc4', role: 'client' }),
     clientPath: '/birpc-client',
     originPolicy() {

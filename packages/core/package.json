@@ -15,9 +15,21 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./agent": {
+      "types": "./dist/agent.d.ts",
+      "import": "./dist/agent.js"
+    },
+    "./authority": {
+      "types": "./dist/authority.d.ts",
+      "import": "./dist/authority.js"
+    },
     "./broker": {
       "types": "./dist/broker.d.ts",
       "import": "./dist/broker.js"
+    },
+    "./automation": {
+      "types": "./dist/automation.d.ts",
+      "import": "./dist/automation.js"
     },
     "./cdp-catalogue": {
       "types": "./dist/cdp-catalogue.d.ts",
@@ -36,9 +48,17 @@
       "import": "./dist/protocol.js"
     },
     "./protocol.schema.json": "./dist/protocol.schema.json",
+    "./session": {
+      "types": "./dist/session.d.ts",
+      "import": "./dist/session.js"
+    },
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
+    },
+    "./timing": {
+      "types": "./dist/timing.d.ts",
+      "import": "./dist/timing.js"
     }
   },
   "files": ["dist"],

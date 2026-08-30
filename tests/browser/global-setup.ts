@@ -117,7 +117,7 @@ export default async function setup(project: TestProject): Promise<() => Promise
       'Bearer browser-test-client',
       { id: crypto.randomUUID(), role: 'client' as const },
     ),
-    limits: { handshakeTimeoutMilliseconds: 500, pairingTimeoutMilliseconds: 500 },
+    timing: { handshakeTimeoutMilliseconds: 500, pairingTimeoutMilliseconds: 500 },
     onAgentConnection({ connection }) {
       attachAgentHelloResponder(connection, brokerId);
     },
@@ -142,7 +142,7 @@ export default async function setup(project: TestProject): Promise<() => Promise
       'Bearer browser-test-client',
       { id: crypto.randomUUID(), role: 'client' as const },
     ),
-    limits: { handshakeTimeoutMilliseconds: 500, pairingTimeoutMilliseconds: 500 },
+    timing: { handshakeTimeoutMilliseconds: 500, pairingTimeoutMilliseconds: 500 },
     onAgentConnection({ connection }) {
       attachAgentHelloResponder(connection, immediateBrokerId);
       void connection.send({

@@ -1,5 +1,8 @@
 import type { AgentAuthority, TargetBroker } from './broker.js';
 import type { AgentToBrokerMessage, BrokerToAgentMessage, CdpCommand, ConnectionLimits, HeartbeatParameters, JsonObject, Lease, PublishedTarget } from './protocol.js';
+import type { TimeoutMilliseconds } from './timing.js';
+
+import { scheduleTimeout, validateTimeoutMilliseconds } from './timing.js';
 
 export interface AgentTargetConnection {
   readonly closed?: Promise<unknown>;
@@ -15,8 +18,6 @@ export interface ConnectAgentTargetBrokerOptions {
   readonly connectionLimits?: ConnectionLimits;
   readonly connectionGeneration?: number;
   readonly features?: readonly string[];
-  readonly handshakeTimeoutMilliseconds?: number;
-  readonly heartbeat?: HeartbeatParameters;
   readonly implementation?: {
     readonly instanceId: string;
     readonly name: string;
@@ -25,6 +26,7 @@ export interface ConnectAgentTargetBrokerOptions {
   };
   /** Defaults to true. Recovery-aware hosts can retain targets and revoke them after their own deadline. */
   readonly revokeTargetsOnDisconnect?: boolean;
+  readonly timing?: Partial<AgentConnectionTimingPolicy>;
 }
 
 const defaultConnectionLimits: ConnectionLimits = {
@@ -32,7 +34,17 @@ const defaultConnectionLimits: ConnectionLimits = {
   maximumInlineResultBytes: 65_536,
   maximumMessageBytes: 16_384,
 };
-const defaultHeartbeat: HeartbeatParameters = { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 };
+export interface AgentConnectionTimingPolicy {
+  readonly handshakeTimeoutMilliseconds: TimeoutMilliseconds;
+  readonly heartbeatIntervalMilliseconds: number;
+  readonly heartbeatTimeoutMilliseconds: number;
+}
+
+export const defaultAgentConnectionTimingPolicy: Readonly<AgentConnectionTimingPolicy> = Object.freeze({
+  handshakeTimeoutMilliseconds: 5_000,
+  heartbeatIntervalMilliseconds: 15_000,
+  heartbeatTimeoutMilliseconds: 45_000,
+});
 
 function observeDetachedSend(sendOperation: Promise<void> | undefined, onSettled?: () => void): void {
   void Promise.resolve(sendOperation).catch(() => {}).finally(onSettled);
@@ -45,8 +57,12 @@ export function connectAgentTargetBroker(
   options: ConnectAgentTargetBrokerOptions = {},
 ): () => void {
   const connectionGeneration = options.connectionGeneration ?? 1;
-  const handshakeTimeoutMilliseconds = options.handshakeTimeoutMilliseconds ?? 5_000;
-  const heartbeat = options.heartbeat ?? defaultHeartbeat;
+  const timing: AgentConnectionTimingPolicy = { ...defaultAgentConnectionTimingPolicy, ...options.timing };
+  const handshakeTimeoutMilliseconds = timing.handshakeTimeoutMilliseconds;
+  const heartbeat: HeartbeatParameters = {
+    intervalMilliseconds: timing.heartbeatIntervalMilliseconds,
+    timeoutMilliseconds: timing.heartbeatTimeoutMilliseconds,
+  };
   const connectionLimits = options.connectionLimits ?? defaultConnectionLimits;
   const implementation = options.implementation ?? {
     instanceId: globalThis.crypto.randomUUID(),
@@ -54,7 +70,14 @@ export function connectAgentTargetBroker(
     role: 'broker' as const,
     version: '0.0.0',
   };
-  const authority = options.authority ?? { principalId: 'local-agent' };
+  validateTimeoutMilliseconds(handshakeTimeoutMilliseconds, 'handshakeTimeoutMilliseconds');
+  if (!Number.isSafeInteger(heartbeat.intervalMilliseconds) || heartbeat.intervalMilliseconds < 1) {
+    throw new TypeError('heartbeatIntervalMilliseconds must be a positive safe integer.');
+  }
+  if (!Number.isSafeInteger(heartbeat.timeoutMilliseconds) || heartbeat.timeoutMilliseconds < 1) {
+    throw new TypeError('heartbeatTimeoutMilliseconds must be a positive safe integer.');
+  }
+  const authority = options.authority ?? { connectionGeneration, principalId: 'local-agent' };
   const revokeTargetsOnDisconnect = options.revokeTargetsOnDisconnect ?? true;
   const publishedTargets = new Map<string, PublishedTarget>();
   const pendingCommands = new Map<string, {
@@ -75,8 +98,11 @@ export function connectAgentTargetBroker(
     };
     abortSignal.addEventListener('abort', cancelCommand, { once: true });
     try {
-      await connection.send({ kind: 'request', method: 'cdp.execute', parameters: { command, lease: _lease }, protocolVersion: 1, requestId });
-      return await commandResult;
+      const [, result] = await Promise.all([
+        connection.send({ kind: 'request', method: 'cdp.execute', parameters: { command, lease: _lease }, protocolVersion: 1, requestId }),
+        commandResult,
+      ]);
+      return result;
     } finally {
       abortSignal.removeEventListener('abort', cancelCommand);
       pendingCommands.delete(requestId);
@@ -101,7 +127,7 @@ export function connectAgentTargetBroker(
   let handshakeComplete = false;
   let handshakeFailed = false;
   let disconnected = false;
-  const handshakeTimeout = setTimeout(() => {
+  const handshakeTimeout = scheduleTimeout(() => {
     if (!handshakeComplete) {
       handshakeFailed = true;
       connection.close?.(1008, 'Agent hello timed out');
@@ -133,7 +159,7 @@ export function connectAgentTargetBroker(
         return;
       }
       handshakeComplete = true;
-      clearTimeout(handshakeTimeout);
+      if (handshakeTimeout !== undefined) clearTimeout(handshakeTimeout);
       observeDetachedSend(connection.send?.({
         kind: 'response',
         method: 'agent.hello',
@@ -211,7 +237,7 @@ export function connectAgentTargetBroker(
   const closeConnection = (): void => {
     if (disconnected) return;
     disconnected = true;
-    clearTimeout(handshakeTimeout);
+    if (handshakeTimeout !== undefined) clearTimeout(handshakeTimeout);
     revokePublishedTargets();
   };
   void connection.closed?.then(closeConnection, closeConnection);

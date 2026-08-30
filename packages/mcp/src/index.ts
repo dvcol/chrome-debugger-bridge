@@ -1,6 +1,13 @@
 import type {
   ArtifactAccessRequest,
   ArtifactDescriptor,
+  AutomationElementHandle,
+  AutomationExecutionRequest,
+  AutomationExecutionResult,
+  AutomationLocator,
+  AutomationLocatorStrategy,
+  AutomationOperation,
+  AutomationTextMatcher,
   CdpEvent,
   CdpSubscription,
   ChromeDebuggerBridgeClient,
@@ -8,6 +15,7 @@ import type {
   PublishedTarget,
   TargetChange,
 } from '@dvcol/cdb';
+import type { AgentSession } from '@dvcol/cdb/agent';
 import type { JsonObject } from '@dvcol/cdb/protocol';
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import type { ServeStdioOptions } from '@modelcontextprotocol/server/stdio';
@@ -20,6 +28,7 @@ import type {
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 
+import { createAgentSession } from '@dvcol/cdb/agent';
 import { requiredLeaseMode } from '@dvcol/cdb/cdp-catalogue';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
@@ -34,7 +43,6 @@ const maximumArtifactReadBytes = 49_152;
 const maximumReadableSnapshotBytes = 16_777_216;
 const maximumSnapshotCharacters = 120_000;
 const maximumInteractiveSnapshotCharacters = 60_000;
-const maximumInputActionDurationMilliseconds = 10_000;
 const maximumInputActionSteps = 120;
 const omittedTextElementNames = new Set(['noscript', 'script', 'style']);
 const whitespacePattern = /\s+/gu;
@@ -80,11 +88,19 @@ export interface MountMcpStreamableHttpOptions {
 }
 
 export interface McpChromeDebuggerBridgeClient extends ChromeDebuggerBridgeClient {
+  cancelAutomation?: (request: {
+    readonly operationId: string;
+    readonly targetGeneration: number;
+    readonly targetId: string;
+  }) => Promise<void>;
   cancelCommand: (request: {
     readonly operationId: string;
     readonly targetGeneration: number;
     readonly targetId: string;
   }) => Promise<void>;
+  executeAutomation?: (
+    request: AutomationExecutionRequest,
+  ) => Promise<AutomationExecutionResult>;
   readArtifact: (
     request: ArtifactAccessRequest & {
       readonly range?: { readonly length: number; readonly offset: number };
@@ -111,8 +127,41 @@ export interface MountMcpStdioOptions extends Pick<
 
 /** Registers the canonical CDB tool surface on an application-owned official MCP server. */
 export interface RegisterCdbToolsOptions {
+  /** Routes semantic tools through the provider registered by the embedding broker. */
+  readonly automationProvider?: 'registered';
   readonly client: McpChromeDebuggerBridgeClient;
   readonly enableRawCdp?: boolean;
+  readonly timing?: Partial<McpTimingPolicy>;
+}
+
+export interface McpTimingPolicy {
+  readonly defaultEventTimeoutMilliseconds: number;
+  readonly defaultToolTimeoutMilliseconds: number;
+  readonly maximumInputActionDurationMilliseconds: number;
+  readonly maximumToolTimeoutMilliseconds: number;
+  readonly semanticLeaseDurationMilliseconds: number;
+}
+
+export const defaultMcpTimingPolicy: Readonly<McpTimingPolicy> = Object.freeze({
+  defaultEventTimeoutMilliseconds: 5_000,
+  defaultToolTimeoutMilliseconds: 10_000,
+  maximumInputActionDurationMilliseconds: 10_000,
+  maximumToolTimeoutMilliseconds: 30_000,
+  semanticLeaseDurationMilliseconds: 30_000,
+});
+
+function resolveMcpTimingPolicy(timing: Partial<McpTimingPolicy> | undefined): McpTimingPolicy {
+  const resolved = { ...defaultMcpTimingPolicy, ...timing };
+  for (const [name, value] of Object.entries(resolved)) {
+    if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} must be a positive safe integer.`);
+  }
+  if (resolved.defaultToolTimeoutMilliseconds > resolved.maximumToolTimeoutMilliseconds) {
+    throw new TypeError('defaultToolTimeoutMilliseconds cannot exceed maximumToolTimeoutMilliseconds.');
+  }
+  if (resolved.defaultEventTimeoutMilliseconds > resolved.maximumToolTimeoutMilliseconds) {
+    throw new TypeError('defaultEventTimeoutMilliseconds cannot exceed maximumToolTimeoutMilliseconds.');
+  }
+  return resolved;
 }
 
 function jsonContent(value: unknown): CallToolResult {
@@ -1208,23 +1257,29 @@ export interface CdbToolSession {
   targetIdForReference: (targetRef: string) => string | undefined;
 }
 
-interface ElementReference {
+interface NativeElementReference {
   readonly backendNodeId: number;
   readonly generation: number;
   readonly sessionId?: string;
   readonly targetId: string;
 }
 
-interface CdbToolSessionState {
-  disposed: boolean;
-  nextElementReference: number;
-  nextTargetReference: number;
-  readonly elementReferences: Map<string, ElementReference>;
-  readonly targetIdsByReference: Map<string, string>;
-  readonly targetReferencesById: Map<string, string>;
+interface ProviderElementReference {
+  readonly generation: number;
+  readonly providerElementHandleId: string;
+  readonly targetId: string;
 }
 
-interface AccessibilityCandidate extends ElementReference {
+type ElementReference = NativeElementReference | ProviderElementReference;
+
+interface CdbToolSessionState {
+  readonly agentSession: AgentSession;
+  disposed: boolean;
+  nextElementReference: number;
+  readonly elementReferences: Map<string, ElementReference>;
+}
+
+interface AccessibilityCandidate extends NativeElementReference {
   readonly attributes?: Readonly<Record<string, string>>;
   readonly name?: string;
   readonly nodeName?: string;
@@ -1253,6 +1308,7 @@ interface SemanticLocatorStrategy {
   readonly testId?: TextMatch | undefined;
   readonly text?: TextMatch | undefined;
   readonly title?: TextMatch | undefined;
+  readonly xpath?: string | undefined;
 }
 
 interface SemanticLocator extends SemanticLocatorStrategy {
@@ -1268,7 +1324,9 @@ interface SemanticLocator extends SemanticLocatorStrategy {
 
 const interactiveAccessibilityRoles = new Set([
   'button',
+  'cell',
   'checkbox',
+  'columnheader',
   'combobox',
   'gridcell',
   'link',
@@ -1278,6 +1336,7 @@ const interactiveAccessibilityRoles = new Set([
   'menuitemradio',
   'option',
   'radio',
+  'rowheader',
   'searchbox',
   'slider',
   'spinbutton',
@@ -1289,12 +1348,10 @@ const interactiveAccessibilityRoles = new Set([
 
 function createCdbToolSessionState(): CdbToolSessionState {
   return {
+    agentSession: createAgentSession(),
     disposed: false,
     elementReferences: new Map(),
     nextElementReference: 1,
-    nextTargetReference: 1,
-    targetIdsByReference: new Map(),
-    targetReferencesById: new Map(),
   };
 }
 
@@ -1303,13 +1360,7 @@ function projectSemanticTarget(
   target: PublishedTarget,
 ): SemanticTarget | undefined {
   if (state.disposed) return undefined;
-  let targetRef = state.targetReferencesById.get(target.id);
-  if (targetRef === undefined) {
-    targetRef = `t${state.nextTargetReference}`;
-    state.nextTargetReference += 1;
-    state.targetReferencesById.set(target.id, targetRef);
-    state.targetIdsByReference.set(targetRef, target.id);
-  }
+  const targetRef = state.agentSession.project([target])[0]!.targetReference;
   return {
     availability: target.availability,
     capabilities: target.capabilities,
@@ -1325,7 +1376,7 @@ async function resolveSemanticTarget(
   state: CdbToolSessionState,
   targetRef: string,
 ): Promise<PublishedTarget> {
-  const targetId = state.targetIdsByReference.get(targetRef);
+  const targetId = state.agentSession.resolve(targetRef)?.targetId;
   if (targetId === undefined)
     throw new McpToolError('MCP_TARGET_REF_STALE', `Target reference ${targetRef} is no longer available.`);
   const target = (await client.listTargets()).find(candidate => candidate.id === targetId);
@@ -1351,7 +1402,7 @@ function matchesText(value: string | undefined, matcher: TextMatch | undefined):
   return matcher.match === 'exact' ? value === expected : value.includes(expected);
 }
 
-function accessibilityCandidates(value: unknown, reference: Omit<ElementReference, 'backendNodeId'>): AccessibilityCandidate[] {
+function accessibilityCandidates(value: unknown, reference: Omit<NativeElementReference, 'backendNodeId'>): AccessibilityCandidate[] {
   return arrayValue(property(value, 'nodes')).flatMap((node) => {
     if (property(node, 'ignored') === true) return [];
     const backendNodeId = numberValue(property(node, 'backendDOMNodeId'));
@@ -1374,6 +1425,186 @@ function allocateElementReference(
   state.nextElementReference += 1;
   state.elementReferences.set(reference, element);
   return reference;
+}
+
+function automationTextMatcher(matcher: TextMatch | undefined): AutomationTextMatcher | undefined {
+  if (matcher === undefined) return undefined;
+  if (matcher.match === 'regex') {
+    return {
+      regex: {
+        ...(matcher.flags === undefined ? {} : { flags: matcher.flags }),
+        source: matcher.pattern ?? '',
+      },
+    };
+  }
+  return {
+    exact: matcher.match === 'exact',
+    pattern: matcher.value ?? '',
+  };
+}
+
+function automationLocatorStrategy(locator: SemanticLocatorStrategy): AutomationLocatorStrategy {
+  const altText = automationTextMatcher(locator.altText);
+  const label = automationTextMatcher(locator.label);
+  const name = automationTextMatcher(locator.name);
+  const placeholder = automationTextMatcher(locator.placeholder);
+  const testId = automationTextMatcher(locator.testId);
+  const text = automationTextMatcher(locator.text);
+  const title = automationTextMatcher(locator.title);
+  return {
+    ...(altText === undefined ? {} : { altText }),
+    ...(locator.css === undefined ? {} : { css: locator.css }),
+    ...(label === undefined ? {} : { label }),
+    ...(name === undefined ? {} : { name }),
+    ...(placeholder === undefined ? {} : { placeholder }),
+    ...(locator.role === undefined ? {} : { role: locator.role }),
+    ...(testId === undefined ? {} : { testId }),
+    ...(text === undefined ? {} : { text }),
+    ...(title === undefined ? {} : { title }),
+    ...(locator.xpath === undefined ? {} : { xpath: locator.xpath }),
+  };
+}
+
+function automationLocator(locator: SemanticLocator): AutomationLocator {
+  const hasNotText = automationTextMatcher(locator.hasNotText);
+  const hasText = automationTextMatcher(locator.hasText);
+  return {
+    ...automationLocatorStrategy(locator),
+    ...(locator.descendants === undefined
+      ? {}
+      : { descendants: locator.descendants.map(automationLocatorStrategy) }),
+    ...(locator.exclude === undefined
+      ? {}
+      : { exclude: automationLocatorStrategy(locator.exclude) }),
+    ...(locator.frameChain === undefined
+      ? {}
+      : { frameChain: locator.frameChain.map(automationLocatorStrategy) }),
+    ...(locator.has === undefined
+      ? {}
+      : { has: automationLocatorStrategy(locator.has) }),
+    ...(hasNotText === undefined ? {} : { hasNotText }),
+    ...(hasText === undefined ? {} : { hasText }),
+    ...(locator.nth === undefined ? {} : { nth: locator.nth }),
+    ...(locator.visible === undefined ? {} : { visible: locator.visible }),
+  };
+}
+
+function providerElementHandle(
+  state: CdbToolSessionState,
+  target: PublishedTarget,
+  reference: string | undefined,
+): string | undefined {
+  if (reference === undefined) return undefined;
+  const element = state.elementReferences.get(reference);
+  if (
+    element === undefined
+    || element.targetId !== target.id
+    || element.generation !== target.generation
+    || !('providerElementHandleId' in element)
+  )
+    throw new McpToolError('MCP_ELEMENT_REF_STALE', `Element reference ${reference} is stale.`);
+  return element.providerElementHandleId;
+}
+
+function automationElementTarget(
+  state: CdbToolSessionState,
+  target: PublishedTarget,
+  input: {
+    readonly locator?: SemanticLocator | undefined;
+    readonly ref?: string | undefined;
+  },
+): { readonly elementHandleId?: string; readonly locator?: AutomationLocator } {
+  const elementHandleId = providerElementHandle(state, target, input.ref);
+  return {
+    ...(elementHandleId === undefined ? {} : { elementHandleId }),
+    ...(input.locator === undefined
+      ? {}
+      : { locator: automationLocator(input.locator) }),
+  };
+}
+
+async function executeRegisteredAutomation(
+  client: McpChromeDebuggerBridgeClient,
+  target: PublishedTarget,
+  operation: AutomationOperation,
+  signal: AbortSignal,
+): Promise<AutomationExecutionResult> {
+  if (client.executeAutomation === undefined || client.cancelAutomation === undefined) {
+    throw new McpToolError(
+      'MCP_AUTOMATION_PROVIDER_UNAVAILABLE',
+      'The embedding broker did not expose its configured automation provider.',
+      undefined,
+      true,
+    );
+  }
+  const mode = operation.kind === 'action' ? 'exclusive-control' : 'shared-read';
+  return withLease(
+    client,
+    { targetGeneration: target.generation, targetId: target.id },
+    mode,
+    [],
+    async (lease) => {
+      const operationId = randomUUID();
+      const abort = (): void => {
+        void client.cancelAutomation?.({
+          operationId,
+          targetGeneration: target.generation,
+          targetId: target.id,
+        }).catch(() => {});
+      };
+      signal.addEventListener('abort', abort, { once: true });
+      try {
+        try {
+          return await client.executeAutomation?.({
+            leaseId: lease.id,
+            operation,
+            operationId,
+            targetGeneration: target.generation,
+            targetId: target.id,
+          }) as AutomationExecutionResult;
+        } catch (error) {
+          const automationCode = stringValue(property(property(error, 'details'), 'automationCode'));
+          const mcpCodes: Readonly<Record<string, string>> = {
+            AUTOMATION_ACTION_OUTCOME_UNKNOWN: 'MCP_ACTION_OUTCOME_UNKNOWN',
+            AUTOMATION_ELEMENT_COVERED: 'MCP_ELEMENT_COVERED',
+            AUTOMATION_ELEMENT_DETACHED: 'MCP_ELEMENT_DETACHED',
+            AUTOMATION_ELEMENT_DISABLED: 'MCP_ELEMENT_DISABLED',
+            AUTOMATION_ELEMENT_HIDDEN: 'MCP_ELEMENT_HIDDEN',
+            AUTOMATION_ELEMENT_NOT_EDITABLE: 'MCP_ELEMENT_NOT_EDITABLE',
+            AUTOMATION_ELEMENT_UNSTABLE: 'MCP_ELEMENT_UNSTABLE',
+            AUTOMATION_LOCATOR_AMBIGUOUS: 'MCP_LOCATOR_AMBIGUOUS',
+            AUTOMATION_LOCATOR_NOT_FOUND: 'MCP_LOCATOR_NOT_FOUND',
+            AUTOMATION_PROVIDER_FAILED: 'MCP_AUTOMATION_PROVIDER_FAILED',
+          };
+          const mcpCode = automationCode === undefined ? undefined : mcpCodes[automationCode];
+          if (mcpCode === undefined) throw error;
+          throw new McpToolError(
+            mcpCode,
+            error instanceof Error ? error.message : 'The configured automation provider failed.',
+            property(error, 'details') as JsonObject | undefined,
+            property(error, 'retryable') === true,
+          );
+        }
+      } finally {
+        signal.removeEventListener('abort', abort);
+      }
+    },
+  );
+}
+
+function allocateProviderElements(
+  state: CdbToolSessionState,
+  target: PublishedTarget,
+  elements: readonly AutomationElementHandle[] | undefined,
+): readonly { readonly element: AutomationElementHandle; readonly ref: string }[] {
+  return (elements ?? []).map(element => ({
+    element,
+    ref: allocateElementReference(state, {
+      generation: target.generation,
+      providerElementHandleId: element.id,
+      targetId: target.id,
+    }),
+  }));
 }
 
 async function collectAccessibilityCandidates(
@@ -1491,6 +1722,7 @@ function domNodeAttributes(node: unknown): Readonly<Record<string, string>> {
 }
 
 function locatorDomQuery(locator: SemanticLocatorStrategy): string | undefined {
+  if (locator.xpath !== undefined) return locator.xpath;
   if (locator.css !== undefined) return locator.css;
   const attributeLocator = [
     ['placeholder', locator.placeholder],
@@ -1714,6 +1946,7 @@ async function resolveLocatorCandidates(
     ...(locator.testId === undefined ? {} : { testId: locator.testId }),
     ...(locator.text === undefined ? {} : { text: locator.text }),
     ...(locator.title === undefined ? {} : { title: locator.title }),
+    ...(locator.xpath === undefined ? {} : { xpath: locator.xpath }),
   };
   let candidates = await resolveStrategy(rootStrategy, contexts);
   for (const descendant of locator.descendants ?? []) {
@@ -1782,7 +2015,7 @@ async function resolveLocatorCandidates(
   return candidates;
 }
 
-function sameElement(first: ElementReference, second: ElementReference): boolean {
+function sameElement(first: NativeElementReference, second: NativeElementReference): boolean {
   return first.backendNodeId === second.backendNodeId
     && first.sessionId === second.sessionId
     && first.targetId === second.targetId;
@@ -1876,7 +2109,7 @@ function accessibilityProperty(node: unknown, name: string): unknown {
 async function executeElementClick(
   client: McpChromeDebuggerBridgeClient,
   target: PublishedTarget,
-  element: ElementReference,
+  element: NativeElementReference,
   input: {
     readonly button: keyof typeof pointerButtonValues;
     readonly clickCount: number;
@@ -2011,13 +2244,14 @@ async function resolveSemanticElement(
   target: PublishedTarget,
   input: { readonly locator?: SemanticLocator | undefined; readonly ref?: string | undefined },
   signal: AbortSignal,
-): Promise<ElementReference> {
+): Promise<NativeElementReference> {
   if (input.ref !== undefined) {
     const referencedElement = state.elementReferences.get(input.ref);
     if (
       referencedElement === undefined
       || referencedElement.targetId !== target.id
       || referencedElement.generation !== target.generation
+      || !('backendNodeId' in referencedElement)
     )
       throw new McpToolError('MCP_ELEMENT_REF_STALE', `Element reference ${input.ref} is stale.`);
     return referencedElement;
@@ -2043,7 +2277,7 @@ async function resolveSemanticElementWithRetry(
     readonly timeoutMilliseconds: number;
   },
   signal: AbortSignal,
-): Promise<ElementReference> {
+): Promise<NativeElementReference> {
   const deadline = Date.now() + input.timeoutMilliseconds;
   while (true) {
     try {
@@ -2082,7 +2316,7 @@ type ElementInteraction
 async function executeElementInteraction(
   client: McpChromeDebuggerBridgeClient,
   target: PublishedTarget,
-  element: ElementReference,
+  element: NativeElementReference,
   interaction: ElementInteraction,
   modifiers: readonly InputModifier[],
   timeoutMilliseconds: number,
@@ -2248,7 +2482,7 @@ async function executeElementInteraction(
 async function elementCheckedState(
   client: McpChromeDebuggerBridgeClient,
   target: PublishedTarget,
-  element: ElementReference,
+  element: NativeElementReference,
   signal: AbortSignal,
 ): Promise<boolean | undefined> {
   const result = await executeSemanticCommand(
@@ -2271,7 +2505,7 @@ async function elementCheckedState(
 async function elementCenterPoint(
   client: McpChromeDebuggerBridgeClient,
   target: PublishedTarget,
-  element: ElementReference,
+  element: NativeElementReference,
   signal: AbortSignal,
 ): Promise<ViewportPoint> {
   const authority = {
@@ -2392,7 +2626,27 @@ function createCdbToolDefinitionsForSession(
       name,
     });
   };
-  const { client } = options;
+  const timing = resolveMcpTimingPolicy(options.timing);
+  const rawClient = options.client;
+  const cancelAutomation = rawClient.cancelAutomation;
+  const executeAutomation = rawClient.executeAutomation;
+  const client: McpChromeDebuggerBridgeClient = {
+    async acquireLease(request) {
+      return rawClient.acquireLease({ ...request, durationMilliseconds: timing.semanticLeaseDurationMilliseconds });
+    },
+    ...(cancelAutomation === undefined ? {} : { cancelAutomation: async request => cancelAutomation(request) }),
+    cancelCommand: async request => rawClient.cancelCommand(request),
+    ...(executeAutomation === undefined ? {} : { executeAutomation: async request => executeAutomation(request) }),
+    executeCommand: async command => rawClient.executeCommand(command),
+    listTargets: async () => rawClient.listTargets(),
+    readArtifact: async (request, signal) => rawClient.readArtifact(request, signal),
+    releaseArtifact: async request => rawClient.releaseArtifact(request),
+    releaseLease: async request => rawClient.releaseLease(request),
+    renewLease: async request => rawClient.renewLease(request),
+    subscribe: async request => rawClient.subscribe(request),
+    watchTargets: () => rawClient.watchTargets(),
+  };
+  const useRegisteredAutomation = options.automationProvider === 'registered';
   const enableRawCdp = options.enableRawCdp ?? false;
   const pointerPositions = new Map<string, ViewportPoint>();
   const inputModifiersSchema = z
@@ -2427,6 +2681,9 @@ function createCdbToolDefinitionsForSession(
     testId: textMatchSchema.optional(),
     text: textMatchSchema.optional(),
     title: textMatchSchema.optional(),
+    xpath: z.string().min(1).max(2_000).optional().describe(
+      'XPath expression evaluated by Chrome DOM search. XPath does not cross shadow-root boundaries.',
+    ),
   };
   const locatorStrategySchema = z.strictObject(locatorStrategyShape).refine(
     locator => Object.values(locator).some(value => value !== undefined),
@@ -2452,7 +2709,7 @@ function createCdbToolDefinitionsForSession(
     locator: locatorSchema.optional(),
     ref: z.string().regex(elementReferencePattern).optional(),
     targetRef: z.string().regex(targetReferencePattern),
-    timeoutMilliseconds: z.number().int().positive().max(30_000).default(10_000),
+    timeoutMilliseconds: z.number().int().positive().max(timing.maximumToolTimeoutMilliseconds).default(timing.defaultToolTimeoutMilliseconds),
   };
   const hasExactlyOneElementTarget = (input: { readonly locator?: unknown; readonly ref?: unknown }): boolean =>
     (input.ref === undefined) !== (input.locator === undefined);
@@ -2461,7 +2718,7 @@ function createCdbToolDefinitionsForSession(
       .number()
       .int()
       .nonnegative()
-      .max(maximumInputActionDurationMilliseconds)
+      .max(timing.maximumInputActionDurationMilliseconds)
       .default(0),
     steps: z
       .number()
@@ -2472,7 +2729,7 @@ function createCdbToolDefinitionsForSession(
   };
   const lifecycleInput = {
     targetRef: z.string().regex(targetReferencePattern),
-    timeoutMilliseconds: z.number().int().positive().max(30_000).default(10_000),
+    timeoutMilliseconds: z.number().int().positive().max(timing.maximumToolTimeoutMilliseconds).default(timing.defaultToolTimeoutMilliseconds),
     waitUntil: z.enum(['commit', 'domcontentloaded', 'load']).default('load'),
   };
   const navigateHistory = async (
@@ -2547,6 +2804,27 @@ function createCdbToolDefinitionsForSession(
           if (element.targetId === target.id)
             sessionState.elementReferences.delete(reference);
         }
+        if (useRegisteredAutomation) {
+          const result = await executeRegisteredAutomation(
+            client,
+            target,
+            {
+              kind: 'find',
+              locator: automationLocator(input.locator),
+              maximumMatches: input.maximumMatches,
+            },
+            context.mcpReq.signal,
+          );
+          return jsonContent(allocateProviderElements(sessionState, target, result.elements).map(({ element, ref }) => ({
+            ...(stringValue(property(element.metadata, 'name')) === undefined
+              ? {}
+              : { name: stringValue(property(element.metadata, 'name')) }),
+            ref,
+            ...(stringValue(property(element.metadata, 'role')) === undefined
+              ? {}
+              : { role: stringValue(property(element.metadata, 'role')) }),
+          })));
+        }
         const matches = (await resolveLocatorCandidates(client, target, input.locator, context.mcpReq.signal))
           .slice(0, input.maximumMatches)
           .map(candidate => ({
@@ -2584,7 +2862,7 @@ function createCdbToolDefinitionsForSession(
     async (input) => {
       try {
         return jsonContent(
-          await client.acquireLease({
+          await rawClient.acquireLease({
             durationMilliseconds: input.durationMilliseconds,
             ...(input.mode === undefined ? {} : { mode: input.mode }),
             requestedMethods: input.requestedMethods,
@@ -2605,7 +2883,7 @@ function createCdbToolDefinitionsForSession(
     },
     async (input) => {
       try {
-        return jsonContent(await client.renewLease(input));
+        return jsonContent(await rawClient.renewLease(input));
       } catch (error) {
         return toolError(error);
       }
@@ -2623,7 +2901,7 @@ function createCdbToolDefinitionsForSession(
     },
     async (input) => {
       try {
-        await client.releaseLease(input);
+        await rawClient.releaseLease(input);
         return jsonContent({ released: true });
       } catch (error) {
         return toolError(error);
@@ -2643,7 +2921,7 @@ function createCdbToolDefinitionsForSession(
     },
     async (input) => {
       try {
-        await client.releaseArtifact(input);
+        await rawClient.releaseArtifact(input);
         return jsonContent({ released: true });
       } catch (error) {
         return toolError(error);
@@ -2716,6 +2994,19 @@ function createCdbToolDefinitionsForSession(
     async (input, ctx) => {
       try {
         const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        if (useRegisteredAutomation) {
+          const result = await executeRegisteredAutomation(
+            client,
+            target,
+            {
+              ...automationElementTarget(sessionState, target, input),
+              include: input.include,
+              kind: 'inspect',
+            },
+            ctx.mcpReq.signal,
+          );
+          return jsonContent(result.value);
+        }
         if (input.ref === undefined && input.locator === undefined) {
           const layout = await executeSemanticCommand(
             client,
@@ -2855,6 +3146,32 @@ function createCdbToolDefinitionsForSession(
         for (const [reference, element] of sessionState.elementReferences) {
           if (element.targetId === target.id)
             sessionState.elementReferences.delete(reference);
+        }
+        if (useRegisteredAutomation) {
+          const result = await executeRegisteredAutomation(
+            client,
+            target,
+            {
+              kind: 'snapshot',
+              maximumDepth: input.maximumDepth,
+              maximumNodes,
+              mode: input.mode,
+            },
+            context.mcpReq.signal,
+          );
+          const allocated = allocateProviderElements(sessionState, target, result.elements);
+          const snapshot = stringValue(property(result.value, 'snapshot'));
+          if (snapshot === undefined) return jsonContent(result.value);
+          let projectedSnapshot = snapshot;
+          for (const { element, ref } of allocated) {
+            const providerReference = stringValue(property(element.metadata, 'providerReference'));
+            if (providerReference !== undefined)
+              projectedSnapshot = projectedSnapshot.split(providerReference).join(ref);
+          }
+          return textContent(projectedSnapshot.slice(
+            0,
+            input.mode === 'interactive' ? maximumInteractiveSnapshotCharacters : maximumSnapshotCharacters,
+          ));
         }
         const listedSessions = await executeSemanticCommand(
           client,
@@ -3145,13 +3462,40 @@ function createCdbToolDefinitionsForSession(
         modifiers: inputModifiersSchema,
         ref: z.string().regex(elementReferencePattern).optional(),
         targetRef: z.string().regex(targetReferencePattern),
-        timeoutMilliseconds: z.number().int().positive().max(30_000).default(10_000),
+        timeoutMilliseconds: z.number().int().positive().max(timing.maximumToolTimeoutMilliseconds).default(timing.defaultToolTimeoutMilliseconds),
       }).refine(input => (input.ref === undefined) !== (input.locator === undefined), {
         message: 'Provide exactly one of ref or locator.',
       }),
     },
     async (input, context) => {
       try {
+        if (useRegisteredAutomation) {
+          const automationAttempt = async (): Promise<AutomationExecutionResult> => {
+            const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+            return executeRegisteredAutomation(
+              client,
+              target,
+              {
+                action: 'click',
+                ...automationElementTarget(sessionState, target, input),
+                kind: 'action',
+                options: {
+                  button: input.button,
+                  clickCount: input.clickCount,
+                  modifiers: input.modifiers,
+                  timeout: input.timeoutMilliseconds,
+                },
+              },
+              context.mcpReq.signal,
+            );
+          };
+          try {
+            return jsonContent((await automationAttempt()).value);
+          } catch (error) {
+            if (input.locator === undefined || property(error, 'code') !== 'TARGET_GENERATION_STALE') throw error;
+            return jsonContent((await automationAttempt()).value);
+          }
+        }
         const attempt = async (): Promise<unknown> => {
           const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
           const element = await resolveSemanticElementWithRetry(client, sessionState, target, input, context.mcpReq.signal);
@@ -3459,11 +3803,38 @@ function createCdbToolDefinitionsForSession(
         modifiers: inputModifiersSchema,
         source: nestedElementTargetSchema,
         targetRef: z.string().regex(targetReferencePattern),
-        timeoutMilliseconds: z.number().int().positive().max(30_000).default(10_000),
+        timeoutMilliseconds: z.number().int().positive().max(timing.maximumToolTimeoutMilliseconds).default(timing.defaultToolTimeoutMilliseconds),
       }),
     },
     async (input, context) => {
       try {
+        if (useRegisteredAutomation) {
+          const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+          const destination = automationElementTarget(sessionState, target, input.destination);
+          const source = automationElementTarget(sessionState, target, input.source);
+          const result = await executeRegisteredAutomation(
+            client,
+            target,
+            {
+              action: 'drag',
+              ...(destination.elementHandleId === undefined
+                ? {}
+                : { destinationElementHandleId: destination.elementHandleId }),
+              ...(destination.locator === undefined
+                ? {}
+                : { destinationLocator: destination.locator }),
+              ...source,
+              kind: 'action',
+              options: {
+                button: input.button,
+                modifiers: input.modifiers,
+                timeout: input.timeoutMilliseconds,
+              },
+            },
+            context.mcpReq.signal,
+          );
+          return jsonContent(result.value);
+        }
         const retryLocator = input.source.locator !== undefined && input.destination.locator !== undefined
           ? input.source.locator
           : undefined;
@@ -3590,6 +3961,29 @@ function createCdbToolDefinitionsForSession(
       },
       async (input, context) => {
         try {
+          if (useRegisteredAutomation) {
+            const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+            const text = stringValue(property(input, 'text'));
+            const key = stringValue(property(input, 'key'));
+            const result = await executeRegisteredAutomation(
+              client,
+              target,
+              {
+                action: interaction,
+                ...automationElementTarget(sessionState, target, input),
+                kind: 'action',
+                options: {
+                  ...(key === undefined ? {} : { key }),
+                  modifiers: input.modifiers,
+                  ...(interaction === 'fill' && text !== undefined ? { value: text } : {}),
+                  ...(interaction === 'type' && text !== undefined ? { text } : {}),
+                  timeout: input.timeoutMilliseconds,
+                },
+              },
+              context.mcpReq.signal,
+            );
+            return jsonContent(result.value);
+          }
           const interactionInput: ElementInteraction = interaction === 'fill' || interaction === 'type'
             ? { kind: interaction, text: String(property(input, 'text') ?? '') }
             : interaction === 'press'
@@ -3645,6 +4039,24 @@ function createCdbToolDefinitionsForSession(
       },
       async (input, context) => {
         try {
+          if (useRegisteredAutomation) {
+            const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+            const result = await executeRegisteredAutomation(
+              client,
+              target,
+              {
+                action: desiredState ? 'check' : 'uncheck',
+                ...automationElementTarget(sessionState, target, input),
+                kind: 'action',
+                options: {
+                  modifiers: input.modifiers,
+                  timeout: input.timeoutMilliseconds,
+                },
+              },
+              context.mcpReq.signal,
+            );
+            return jsonContent(result.value);
+          }
           return jsonContent(await executeWithRenewedLocatorRetry(
             client,
             sessionState,
@@ -3687,6 +4099,24 @@ function createCdbToolDefinitionsForSession(
     },
     async (input, context) => {
       try {
+        if (useRegisteredAutomation) {
+          const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+          const result = await executeRegisteredAutomation(
+            client,
+            target,
+            {
+              action: 'select-option',
+              ...automationElementTarget(sessionState, target, input),
+              kind: 'action',
+              options: {
+                label: input.label,
+                timeout: input.timeoutMilliseconds,
+              },
+            },
+            context.mcpReq.signal,
+          );
+          return jsonContent(result.value);
+        }
         return jsonContent(await executeWithRenewedLocatorRetry(
           client,
           sessionState,
@@ -3741,7 +4171,7 @@ function createCdbToolDefinitionsForSession(
     targetRef: z.string().regex(targetReferencePattern),
     leaseId: z.string().uuid().optional(),
     sessionId: z.string().uuid().optional(),
-    timeoutMilliseconds: z.number().int().positive().max(30_000).default(5_000),
+    timeoutMilliseconds: z.number().int().positive().max(timing.maximumToolTimeoutMilliseconds).default(timing.defaultEventTimeoutMilliseconds),
   };
   register(
     'browser.wait_for_navigation',
@@ -3940,20 +4370,17 @@ export function createCdbToolSession(
     definitions,
     dispose() {
       state.disposed = true;
+      state.agentSession.dispose();
       state.elementReferences.clear();
-      state.targetIdsByReference.clear();
-      state.targetReferencesById.clear();
     },
     projectTarget: target => projectSemanticTarget(state, target),
     revokeTarget(targetId) {
-      const targetRef = state.targetReferencesById.get(targetId);
-      if (targetRef === undefined) return;
-      state.targetReferencesById.delete(targetId);
-      state.targetIdsByReference.delete(targetRef);
+      if (state.disposed) return;
+      state.agentSession.revoke(targetId);
       for (const [elementRef, element] of state.elementReferences)
         if (element.targetId === targetId) state.elementReferences.delete(elementRef);
     },
-    targetIdForReference: targetRef => state.targetIdsByReference.get(targetRef),
+    targetIdForReference: targetRef => state.disposed ? undefined : state.agentSession.resolve(targetRef)?.targetId,
   };
 }
 

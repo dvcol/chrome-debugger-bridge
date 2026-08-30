@@ -1,4 +1,4 @@
-import type { CdpCommand, Lease, PublishedTarget } from '@dvcol/cdb';
+import type { AutomationExecutionRequest, CdpCommand, Lease, PublishedTarget } from '@dvcol/cdb';
 
 import type { McpChromeDebuggerBridgeClient } from '../src/index.js';
 
@@ -100,6 +100,178 @@ it('bounds the default interactive snapshot while keeping short actionable refs'
   expect(snapshotText).not.toContain('[ref=e501]');
 });
 
+it('includes named table cells and headers in interactive snapshots', async () => {
+  expect.assertions(5);
+  const accessibilityTree = Buffer.from(JSON.stringify({
+    nodes: [
+      { backendDOMNodeId: 1, childIds: [], ignored: false, name: { value: 'Hero Banner CTA' }, nodeId: 'cell', role: { value: 'cell' } },
+      { backendDOMNodeId: 2, childIds: [], ignored: false, name: { value: 'Status' }, nodeId: 'columnheader', role: { value: 'columnheader' } },
+      { backendDOMNodeId: 3, childIds: [], ignored: false, name: { value: 'Experiment' }, nodeId: 'rowheader', role: { value: 'rowheader' } },
+      { backendDOMNodeId: 4, childIds: [], ignored: false, name: { value: 'Grid value' }, nodeId: 'gridcell', role: { value: 'gridcell' } },
+    ],
+  }));
+  const client = {
+    async acquireLease(request: { readonly requestedMethods: readonly string[] }) {
+      return lease(request.requestedMethods);
+    },
+    async cancelCommand() {},
+    async executeCommand(command: CdpCommand) {
+      if (command.method === 'Bridge.listChildSessions') return { value: { sessions: [] } };
+      if (command.method === 'Accessibility.getFullAXTree') {
+        return {
+          value: {
+            artifact: {
+              expiresAt: '2030-01-01T00:00:00.000Z',
+              id: 'accessibility-tree',
+              length: accessibilityTree.byteLength,
+              mediaType: 'application/json',
+            },
+          },
+        };
+      }
+      return { value: {} };
+    },
+    async listTargets() {
+      return [target];
+    },
+    async readArtifact() {
+      return accessibilityTree;
+    },
+    async releaseArtifact() {},
+    async releaseLease() {},
+  } as unknown as McpChromeDebuggerBridgeClient;
+  const session = createCdbToolSession({ client });
+  const targetRef = session.projectTarget(target)?.targetRef;
+  const snapshot = session.definitions.find(definition => definition.name === 'browser.snapshot');
+  if (targetRef === undefined || snapshot === undefined) throw new Error('browser.snapshot is missing.');
+
+  const result = await snapshot.invoke({ targetRef });
+  const snapshotText = text(result);
+
+  expect(result.isError).toBeUndefined();
+  expect(snapshotText).toContain('- cell "Hero Banner CTA" [ref=e1]');
+  expect(snapshotText).toContain('- columnheader "Status" [ref=e2]');
+  expect(snapshotText).toContain('- rowheader "Experiment" [ref=e3]');
+  expect(snapshotText).toContain('- gridcell "Grid value" [ref=e4]');
+});
+
+it('routes an opted-in semantic session through one registered automation provider call per operation', async () => {
+  expect.assertions(9);
+  const automationRequests: AutomationExecutionRequest[] = [];
+  const leaseRequests: Array<{ readonly mode?: Lease['mode']; readonly requestedMethods: readonly string[] }> = [];
+  const client = {
+    async acquireLease(request: { readonly mode?: Lease['mode']; readonly requestedMethods: readonly string[] }) {
+      leaseRequests.push(request);
+      return { ...lease(request.requestedMethods), mode: request.mode ?? 'shared-read' };
+    },
+    async cancelAutomation() {},
+    async cancelCommand() {},
+    async executeAutomation(request: AutomationExecutionRequest) {
+      automationRequests.push(request);
+      if (request.operation.kind === 'snapshot') {
+        return {
+          elements: [{ id: 'provider-handle-1', metadata: { providerReference: 'e44', role: 'cell' } }],
+          metrics: {
+            cdbTransportDurationMilliseconds: 1,
+            cdpCommandCount: 2,
+            chromeDurationMilliseconds: 3,
+            providerDurationMilliseconds: 4,
+            totalDurationMilliseconds: 5,
+          },
+          operationId: request.operationId,
+          provider: { capabilities: { actions: ['click'], operations: ['action', 'find', 'snapshot'], snapshotModes: ['interactive'] }, id: 'playwright', version: 'test' },
+          snapshotId: 'snapshot-1',
+          value: { snapshot: '- cell "Hero Banner CTA" [ref=e44]' },
+        };
+      }
+      return {
+        metrics: {
+          cdbTransportDurationMilliseconds: 1,
+          cdpCommandCount: 3,
+          chromeDurationMilliseconds: 4,
+          providerDurationMilliseconds: 5,
+          totalDurationMilliseconds: 6,
+        },
+        operationId: request.operationId,
+        provider: { capabilities: { actions: ['click'], operations: ['action'], snapshotModes: [] }, id: 'playwright', version: 'test' },
+        value: { completed: true },
+      };
+    },
+    async listTargets() {
+      return [target];
+    },
+    async releaseLease() {},
+  } as unknown as McpChromeDebuggerBridgeClient;
+  const session = createCdbToolSession({ automationProvider: 'registered', client });
+  const targetRef = session.projectTarget(target)?.targetRef;
+  const snapshot = session.definitions.find(definition => definition.name === 'browser.snapshot');
+  const click = session.definitions.find(definition => definition.name === 'browser.click');
+  if (targetRef === undefined || snapshot === undefined || click === undefined)
+    throw new Error('The semantic tools are missing.');
+
+  const snapshotResult = await snapshot.invoke({ targetRef });
+  const clickResult = await click.invoke({ ref: 'e1', targetRef });
+
+  expect(snapshotResult.isError).toBeUndefined();
+  expect(text(snapshotResult)).toContain('- cell "Hero Banner CTA" [ref=e1]');
+  expect(clickResult.isError).toBeUndefined();
+  expect(JSON.parse(text(clickResult))).toStrictEqual({ completed: true });
+  expect(automationRequests).toHaveLength(2);
+  expect(automationRequests[0]?.operation).toMatchObject({ kind: 'snapshot', mode: 'interactive' });
+  expect(automationRequests[1]?.operation).toMatchObject({ action: 'click', elementHandleId: 'provider-handle-1', kind: 'action' });
+  expect(leaseRequests.map(request => request.mode)).toStrictEqual(['shared-read', 'exclusive-control']);
+  expect(leaseRequests.every(request => request.requestedMethods.length === 0)).toBe(true);
+});
+
+it('projects structured provider failures into semantic MCP errors', async () => {
+  expect.assertions(3);
+  const client = {
+    async acquireLease(request: { readonly mode?: Lease['mode']; readonly requestedMethods: readonly string[] }) {
+      return { ...lease(request.requestedMethods), mode: request.mode ?? 'shared-read' };
+    },
+    async cancelAutomation() {},
+    async cancelCommand() {},
+    async executeAutomation() {
+      const error = new Error('Another element intercepts pointer events.') as Error & {
+        code: string;
+        details: Record<string, unknown>;
+        retryable: boolean;
+      };
+      error.code = 'CDP_COMMAND_FAILED';
+      error.details = {
+        automationCode: 'AUTOMATION_ELEMENT_COVERED',
+        providerId: 'playwright',
+      };
+      error.retryable = true;
+      throw error;
+    },
+    async listTargets() {
+      return [target];
+    },
+    async releaseLease() {},
+  } as unknown as McpChromeDebuggerBridgeClient;
+  const session = createCdbToolSession({ automationProvider: 'registered', client });
+  const targetRef = session.projectTarget(target)?.targetRef;
+  const click = session.definitions.find(definition => definition.name === 'browser.click');
+  if (targetRef === undefined || click === undefined) throw new Error('The click tool is missing.');
+
+  const result = await click.invoke({ locator: { role: 'button' }, targetRef });
+  const failure: unknown = JSON.parse(text(result));
+  const failureMessage = failure !== null
+    && typeof failure === 'object'
+    && 'message' in failure
+    ? failure.message
+    : undefined;
+
+  expect(result.isError).toBe(true);
+  expect(failure).toMatchObject({
+    code: 'MCP_ELEMENT_COVERED',
+    details: { automationCode: 'AUTOMATION_ELEMENT_COVERED', providerId: 'playwright' },
+    retryable: true,
+  });
+  expect(failureMessage).toBe('Another element intercepts pointer events.');
+});
+
 it('reads an artifact-backed accessibility tree before formatting the interactive snapshot', async () => {
   expect.assertions(5);
   const accessibilityTree = Buffer.from(JSON.stringify({
@@ -162,8 +334,8 @@ it('reads an artifact-backed accessibility tree before formatting the interactiv
   expect(releasedLeases.every(leaseId => leaseId === '017c10a7-e0af-40ec-879f-cd87dffaf036')).toBe(true);
 });
 
-it('supports the core Playwright-style locator strategies through pierced author-shadow search', async () => {
-  expect.assertions(11);
+it('supports the core Playwright-style locator strategies and XPath through DOM search', async () => {
+  expect.assertions(14);
   const commands: CdpCommand[] = [];
   const client = {
     async acquireLease(request: { readonly requestedMethods: readonly string[] }) {
@@ -198,11 +370,12 @@ it('supports the core Playwright-style locator strategies through pierced author
     { name: { match: 'exact', value: 'Save' }, role: 'button' },
     { text: { match: 'substring', value: 'Sav' } },
     { label: { flags: 'i', match: 'regex', pattern: '^save$' } },
-    { css: 'csq-shell >>> button.save' },
+    { css: 'app-shell >>> button.save' },
     { placeholder: { match: 'exact', value: 'Search' } },
     { altText: { match: 'exact', value: 'Hero' } },
     { title: { match: 'exact', value: 'Save title' } },
     { testId: { match: 'exact', value: 'save' } },
+    { xpath: '//button[normalize-space(.)="Save"]' },
   ] as const;
   const references: string[] = [];
   for (const locator of locators) {
@@ -211,11 +384,15 @@ it('supports the core Playwright-style locator strategies through pierced author
     references.push((JSON.parse(text(result)) as Array<{ readonly ref: string }>)[0]?.ref ?? '');
   }
 
-  expect(references).toEqual(['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7', 'e8']);
+  expect(references).toEqual(['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7', 'e8', 'e9']);
   expect(commands.filter(command => command.method === 'DOM.getDocument').every(command =>
     command.parameters?.depth === 0 && command.parameters.pierce === true)).toBe(true);
   expect(commands.filter(command => command.method === 'DOM.performSearch').every(command =>
     command.parameters?.includeUserAgentShadowDOM === false)).toBe(true);
+  expect(commands.some(command => command.method === 'DOM.performSearch'
+    && command.parameters?.query === '//button[normalize-space(.)="Save"]')).toBe(true);
+  expect(commands.filter(command => command.method === 'DOM.performSearch'
+    && command.parameters?.query === '//button[normalize-space(.)="Save"]')).toHaveLength(1);
 });
 
 it('scopes locators through an OOPIF frame chain', async () => {

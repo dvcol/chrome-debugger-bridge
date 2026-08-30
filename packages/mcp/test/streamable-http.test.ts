@@ -196,7 +196,7 @@ it('preserves a successful navigation when its temporary lease was fenced during
 
   const result = await navigate.invoke({
     targetRef,
-    url: 'https://staging-app.contentsquare.com/#/benchmark/dashboard?project=1814',
+    url: 'https://example.com/dashboard?project=1814',
   });
 
   expect(releaseLease).toHaveBeenCalledTimes(2);

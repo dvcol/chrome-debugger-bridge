@@ -21,6 +21,7 @@ import type {
   ProtocolVersionRange,
   PublishedTarget,
 } from '@dvcol/cdb/protocol';
+import type { TimeoutMilliseconds } from '@dvcol/cdb/timing';
 
 import type { AgentAuthenticationTranscript, AuthenticatedFrame } from './authentication.js';
 
@@ -31,6 +32,7 @@ import {
   brokerToAgentMessageSchema,
   brokerToClientMessageSchema,
 } from '@dvcol/cdb/protocol';
+import { validateTimeoutMilliseconds } from '@dvcol/cdb/timing';
 
 import {
   createAgentAuthenticationProof,
@@ -59,6 +61,28 @@ export const defaultClientWebSocketPath = '/cdb/client';
 export { agentWebSocketProtocol, clientWebSocketProtocol } from './protocols.js';
 const maximumPendingAuthenticatedMessages = 32;
 const base64PaddingPattern = /=+$/u;
+
+export interface BrowserWebSocketTimingPolicy {
+  readonly handshakeTimeoutMilliseconds: TimeoutMilliseconds;
+  readonly initialReconnectDelayMilliseconds: TimeoutMilliseconds;
+  readonly maximumReconnectDelayMilliseconds: TimeoutMilliseconds;
+}
+
+export const defaultBrowserWebSocketTimingPolicy: Readonly<BrowserWebSocketTimingPolicy> = Object.freeze({
+  handshakeTimeoutMilliseconds: 5_000,
+  initialReconnectDelayMilliseconds: 25,
+  maximumReconnectDelayMilliseconds: 1_000,
+});
+
+function resolveBrowserWebSocketTimingPolicy(
+  timing: Partial<BrowserWebSocketTimingPolicy> | undefined,
+): BrowserWebSocketTimingPolicy {
+  const resolved = { ...defaultBrowserWebSocketTimingPolicy, ...timing };
+  validateTimeoutMilliseconds(resolved.handshakeTimeoutMilliseconds, 'handshakeTimeoutMilliseconds');
+  validateTimeoutMilliseconds(resolved.initialReconnectDelayMilliseconds, 'initialReconnectDelayMilliseconds');
+  validateTimeoutMilliseconds(resolved.maximumReconnectDelayMilliseconds, 'maximumReconnectDelayMilliseconds');
+  return resolved;
+}
 
 export interface PairedAgentCredential {
   readonly agentId: string;
@@ -92,11 +116,11 @@ export interface ConnectAgentWebSocketOptions {
   readonly endpoint: string;
   /** Identifies the agent during the mandatory post-authentication protocol handshake. */
   readonly implementation?: { readonly instanceId?: string; readonly name?: string; readonly version?: string };
-  readonly handshakeTimeoutMilliseconds?: number;
   /** Bounds authenticated frames held while a newly paired credential is persisted. */
   readonly maximumPendingAuthenticatedMessages?: number;
   readonly origin?: string;
   readonly protocolVersions?: ProtocolVersionRange;
+  readonly timing?: Partial<BrowserWebSocketTimingPolicy>;
   readonly requestPairingCode?: (challenge: {
     readonly abortSignal: AbortSignal;
     readonly brokerId: string;
@@ -108,7 +132,7 @@ export interface ConnectAgentWebSocketOptions {
 interface BufferedWebSocketMessages {
   awaitWhileOpen: <Value>(operation: Promise<Value>) => Promise<Value>;
   forwardTo: (listener: (event: MessageEvent<unknown>) => void) => void;
-  receiveText: (timeoutMilliseconds: number) => Promise<string>;
+  receiveText: (timeoutMilliseconds: TimeoutMilliseconds) => Promise<string>;
 }
 
 function bufferWebSocketMessages(webSocket: WebSocket, maximumPendingMessages: number): BufferedWebSocketMessages {
@@ -207,17 +231,19 @@ function bufferWebSocketMessages(webSocket: WebSocket, maximumPendingMessages: n
       if (terminalError !== undefined) {
         throw terminalError;
       }
-      let timeout: ReturnType<typeof globalThis.setTimeout>;
+      let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
       try {
         return await new Promise<string>((resolve, reject) => {
           pendingReceiver = { reject, resolve };
-          timeout = globalThis.setTimeout(() => {
-            pendingReceiver = undefined;
-            reject(new Error('Authentication response timed out'));
-          }, timeoutMilliseconds);
+          if (timeoutMilliseconds !== null) {
+            timeout = globalThis.setTimeout(() => {
+              pendingReceiver = undefined;
+              reject(new Error('Authentication response timed out'));
+            }, timeoutMilliseconds);
+          }
         });
       } finally {
-        globalThis.clearTimeout(timeout!);
+        if (timeout !== undefined) globalThis.clearTimeout(timeout);
       }
     },
   };
@@ -225,13 +251,15 @@ function bufferWebSocketMessages(webSocket: WebSocket, maximumPendingMessages: n
 
 async function requestPairingCodeWithDeadline(
   webSocket: WebSocket,
-  timeoutMilliseconds: number,
+  timeoutMilliseconds: TimeoutMilliseconds,
   requestPairingCode: NonNullable<ConnectAgentWebSocketOptions['requestPairingCode']>,
   challenge: Omit<Parameters<NonNullable<ConnectAgentWebSocketOptions['requestPairingCode']>>[0], 'abortSignal'>,
 ): Promise<string> {
   const abortController = new AbortController();
   const handleClose = (): void => abortController.abort();
-  const timeout = globalThis.setTimeout(() => abortController.abort(), timeoutMilliseconds);
+  const timeout = timeoutMilliseconds === null
+    ? undefined
+    : globalThis.setTimeout(() => abortController.abort(), timeoutMilliseconds);
   webSocket.addEventListener('close', handleClose, { once: true });
   try {
     const approval = Promise.resolve(requestPairingCode({ ...challenge, abortSignal: abortController.signal }));
@@ -243,16 +271,16 @@ async function requestPairingCodeWithDeadline(
       });
     });
   } finally {
-    globalThis.clearTimeout(timeout);
+    if (timeout !== undefined) globalThis.clearTimeout(timeout);
     webSocket.removeEventListener('close', handleClose);
   }
 }
 
-async function waitForOpen(webSocket: WebSocket, timeoutMilliseconds: number): Promise<void> {
+async function waitForOpen(webSocket: WebSocket, timeoutMilliseconds: TimeoutMilliseconds): Promise<void> {
   return new Promise((resolve, reject) => {
-    let timeout: ReturnType<typeof globalThis.setTimeout>;
+    let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
     function cleanup(): void {
-      globalThis.clearTimeout(timeout);
+      if (timeout !== undefined) globalThis.clearTimeout(timeout);
       webSocket.removeEventListener('open', handleOpen);
       webSocket.removeEventListener('error', handleError);
       webSocket.removeEventListener('close', handleClose);
@@ -270,10 +298,12 @@ async function waitForOpen(webSocket: WebSocket, timeoutMilliseconds: number): P
       reject(new Error('WebSocket closed before authentication'));
     }
 
-    timeout = globalThis.setTimeout(() => {
-      cleanup();
-      reject(new Error('WebSocket connection timed out'));
-    }, timeoutMilliseconds);
+    if (timeoutMilliseconds !== null) {
+      timeout = globalThis.setTimeout(() => {
+        cleanup();
+        reject(new Error('WebSocket connection timed out'));
+      }, timeoutMilliseconds);
+    }
     webSocket.addEventListener('open', handleOpen, { once: true });
     webSocket.addEventListener('error', handleError, { once: true });
     webSocket.addEventListener('close', handleClose, { once: true });
@@ -293,7 +323,7 @@ async function exchangeAuthenticationMessage(
   webSocket: WebSocket,
   messageBuffer: BufferedWebSocketMessages,
   message: AgentAuthenticationMessage,
-  timeoutMilliseconds: number,
+  timeoutMilliseconds: TimeoutMilliseconds,
 ): Promise<AgentAuthenticationMessage> {
   webSocket.send(JSON.stringify(message));
   return parseAuthenticationMessage(await messageBuffer.receiveText(timeoutMilliseconds));
@@ -319,7 +349,7 @@ function resolveOrigin(explicitOrigin: string | undefined): string {
 export async function connectAgentWebSocket(
   options: ConnectAgentWebSocketOptions,
 ): Promise<BrowserAgentConnection> {
-  const timeoutMilliseconds = options.handshakeTimeoutMilliseconds ?? 5_000;
+  const timeoutMilliseconds = resolveBrowserWebSocketTimingPolicy(options.timing).handshakeTimeoutMilliseconds;
   const maximumPendingMessages = options.maximumPendingAuthenticatedMessages ?? maximumPendingAuthenticatedMessages;
   if (!Number.isSafeInteger(maximumPendingMessages) || maximumPendingMessages < 1) {
     throw new Error('The maximum pending authenticated messages must be a positive integer');
@@ -608,7 +638,7 @@ export interface ConnectBrowserClientWebSocketOptions {
   /** Sent as an encoded WebSocket subprotocol because browsers cannot set upgrade headers. */
   readonly authorization: string;
   readonly endpoint: string;
-  readonly handshakeTimeoutMilliseconds?: number;
+  readonly timing?: Partial<BrowserWebSocketTimingPolicy>;
 }
 
 function encodeAuthorizationSubprotocol(authorization: string): string {
@@ -622,7 +652,7 @@ function encodeAuthorizationSubprotocol(authorization: string): string {
 export async function connectBrowserClientWebSocket(
   options: ConnectBrowserClientWebSocketOptions,
 ): Promise<BrowserClientConnection> {
-  const timeoutMilliseconds = options.handshakeTimeoutMilliseconds ?? 5_000;
+  const timeoutMilliseconds = resolveBrowserWebSocketTimingPolicy(options.timing).handshakeTimeoutMilliseconds;
   const endpointUrl = new URL(options.endpoint);
   validateWebSocketEndpointSecurity(endpointUrl);
   if (endpointUrl.username || endpointUrl.password || endpointUrl.search || endpointUrl.hash) {
@@ -740,10 +770,6 @@ export interface BrowserChromeDebuggerBridgeClient extends ChromeDebuggerBridgeC
 
 export interface CreateBrowserChromeDebuggerBridgeClientOptions extends ConnectBrowserClientWebSocketOptions {
   readonly artifactEndpoint: string;
-  readonly reconnect?: {
-    readonly initialDelayMilliseconds?: number;
-    readonly maximumDelayMilliseconds?: number;
-  };
 }
 
 interface BrowserSubscriptionState {
@@ -765,8 +791,9 @@ export async function createBrowserChromeDebuggerBridgeClient(
   const targetChanges = createAsyncQueue<TargetChange>(maximumPendingAuthenticatedMessages);
   const subscriptions = new Map<string, BrowserSubscriptionState>();
   const subscriptionStates = new Set<BrowserSubscriptionState>();
-  const initialReconnectDelayMilliseconds = options.reconnect?.initialDelayMilliseconds ?? 25;
-  const maximumReconnectDelayMilliseconds = options.reconnect?.maximumDelayMilliseconds ?? 1_000;
+  const timing = resolveBrowserWebSocketTimingPolicy(options.timing);
+  const initialReconnectDelayMilliseconds = timing.initialReconnectDelayMilliseconds;
+  const maximumReconnectDelayMilliseconds = timing.maximumReconnectDelayMilliseconds;
   let manuallyClosed = false;
   let reconnecting: Promise<void> | undefined;
   let removeListener = (): void => {};
@@ -834,6 +861,12 @@ export async function createBrowserChromeDebuggerBridgeClient(
         return;
       }
       failPendingRequests(new Error(`The client WebSocket disconnected (${close.code}).`));
+      if (initialReconnectDelayMilliseconds === null) {
+        targetChanges.close();
+        for (const subscription of subscriptionStates) subscription.events.close();
+        resolveClosed(close);
+        return;
+      }
       void reconnect();
     });
   };
@@ -857,7 +890,7 @@ export async function createBrowserChromeDebuggerBridgeClient(
   async function reconnect(): Promise<void> {
     if (reconnecting !== undefined || manuallyClosed) return reconnecting;
     reconnecting = (async () => {
-      let delayMilliseconds = initialReconnectDelayMilliseconds;
+      let delayMilliseconds = initialReconnectDelayMilliseconds ?? 0;
       while (true) {
         if (manuallyClosed) return;
         try {
@@ -867,7 +900,9 @@ export async function createBrowserChromeDebuggerBridgeClient(
           return;
         } catch {
           await wait(delayMilliseconds);
-          delayMilliseconds = Math.min(maximumReconnectDelayMilliseconds, delayMilliseconds * 2);
+          delayMilliseconds = maximumReconnectDelayMilliseconds === null
+            ? Math.min(Number.MAX_SAFE_INTEGER, delayMilliseconds * 2)
+            : Math.min(maximumReconnectDelayMilliseconds, delayMilliseconds * 2);
         }
       }
     })().finally(() => reconnecting = undefined);

@@ -1,3 +1,4 @@
+import type { AutomationProvider } from '../src/automation.js';
 import type { TargetBroker } from '../src/broker.js';
 import type {
   AgentToBrokerMessage,
@@ -10,6 +11,7 @@ import type {
 
 import { expect, it, vi } from 'vitest';
 
+import { AutomationProviderError } from '../src/automation.js';
 import { createTargetBroker } from '../src/broker.js';
 import {
   createChromeDebuggerBridgeClient,
@@ -112,7 +114,7 @@ it('projects only granted targets and intersects their capabilities for one clie
     connectionId: 'client-1',
     principalId: 'principal-1',
     targetGrants: [
-      { capabilities: { level: 'debug' as const }, targetId: target.id },
+      { bindingId: 'binding-1', capabilities: { level: 'debug' as const }, targetGeneration: target.generation, targetId: target.id },
     ],
   };
   broker.publishTarget(target);
@@ -166,6 +168,88 @@ it('projects only granted targets and intersects their capabilities for one clie
     ),
   ).toThrowError(expect.objectContaining({ code: 'CAPABILITY_DENIED' }));
 });
+
+it('fences a binding when the target advances to another generation', () => {
+  expect.assertions(2);
+  const broker = createTargetBroker();
+  const authority = {
+    connectionId: 'client-1',
+    principalId: 'principal-1',
+    targetGrants: [{
+      bindingId: 'binding-1',
+      capabilities: { level: 'inspect' as const },
+      targetGeneration: target.generation,
+      targetId: target.id,
+    }],
+  };
+  broker.publishTarget(target);
+  broker.revokeTarget(target.id, target.generation);
+  broker.publishTarget({ ...target, generation: target.generation + 1 });
+
+  expect(broker.listTargets(authority)).toStrictEqual([]);
+  expect(() => broker.acquireLease({
+    durationMilliseconds: 1_000,
+    requestedMethods: ['Runtime.consoleAPICalled'],
+    targetGeneration: target.generation + 1,
+    targetId: target.id,
+  }, authority)).toThrowError(expect.objectContaining({ code: 'CAPABILITY_DENIED' }));
+});
+
+const capabilityLevels = [
+  'observe',
+  'inspect',
+  'interact',
+  'debug',
+  'unsafe',
+] as const;
+
+it.each(capabilityLevels.flatMap(left => capabilityLevels.map(right => [left, right] as const)))(
+  'combines duplicate %s and %s grants without depending on insertion order',
+  (left, right) => {
+    expect.assertions(2);
+    const broker = createTargetBroker();
+    const expectedLevel = capabilityLevels[Math.max(
+      capabilityLevels.indexOf(left),
+      capabilityLevels.indexOf(right),
+    )];
+    const targetWithExactCapabilities: PublishedTarget = {
+      ...target,
+      capabilities: {
+        allow: ['Custom.first', 'Custom.second'],
+        level: 'unsafe',
+      },
+    };
+    const createAuthority = (reverse: boolean) => ({
+      connectionId: 'client-1',
+      principalId: 'principal-1',
+      targetGrants: (reverse
+        ? [
+            { bindingId: 'binding-2', capabilities: { allow: ['Custom.second'], level: right }, targetGeneration: target.generation, targetId: target.id },
+            { bindingId: 'binding-1', capabilities: { allow: ['Custom.first'], level: left }, targetGeneration: target.generation, targetId: target.id },
+          ]
+        : [
+            { bindingId: 'binding-1', capabilities: { allow: ['Custom.first'], level: left }, targetGeneration: target.generation, targetId: target.id },
+            { bindingId: 'binding-2', capabilities: { allow: ['Custom.second'], level: right }, targetGeneration: target.generation, targetId: target.id },
+          ]),
+    });
+    broker.publishTarget(targetWithExactCapabilities);
+
+    expect(broker.listTargets(createAuthority(false))).toEqual([{
+      ...targetWithExactCapabilities,
+      capabilities: {
+        allow: ['Custom.first', 'Custom.second'],
+        level: expectedLevel,
+      },
+    }]);
+    expect(broker.listTargets(createAuthority(true))).toEqual([{
+      ...targetWithExactCapabilities,
+      capabilities: {
+        allow: ['Custom.first', 'Custom.second'],
+        level: expectedLevel,
+      },
+    }]);
+  },
+);
 
 it('reports exclusive lease ownership and advisory retry timing', () => {
   expect.assertions(4);
@@ -231,7 +315,7 @@ it('keeps leases principal-owned across reconnect grace while isolating connecti
   expect.assertions(6);
   vi.useFakeTimers();
   try {
-    const broker = createTargetBroker({ reconnectGraceMilliseconds: 5_000 });
+    const broker = createTargetBroker({ timing: { reconnectGraceMilliseconds: 5_000 } });
     const firstConnection = {
       connectionId: 'first',
       principalId: 'principal-a',
@@ -319,7 +403,7 @@ it('keeps leases principal-owned across reconnect grace while isolating connecti
     expect(immediateLease.id).toMatch(/^[0-9a-f-]{36}$/u);
     broker.dispose();
     const immediateBroker = createTargetBroker({
-      reconnectGraceMilliseconds: 0,
+      timing: { reconnectGraceMilliseconds: 0 },
     });
     immediateBroker.publishTarget(target);
     immediateBroker.connectClient(firstConnection);
@@ -566,6 +650,22 @@ it('isolates reconciliation by authenticated agent authority', () => {
   expect(() =>
     broker.updateTarget({ ...secondTarget, title: 'Stolen' }, firstAuthority),
   ).toThrowError(expect.objectContaining({ code: 'CAPABILITY_DENIED' }));
+});
+
+it('fences an obsolete provider connection generation without letting its cleanup revoke the replacement', () => {
+  expect.assertions(3);
+  const broker = createTargetBroker();
+  const firstAuthority = { connectionGeneration: 1, principalId: 'provider-1' };
+  const replacementAuthority = { connectionGeneration: 2, principalId: 'provider-1' };
+  broker.publishTarget(target, firstAuthority);
+  const replacementTarget = { ...target, generation: 2, title: 'Replacement connection' };
+  broker.publishTarget(replacementTarget, replacementAuthority);
+
+  expect(broker.listTargets()).toEqual([replacementTarget]);
+  expect(() => broker.updateTarget({ ...replacementTarget, title: 'Stale update' }, firstAuthority))
+    .toThrowError(expect.objectContaining({ code: 'CAPABILITY_DENIED' }));
+  broker.revokeAgentTargets(firstAuthority);
+  expect(broker.listTargets()).toEqual([replacementTarget]);
 });
 
 it('retains targets for host-managed recovery and reconciles a higher generation', () => {
@@ -923,6 +1023,58 @@ it('relays broker commands and agent events through opaque published targets', a
   disconnect();
 });
 
+it('rejects a pending command while its outbound agent send is still settling', async () => {
+  expect.assertions(2);
+  const broker = createTargetBroker();
+  const commandSent = Promise.withResolvers<void>();
+  const finishSending = Promise.withResolvers<void>();
+  let listener: ((message: AgentToBrokerMessage) => void) | undefined;
+  const disconnect = connectAgentTargetBroker(
+    {
+      onMessage(receivedListener) {
+        listener = receivedListener;
+        return () => (listener = undefined);
+      },
+      async send(message) {
+        if (message.kind !== 'request' || message.method !== 'cdp.execute') return;
+        commandSent.resolve();
+        await finishSending.promise;
+      },
+    },
+    broker,
+    { revokeTargetsOnDisconnect: false },
+  );
+
+  completeAgentHello(listener);
+  listener?.({
+    kind: 'notification',
+    method: 'targets.publish',
+    parameters: { target },
+    protocolVersion: 1,
+  });
+  const lease = broker.acquireLease({
+    durationMilliseconds: 1_000,
+    mode: 'exclusive-control',
+    requestedMethods: ['Runtime.evaluate'],
+    targetGeneration: target.generation,
+    targetId: target.id,
+  });
+  const execution = broker.executeCommand({
+    leaseId: lease.id,
+    method: 'Runtime.evaluate',
+    operationId: '30000000-0000-4000-8000-000000000011',
+    targetGeneration: target.generation,
+    targetId: target.id,
+  });
+  await commandSent.promise;
+
+  disconnect();
+
+  await expect(execution).rejects.toThrow('The agent connection closed.');
+  expect(broker.listTargets()).toEqual([target]);
+  finishSending.resolve();
+});
+
 it('streams a fresh target snapshot followed by ordered lifecycle notifications to a client', async () => {
   expect.assertions(4);
   const broker = createTargetBroker();
@@ -1233,9 +1385,9 @@ it('executes only a non-expired lease grant through the registered opaque target
 it('externalizes large command results and invalidates their access with the target grant', async () => {
   expect.assertions(6);
   const broker = createTargetBroker({
-    artifactLifetimeMilliseconds: 1_000,
     maximumArtifactBytes: 100,
     maximumInlineResultBytes: 4,
+    timing: { artifactLifetimeMilliseconds: 1_000 },
   });
   const client = createChromeDebuggerBridgeClient(
     createLocalClientFacadeAdapter(broker),
@@ -1974,4 +2126,306 @@ it('aborts an in-flight command when its target is revoked', async () => {
   });
   broker.revokeTarget(target.id, target.generation);
   await expect(command).rejects.toMatchObject({ code: 'REQUEST_CANCELLED' });
+});
+
+it('routes automation through one target-owner provider with scoped handles and CDP instrumentation', async () => {
+  expect.assertions(15);
+  const broker = createTargetBroker();
+  const agentAuthority = { principalId: 'extension-provider-installation' };
+  const clientAuthority = {
+    connectionId: 'embedding-host-session-1',
+    principalId: 'mcp-principal-1',
+    targetGrants: [
+      { bindingId: 'binding-1', capabilities: { level: 'interact' as const }, targetGeneration: target.generation, targetId: target.id },
+    ],
+  };
+  const execute = vi.fn(async (command: CdpCommand) => ({
+    method: command.method,
+  }));
+  const setSubscriptionDemand = vi.fn(async () => {});
+  const receivedEvents: string[] = [];
+  const providerOperations: unknown[] = [];
+  const provider: AutomationProvider = {
+    descriptor: {
+      capabilities: {
+        actions: ['click'],
+        operations: ['action', 'snapshot'],
+        snapshotModes: ['interactive'],
+      },
+      id: 'playwright',
+      version: '1.62.1',
+    },
+    dispose: vi.fn(),
+    async execute(request, context) {
+      providerOperations.push(request.operation);
+      if (request.operation.kind === 'snapshot') {
+        context.onCdpEvent(event => receivedEvents.push(event.method));
+        await context.setDomainDemand('DOM', true);
+        const value = await context.executeCdp('DOM.getDocument');
+        return {
+          elements: [{ handle: 'playwright-element-1', metadata: { role: 'cell' } }],
+          snapshotId: 'playwright-snapshot-1',
+          value,
+        };
+      }
+      if (request.operation.kind !== 'action')
+        throw new Error('The test provider only supports snapshots and actions.');
+      if (request.operation.elementHandleId === undefined)
+        throw new Error('The test action requires an element handle.');
+      return { value: { handled: request.operation.elementHandleId } };
+    },
+  };
+  broker.publishTarget(target, agentAuthority);
+  broker.registerTargetExecutor(
+    target,
+    { execute, setSubscriptionDemand },
+    agentAuthority,
+  );
+  broker.registerAutomationProvider(provider, agentAuthority);
+  const lease = broker.acquireLease(
+    {
+      durationMilliseconds: 1_000,
+      mode: 'exclusive-control',
+      requestedMethods: [],
+      targetGeneration: target.generation,
+      targetId: target.id,
+    },
+    clientAuthority,
+  );
+  const snapshot = await broker.executeAutomation(
+    {
+      leaseId: lease.id,
+      operation: {
+        kind: 'snapshot',
+        maximumDepth: 10,
+        maximumNodes: 100,
+        mode: 'interactive',
+      },
+      operationId: '30000000-0000-4000-8000-000000000030',
+      targetGeneration: target.generation,
+      targetId: target.id,
+    },
+    clientAuthority,
+  );
+  const elementHandleId = snapshot.elements?.[0]?.id;
+  if (elementHandleId === undefined)
+    throw new Error('The provider did not return an element handle.');
+  broker.publishEvent(target, 'DOM.documentUpdated', {});
+  const action = await broker.executeAutomation(
+    {
+      leaseId: lease.id,
+      operation: {
+        action: 'click',
+        elementHandleId,
+        kind: 'action',
+      },
+      operationId: '30000000-0000-4000-8000-000000000031',
+      targetGeneration: target.generation,
+      targetId: target.id,
+    },
+    clientAuthority,
+  );
+
+  expect(snapshot.provider).toEqual(provider.descriptor);
+  expect(snapshot.snapshotId).toBe('playwright-snapshot-1');
+  expect(snapshot.elements?.[0]?.metadata).toEqual({ role: 'cell' });
+  expect(snapshot.metrics.cdpCommandCount).toBe(1);
+  expect(snapshot.metrics.totalDurationMilliseconds).toBeGreaterThanOrEqual(0);
+  expect(snapshot.metrics.providerDurationMilliseconds).toBeGreaterThanOrEqual(0);
+  expect(execute).toHaveBeenCalledWith(
+    expect.objectContaining({ method: 'DOM.getDocument' }),
+    expect.any(AbortSignal),
+    { ...lease, methods: ['DOM.getDocument'] },
+  );
+  expect(setSubscriptionDemand).toHaveBeenCalledWith('DOM.', true);
+  expect(receivedEvents).toEqual(['DOM.documentUpdated']);
+  expect(action.value).toEqual({ handled: 'playwright-element-1' });
+  expect(providerOperations).toEqual([
+    expect.objectContaining({ kind: 'snapshot' }),
+    expect.objectContaining({
+      elementHandleId: 'playwright-element-1',
+      kind: 'action',
+    }),
+  ]);
+  expect(elementHandleId).toEqual(expect.any(String));
+  expect(elementHandleId).not.toBe('playwright-element-1');
+  expect(action.metrics.cdpCommandCount).toBe(0);
+  expect(provider.dispose).not.toHaveBeenCalled();
+});
+
+it('preserves structured automation-provider failures', async () => {
+  expect.assertions(3);
+  const broker = createTargetBroker();
+  const agentAuthority = { principalId: 'extension-provider-installation' };
+  const clientAuthority = {
+    connectionId: 'embedding-host-session-1',
+    principalId: 'mcp-principal-1',
+    targetGrants: [
+      { bindingId: 'binding-1', capabilities: { level: 'interact' as const }, targetGeneration: target.generation, targetId: target.id },
+    ],
+  };
+  const provider: AutomationProvider = {
+    descriptor: {
+      capabilities: {
+        actions: ['click'],
+        operations: ['action'],
+        snapshotModes: [],
+      },
+      id: 'playwright',
+      version: '1.62.1',
+    },
+    dispose() {},
+    async execute() {
+      throw new AutomationProviderError(
+        'AUTOMATION_ELEMENT_COVERED',
+        'Another element intercepts pointer events.',
+        { selector: 'internal:role=button' },
+        true,
+      );
+    },
+  };
+  broker.publishTarget(target, agentAuthority);
+  broker.registerTargetExecutor(target, { execute: vi.fn(async () => ({})) }, agentAuthority);
+  broker.registerAutomationProvider(provider, agentAuthority);
+  const lease = broker.acquireLease(
+    {
+      durationMilliseconds: 1_000,
+      mode: 'exclusive-control',
+      requestedMethods: [],
+      targetGeneration: target.generation,
+      targetId: target.id,
+    },
+    clientAuthority,
+  );
+
+  const result = broker.executeAutomation(
+    {
+      leaseId: lease.id,
+      operation: { action: 'click', kind: 'action', locator: { role: 'button' } },
+      operationId: '30000000-0000-4000-8000-000000000035',
+      targetGeneration: target.generation,
+      targetId: target.id,
+    },
+    clientAuthority,
+  );
+
+  await expect(result).rejects.toMatchObject({
+    code: 'CDP_COMMAND_FAILED',
+    details: {
+      automationCode: 'AUTOMATION_ELEMENT_COVERED',
+      providerId: 'playwright',
+      selector: 'internal:role=button',
+    },
+    retryable: true,
+  });
+  await expect(result).rejects.toThrow('Another element intercepts pointer events.');
+  expect(provider.descriptor.id).toBe('playwright');
+});
+
+it('fences automation cancellation, forbidden provider commands, replacement, and generation renewal', async () => {
+  expect.assertions(9);
+  const broker = createTargetBroker();
+  const agentAuthority = { principalId: 'extension-provider-installation' };
+  const clientAuthority = {
+    connectionId: 'embedding-host-session-1',
+    principalId: 'mcp-principal-1',
+    targetGrants: [
+      { bindingId: 'binding-1', capabilities: { level: 'interact' as const }, targetGeneration: target.generation, targetId: target.id },
+    ],
+  };
+  const provider: AutomationProvider = {
+    descriptor: {
+      capabilities: {
+        actions: ['click'],
+        operations: ['action', 'snapshot'],
+        snapshotModes: ['interactive'],
+      },
+      id: 'playwright',
+      version: '1.62.1',
+    },
+    dispose: vi.fn(),
+    async execute(request, context) {
+      if (request.operation.kind === 'snapshot') {
+        await context.executeCdp('Target.attachToTarget');
+        return { value: {} };
+      }
+      return new Promise((_resolve, reject) => {
+        context.abortSignal.addEventListener(
+          'abort',
+          () => reject(new Error('aborted')),
+          { once: true },
+        );
+      });
+    },
+    invalidateTarget: vi.fn(),
+  };
+  broker.publishTarget(target, agentAuthority);
+  broker.registerTargetExecutor(target, { execute: vi.fn(async () => ({})) }, agentAuthority);
+  broker.registerAutomationProvider(provider, agentAuthority);
+  const lease = broker.acquireLease(
+    {
+      durationMilliseconds: 1_000,
+      mode: 'exclusive-control',
+      requestedMethods: [],
+      targetGeneration: target.generation,
+      targetId: target.id,
+    },
+    clientAuthority,
+  );
+  await expect(broker.executeAutomation(
+    {
+      leaseId: lease.id,
+      operation: {
+        kind: 'snapshot',
+        maximumDepth: 10,
+        maximumNodes: 100,
+        mode: 'interactive',
+      },
+      operationId: '30000000-0000-4000-8000-000000000032',
+      targetGeneration: target.generation,
+      targetId: target.id,
+    },
+    clientAuthority,
+  )).rejects.toMatchObject({ code: 'CAPABILITY_DENIED' });
+  const pending = broker.executeAutomation(
+    {
+      leaseId: lease.id,
+      operation: { action: 'click', locator: { text: { exact: true, pattern: 'Save' } }, kind: 'action' },
+      operationId: '30000000-0000-4000-8000-000000000033',
+      targetGeneration: target.generation,
+      targetId: target.id,
+    },
+    clientAuthority,
+  );
+  broker.cancelAutomation(
+    '30000000-0000-4000-8000-000000000033',
+    clientAuthority,
+  );
+  await expect(pending).rejects.toMatchObject({ code: 'REQUEST_CANCELLED' });
+  broker.revokeTarget(target.id, target.generation, 'detached', agentAuthority);
+
+  expect(provider.invalidateTarget).toHaveBeenCalledWith(target);
+  expect(provider.dispose).not.toHaveBeenCalled();
+  broker.publishTarget({ ...target, generation: 2 }, agentAuthority);
+  broker.registerTargetExecutor(
+    { generation: 2, id: target.id },
+    { execute: vi.fn(async () => ({})) },
+    agentAuthority,
+  );
+  await expect(broker.executeAutomation(
+    {
+      leaseId: lease.id,
+      operation: { action: 'click', kind: 'action', locator: { text: { pattern: 'Save' } } },
+      operationId: '30000000-0000-4000-8000-000000000034',
+      targetGeneration: target.generation,
+      targetId: target.id,
+    },
+    clientAuthority,
+  )).rejects.toMatchObject({ code: 'TARGET_GENERATION_STALE' });
+  broker.unregisterAutomationProvider(agentAuthority);
+
+  expect(provider.dispose).toHaveBeenCalledOnce();
+  expect(provider.invalidateTarget).toHaveBeenCalledOnce();
+  expect(broker.listTargets()).toEqual([{ ...target, generation: 2 }]);
+  expect(() => broker.unregisterAutomationProvider(agentAuthority)).not.toThrow();
 });

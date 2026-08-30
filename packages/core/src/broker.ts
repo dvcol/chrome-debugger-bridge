@@ -4,6 +4,14 @@ import type {
   InlineOrArtifactResult,
   MemoryArtifactStore,
 } from './artifact-store.js';
+import type {
+  AutomationCdpEvent,
+  AutomationElementHandle,
+  AutomationExecutionRequest,
+  AutomationExecutionResult,
+  AutomationOperation,
+  AutomationProvider,
+} from './automation.js';
 import type { TargetChange, TargetRevocationReason } from './client.js';
 import type {
   DiagnosticCode,
@@ -20,17 +28,23 @@ import type {
   Lease,
   PublishedTarget,
 } from './protocol.js';
+import type { TimeoutMilliseconds } from './timing.js';
 
 import {
   createMemoryArtifactStore,
   externalizeJsonResult,
 } from './artifact-store.js';
 import {
+  AutomationProviderError,
+  requiredAutomationLevel,
+} from './automation.js';
+import {
   isCdpNameAllowed,
   isKnownCdpEventName,
   requiredLeaseMode,
 } from './cdp-authorization.js';
 import { cdpKernelOwnedNames } from './cdp-catalogue.generated.js';
+import { scheduleTimeout, validateTimeoutMilliseconds } from './timing.js';
 
 type TargetChangeInput
   = | { readonly kind: 'published'; readonly target: PublishedTarget }
@@ -93,7 +107,9 @@ export interface ArtifactAccessRequest {
 
 /** Authenticated caller identity. Principal ownership survives a transport reconnect; connection ownership does not. */
 export interface ClientTargetGrant {
+  readonly bindingId: string;
   readonly capabilities: CapabilityGrant;
+  readonly targetGeneration: number;
   readonly targetId: string;
 }
 
@@ -101,6 +117,9 @@ export interface ClientAuthority {
   readonly connectionId: string;
   /** Human-facing diagnostic label. It is never used for authorization. */
   readonly displayName?: string;
+  /** False when a reactive authority store cannot currently resolve this session. */
+  readonly authorityAvailable?: boolean;
+  readonly logicalSessionId?: string;
   readonly principalId: string;
   /** Omitted for a trusted in-process caller. An empty list authorizes no target. */
   readonly targetGrants?: readonly ClientTargetGrant[];
@@ -112,10 +131,12 @@ const localClientAuthority: ClientAuthority = {
 };
 
 export interface AgentAuthority {
+  readonly connectionGeneration?: number;
   readonly principalId: string;
 }
 
 const localAgentAuthority: AgentAuthority = { principalId: 'local-agent' };
+const cdpDomainNamePattern = /^[A-Za-z]+$/u;
 
 export interface TargetCommandExecutor {
   execute: (
@@ -155,6 +176,7 @@ export class TargetBrokerError extends Error {
       BridgeErrorCode,
       | 'CAPABILITY_DENIED'
       | 'CDP_COMMAND_FAILED'
+      | 'FEATURE_UNSUPPORTED'
       | 'LEASE_CONFLICT'
       | 'LEASE_EXPIRED'
       | 'LEASE_REQUIRED'
@@ -216,19 +238,31 @@ function targetExecutorError(error: unknown): TargetBrokerError | undefined {
   });
 }
 
+export interface BrokerTimingPolicy {
+  readonly artifactLifetimeMilliseconds: TimeoutMilliseconds;
+  readonly commandTimeoutMilliseconds: TimeoutMilliseconds;
+  readonly leaseMaximumDurationMilliseconds: TimeoutMilliseconds;
+  readonly leaseMaximumLifetimeMilliseconds: TimeoutMilliseconds;
+  readonly reconnectGraceMilliseconds: TimeoutMilliseconds;
+}
+
+export const defaultBrokerTimingPolicy: Readonly<BrokerTimingPolicy> = Object.freeze({
+  artifactLifetimeMilliseconds: 60_000,
+  commandTimeoutMilliseconds: 30_000,
+  leaseMaximumDurationMilliseconds: 60_000,
+  leaseMaximumLifetimeMilliseconds: 15 * 60_000,
+  reconnectGraceMilliseconds: 5_000,
+});
+
 export interface CreateTargetBrokerOptions {
-  readonly artifactLifetimeMilliseconds?: number;
   readonly artifactStore?: MemoryArtifactStore;
-  readonly commandTimeoutMilliseconds?: number;
   readonly diagnostics?: DiagnosticTraceStore;
   readonly maximumArtifactBytes?: number;
   readonly maximumInlineResultBytes?: number;
-  readonly maximumLeaseMilliseconds?: number;
   /** Generates opaque protocol identifiers; hosts may supply their own secure identifier adapter. */
   readonly generateId?: () => string;
   readonly now?: () => number;
-  /** Retains a principal's leases after its final connection closes; zero releases them immediately. */
-  readonly reconnectGraceMilliseconds?: number;
+  readonly timing?: Partial<BrokerTimingPolicy>;
 }
 
 export interface TargetBroker {
@@ -237,6 +271,10 @@ export interface TargetBroker {
     authority?: ClientAuthority,
   ) => Lease;
   cancelCommand: (operationId: string, authority?: ClientAuthority) => void;
+  cancelAutomation: (
+    operationId: string,
+    authority?: ClientAuthority,
+  ) => void;
   connectClient: (authority: ClientAuthority) => void;
   disconnectClient: (authority: ClientAuthority) => void;
   /** Stops all broker work and releases broker-owned resources. */
@@ -248,9 +286,17 @@ export interface TargetBroker {
     readonly operationId: string;
     readonly value: InlineOrArtifactResult<JsonObject>;
   }>;
+  executeAutomation: (
+    request: AutomationExecutionRequest,
+    authority?: ClientAuthority,
+  ) => Promise<AutomationExecutionResult>;
   getTargetAgentPrincipalId: (targetId: string) => string | undefined;
   listTargets: (authority?: ClientAuthority) => readonly PublishedTarget[];
   publishTarget: (target: PublishedTarget, authority?: AgentAuthority) => void;
+  registerAutomationProvider: (
+    provider: AutomationProvider,
+    authority?: AgentAuthority,
+  ) => void;
   registerTargetExecutor: (
     target: Pick<PublishedTarget, 'generation' | 'id'>,
     executor: TargetCommandExecutor,
@@ -260,6 +306,8 @@ export interface TargetBroker {
     targets: readonly PublishedTarget[],
     authority?: AgentAuthority,
   ) => void;
+  /** Re-evaluates live work after a reactive authority record changes. */
+  refreshClientAuthority: (authority: ClientAuthority) => void;
   revokeAgentTargets: (
     authority: AgentAuthority,
     reason?: TargetRevocationReason,
@@ -298,21 +346,39 @@ export interface TargetBroker {
     request: CdpSubscriptionRequest,
     authority?: ClientAuthority,
   ) => Promise<CdpSubscription>;
+  unregisterAutomationProvider: (authority?: AgentAuthority) => void;
 }
 
 /** Stores only opaque target records received from an authenticated extension agent. */
 export function createTargetBroker(
   options: CreateTargetBrokerOptions = {},
 ): TargetBroker {
-  const artifactLifetimeMilliseconds
-    = options.artifactLifetimeMilliseconds ?? 60_000;
-  const commandTimeoutMilliseconds
-    = options.commandTimeoutMilliseconds ?? 30_000;
+  const timing: BrokerTimingPolicy = {
+    ...defaultBrokerTimingPolicy,
+    ...options.timing,
+  };
+  const artifactLifetimeMilliseconds = validateTimeoutMilliseconds(
+    timing.artifactLifetimeMilliseconds,
+    'artifactLifetimeMilliseconds',
+  );
+  const commandTimeoutMilliseconds = validateTimeoutMilliseconds(
+    timing.commandTimeoutMilliseconds,
+    'commandTimeoutMilliseconds',
+  );
+  const leaseMaximumDurationMilliseconds = validateTimeoutMilliseconds(
+    timing.leaseMaximumDurationMilliseconds,
+    'leaseMaximumDurationMilliseconds',
+  );
+  const leaseMaximumLifetimeMilliseconds = validateTimeoutMilliseconds(
+    timing.leaseMaximumLifetimeMilliseconds,
+    'leaseMaximumLifetimeMilliseconds',
+  );
+  const reconnectGraceMilliseconds = validateTimeoutMilliseconds(
+    timing.reconnectGraceMilliseconds,
+    'reconnectGraceMilliseconds',
+  );
   const maximumArtifactBytes = options.maximumArtifactBytes ?? 16_777_216;
   const maximumInlineResultBytes = options.maximumInlineResultBytes ?? 65_536;
-  const maximumLeaseMilliseconds = options.maximumLeaseMilliseconds ?? 60_000;
-  const reconnectGraceMilliseconds
-    = options.reconnectGraceMilliseconds ?? 5_000;
   const generateId
     = options.generateId ?? (() => globalThis.crypto.randomUUID());
   const now = options.now ?? Date.now;
@@ -321,6 +387,7 @@ export function createTargetBroker(
       ?? createMemoryArtifactStore(maximumArtifactBytes, now);
   const targetsById = new Map<string, PublishedTarget>();
   const targetAgentPrincipalIdsById = new Map<string, string>();
+  const agentConnectionGenerationsByPrincipalId = new Map<string, number>();
   const highestGenerationByTargetId = new Map<string, number>();
   const leasesById = new Map<string, Lease>();
   const leasePrincipalIdsById = new Map<string, string>();
@@ -329,6 +396,38 @@ export function createTargetBroker(
     ReturnType<typeof setTimeout>
   >();
   const executorsByTargetKey = new Map<string, TargetCommandExecutor>();
+  const automationProvidersByAgentPrincipalId = new Map<
+    string,
+    AutomationProvider
+  >();
+  const automationEventListenersByTargetKey = new Map<
+    string,
+    Set<{
+      readonly agentPrincipalId: string;
+      readonly listener: (event: AutomationCdpEvent) => void;
+    }>
+  >();
+  const automationElementHandlesById = new Map<
+    string,
+    {
+      readonly agentPrincipalId: string;
+      readonly generation: number;
+      readonly opaqueHandle: string;
+      readonly principalId: string;
+      readonly providerId: string;
+      readonly snapshotId?: string;
+      readonly targetId: string;
+    }
+  >();
+  const automationDomainDemandsByKey = new Map<
+    string,
+    {
+      readonly agentPrincipalId: string;
+      readonly demand: string;
+      readonly sessionId?: string;
+      readonly target: PublishedTarget;
+    }
+  >();
   const cancellationsByOperationId = new Map<
     string,
     { readonly abortController: AbortController; readonly connectionId: string }
@@ -352,9 +451,47 @@ export function createTargetBroker(
   }>();
   let disposed = false;
   let targetChangeSequence = 0;
+  let targetBroker: TargetBroker;
 
   function ensureActive(): void {
     if (disposed) throw new Error('The target broker is disposed.');
+  }
+
+  function getAgentConnectionGeneration(authority: AgentAuthority): number {
+    const connectionGeneration = authority.connectionGeneration ?? 1;
+    if (!Number.isSafeInteger(connectionGeneration) || connectionGeneration < 1) {
+      throw new TypeError('Agent connection generations must be positive safe integers.');
+    }
+    return connectionGeneration;
+  }
+
+  function ensureCurrentAgentConnection(authority: AgentAuthority): void {
+    const connectionGeneration = getAgentConnectionGeneration(authority);
+    const currentGeneration = agentConnectionGenerationsByPrincipalId.get(authority.principalId);
+    if (currentGeneration !== undefined && connectionGeneration < currentGeneration) {
+      throw new TargetBrokerError('CAPABILITY_DENIED', {
+        details: { reason: 'provider-connection-fenced' },
+        message: 'A newer provider connection fenced this connection.',
+        retryable: false,
+      });
+    }
+    if (currentGeneration === connectionGeneration) return;
+    agentConnectionGenerationsByPrincipalId.set(authority.principalId, connectionGeneration);
+    if (currentGeneration === undefined) return;
+    for (const target of [...targetsById.values()]) {
+      if (targetAgentPrincipalIdsById.get(target.id) === authority.principalId) {
+        targetBroker.revokeTarget(target.id, target.generation, 'detached');
+      }
+    }
+    const provider = automationProvidersByAgentPrincipalId.get(authority.principalId);
+    automationProvidersByAgentPrincipalId.delete(authority.principalId);
+    releaseAutomationResources(authority.principalId);
+    void Promise.resolve(provider?.dispose()).catch(() => {});
+  }
+
+  function isCurrentAgentConnection(authority: AgentAuthority): boolean {
+    return (agentConnectionGenerationsByPrincipalId.get(authority.principalId)
+      ?? getAgentConnectionGeneration(authority)) === getAgentConnectionGeneration(authority);
   }
 
   function recordDiagnostic(code: DiagnosticCode): void {
@@ -371,6 +508,21 @@ export function createTargetBroker(
 
   function getTargetKey(targetId: string, generation: number): string {
     return `${targetId}:${generation}`;
+  }
+
+  function capabilityLevelAllows(
+    maximumLevel: CapabilityGrant['level'],
+    requestedLevel: NonNullable<CapabilityGrant['level']>,
+  ): boolean {
+    const levels = [
+      'observe',
+      'inspect',
+      'interact',
+      'debug',
+      'unsafe',
+    ] as const;
+    return levels.indexOf(maximumLevel ?? 'observe')
+      >= levels.indexOf(requestedLevel);
   }
 
   function getCurrentTarget(
@@ -405,6 +557,56 @@ export function createTargetBroker(
     return levels[Math.min(leftIndex, rightIndex)]!;
   }
 
+  function maximumCapabilityLevel(
+    left: CapabilityGrant['level'],
+    right: CapabilityGrant['level'],
+  ): NonNullable<CapabilityGrant['level']> {
+    const levels = [
+      'observe',
+      'inspect',
+      'interact',
+      'debug',
+      'unsafe',
+    ] as const;
+    const leftIndex = levels.indexOf(left ?? 'observe');
+    const rightIndex = levels.indexOf(right ?? 'observe');
+    return levels[Math.max(leftIndex, rightIndex)]!;
+  }
+
+  function combinedTargetGrant(
+    authority: ClientAuthority,
+    targetId: string,
+    targetGeneration: number,
+  ): ClientTargetGrant | undefined {
+    const matchingGrants = authority.targetGrants?.filter(
+      candidate => candidate.targetId === targetId && candidate.targetGeneration === targetGeneration,
+    );
+    if (matchingGrants === undefined || matchingGrants.length === 0)
+      return undefined;
+    const capabilities = matchingGrants.reduce<CapabilityGrant>(
+      (combined, grant) => ({
+        allow: [...new Set([
+          ...(combined.allow ?? []),
+          ...(grant.capabilities.allow ?? []),
+        ])].sort(),
+        level: maximumCapabilityLevel(
+          combined.level,
+          grant.capabilities.level,
+        ),
+      }),
+      { level: 'observe' },
+    );
+    return {
+      bindingId: matchingGrants.map(grant => grant.bindingId).sort().join('+'),
+      capabilities: {
+        ...(capabilities.allow?.length === 0 ? {} : { allow: capabilities.allow }),
+        level: capabilities.level,
+      },
+      targetGeneration,
+      targetId,
+    };
+  }
+
   function intersectCapabilities(
     targetCapabilities: CapabilityGrant,
     grantedCapabilities: CapabilityGrant,
@@ -427,11 +629,17 @@ export function createTargetBroker(
     generation: number,
     authority: ClientAuthority,
   ): PublishedTarget {
+    if (authority.authorityAvailable === false) {
+      recordDiagnostic('CAPABILITY_DENIED');
+      throw new TargetBrokerError('CAPABILITY_DENIED', {
+        details: { reason: 'authority-store-unavailable' },
+        message: 'The authority store is temporarily unavailable.',
+        retryable: true,
+      });
+    }
     const target = getCurrentTarget(targetId, generation);
     if (authority.targetGrants === undefined) return target;
-    const grant = authority.targetGrants.find(
-      candidate => candidate.targetId === targetId,
-    );
+    const grant = combinedTargetGrant(authority, targetId, generation);
     if (grant === undefined) {
       recordDiagnostic('CAPABILITY_DENIED');
       throw new TargetBrokerError('CAPABILITY_DENIED');
@@ -625,6 +833,94 @@ export function createTargetBroker(
     }
   }
 
+  function releaseAutomationResources(
+    agentPrincipalId: string,
+    target?: Pick<PublishedTarget, 'generation' | 'id'>,
+  ): void {
+    const targetKey
+      = target === undefined
+        ? undefined
+        : getTargetKey(target.id, target.generation);
+    for (const [handleId, handle] of automationElementHandlesById) {
+      if (
+        handle.agentPrincipalId === agentPrincipalId
+        && (target === undefined
+          || (handle.targetId === target.id
+            && handle.generation === target.generation))
+      )
+        automationElementHandlesById.delete(handleId);
+    }
+    for (const [listenerTargetKey, listeners] of automationEventListenersByTargetKey) {
+      if (targetKey !== undefined && listenerTargetKey !== targetKey) continue;
+      for (const listener of listeners)
+        if (listener.agentPrincipalId === agentPrincipalId)
+          listeners.delete(listener);
+      if (listeners.size === 0)
+        automationEventListenersByTargetKey.delete(listenerTargetKey);
+    }
+    for (const [demandKey, demand] of automationDomainDemandsByKey) {
+      if (
+        demand.agentPrincipalId !== agentPrincipalId
+        || (targetKey !== undefined
+          && getTargetKey(demand.target.id, demand.target.generation)
+          !== targetKey)
+      )
+        continue;
+      automationDomainDemandsByKey.delete(demandKey);
+      decrementDomainDemand(
+        demand.target,
+        demand.demand,
+        demand.sessionId,
+      );
+    }
+  }
+
+  function providerOperation(
+    operation: AutomationOperation,
+    authority: ClientAuthority,
+    target: PublishedTarget,
+    agentPrincipalId: string,
+    provider: AutomationProvider,
+  ): AutomationOperation {
+    const resolveHandle = (handleId: string | undefined): string | undefined => {
+      if (handleId === undefined) return undefined;
+      const handle = automationElementHandlesById.get(handleId);
+      if (
+        handle === undefined
+        || handle.agentPrincipalId !== agentPrincipalId
+        || handle.generation !== target.generation
+        || handle.principalId !== authority.principalId
+        || handle.providerId !== provider.descriptor.id
+        || handle.targetId !== target.id
+      ) {
+        throw new TargetBrokerError('TARGET_GENERATION_STALE', {
+          message: 'The automation element handle is no longer valid.',
+        });
+      }
+      return handle.opaqueHandle;
+    };
+    if (operation.kind !== 'action' && operation.kind !== 'inspect')
+      return operation;
+    if (operation.kind === 'inspect') {
+      const elementHandleId = resolveHandle(operation.elementHandleId);
+      return {
+        ...operation,
+        ...(elementHandleId === undefined ? {} : { elementHandleId }),
+      };
+    }
+    const elementHandleId = resolveHandle(operation.elementHandleId);
+    const destinationElementHandleId = resolveHandle(
+      operation.destinationElementHandleId,
+    );
+    return {
+      ...operation,
+      ...(destinationElementHandleId === undefined
+        ? {}
+        : { destinationElementHandleId }),
+      ...(elementHandleId === undefined ? {} : { elementHandleId }),
+    };
+  }
+
   function deleteLease(leaseId: string): void {
     const expiryTimeout = leaseExpiryTimeoutsById.get(leaseId);
     if (expiryTimeout !== undefined) clearTimeout(expiryTimeout);
@@ -692,7 +988,6 @@ export function createTargetBroker(
       if (subscription.request.leaseId === leaseId) subscription.close();
   }
 
-  let targetBroker: TargetBroker;
   return (targetBroker = {
     acquireLease(request, authority = localClientAuthority) {
       ensureActive();
@@ -705,7 +1000,8 @@ export function createTargetBroker(
       if (
         !Number.isSafeInteger(request.durationMilliseconds)
         || request.durationMilliseconds < 1
-        || request.durationMilliseconds > maximumLeaseMilliseconds
+        || (leaseMaximumDurationMilliseconds !== null
+          && request.durationMilliseconds > leaseMaximumDurationMilliseconds)
         || request.requestedMethods.some(
           method =>
             !isCdpNameAllowed(target.capabilities, method, 'command')
@@ -754,8 +1050,14 @@ export function createTargetBroker(
         });
       }
       const issuedAt = new Date(now()).toISOString();
+      const maximumExpiry = leaseMaximumLifetimeMilliseconds === null
+        ? undefined
+        : now() + leaseMaximumLifetimeMilliseconds;
       const lease: Lease = {
-        expiresAt: new Date(now() + request.durationMilliseconds).toISOString(),
+        expiresAt: new Date(Math.min(
+          now() + request.durationMilliseconds,
+          maximumExpiry ?? Number.POSITIVE_INFINITY,
+        )).toISOString(),
         id: generateId(),
         issuedAt,
         methods: [...request.requestedMethods],
@@ -773,6 +1075,9 @@ export function createTargetBroker(
       const cancellation = cancellationsByOperationId.get(operationId);
       if (cancellation?.connectionId === authority.connectionId)
         cancellation.abortController.abort();
+    },
+    cancelAutomation(operationId, authority = localClientAuthority) {
+      targetBroker.cancelCommand(operationId, authority);
     },
     connectClient(authority) {
       ensureActive();
@@ -823,7 +1128,7 @@ export function createTargetBroker(
           if (principalId === authority.principalId) deleteLease(leaseId);
       };
       if (reconnectGraceMilliseconds === 0) releasePrincipalLeases();
-      else
+      else if (reconnectGraceMilliseconds !== null)
         reconnectGraceTimeoutsByPrincipalId.set(
           authority.principalId,
           setTimeout(releasePrincipalLeases, reconnectGraceMilliseconds),
@@ -842,6 +1147,14 @@ export function createTargetBroker(
         releaseLeaseDomainDemands(leaseId);
       for (const target of targetsById.values())
         artifactStore.revokeTarget(target.id, target.generation);
+      for (const [agentPrincipalId, provider] of automationProvidersByAgentPrincipalId) {
+        releaseAutomationResources(agentPrincipalId);
+        void Promise.resolve(provider.dispose()).catch(() => {});
+      }
+      automationProvidersByAgentPrincipalId.clear();
+      automationElementHandlesById.clear();
+      automationEventListenersByTargetKey.clear();
+      automationDomainDemandsByKey.clear();
       targetsById.clear();
       executorsByTargetKey.clear();
       leasesById.clear();
@@ -868,9 +1181,12 @@ export function createTargetBroker(
       try {
         lease = getActiveLease(command, authority);
       } catch (error) {
-        recordDiagnostic(
-          error instanceof TargetBrokerError ? error.code : 'LEASE_REQUIRED',
-        );
+        if (
+          error instanceof TargetBrokerError
+          && error.code !== 'FEATURE_UNSUPPORTED'
+        )
+          recordDiagnostic(error.code);
+        else recordDiagnostic('LEASE_REQUIRED');
         throw error;
       }
       if (
@@ -900,7 +1216,7 @@ export function createTargetBroker(
         = commandOperationIdsByTargetKey.get(targetKey) ?? new Set<string>();
       operationIds.add(command.operationId);
       commandOperationIdsByTargetKey.set(targetKey, operationIds);
-      const timeout = setTimeout(
+      const timeout = scheduleTimeout(
         () => abortController.abort(),
         commandTimeoutMilliseconds,
       );
@@ -922,9 +1238,9 @@ export function createTargetBroker(
           throw new TargetBrokerError('REQUEST_CANCELLED');
         }
         const externalizedValue = await externalizeJsonResult(value, {
-          expiresAt: new Date(
-            now() + artifactLifetimeMilliseconds,
-          ).toISOString(),
+          expiresAt: artifactLifetimeMilliseconds === null
+            ? new Date(8.64e15).toISOString()
+            : new Date(now() + artifactLifetimeMilliseconds).toISOString(),
           maximumInlineBytes: maximumInlineResultBytes,
           ownerId: lease.id,
           signal: abortController.signal,
@@ -939,7 +1255,8 @@ export function createTargetBroker(
         }
         const executorError = targetExecutorError(error);
         if (executorError !== undefined) {
-          recordDiagnostic(executorError.code);
+          if (executorError.code !== 'FEATURE_UNSUPPORTED')
+            recordDiagnostic(executorError.code);
           throw executorError;
         }
         if (abortController.signal.aborted) {
@@ -951,9 +1268,262 @@ export function createTargetBroker(
           ...(error instanceof Error ? { message: error.message } : {}),
         });
       } finally {
-        clearTimeout(timeout);
+        if (timeout !== undefined) clearTimeout(timeout);
         cancellationsByOperationId.delete(command.operationId);
         operationIds.delete(command.operationId);
+        if (operationIds.size === 0)
+          commandOperationIdsByTargetKey.delete(targetKey);
+      }
+    },
+    async executeAutomation(request, authority = localClientAuthority) {
+      ensureActive();
+      const totalStartedAt = globalThis.performance.now();
+      const target = getAuthorizedTarget(
+        request.targetId,
+        request.targetGeneration,
+        authority,
+      );
+      const lease = getActiveLease(request, authority);
+      const requiredLevel = requiredAutomationLevel(request.operation);
+      if (
+        !capabilityLevelAllows(target.capabilities.level, requiredLevel)
+        || (requiredLevel === 'interact'
+          && lease.mode !== 'exclusive-control')
+      ) {
+        recordDiagnostic('CAPABILITY_DENIED');
+        throw new TargetBrokerError('CAPABILITY_DENIED');
+      }
+      const agentPrincipalId = targetAgentPrincipalIdsById.get(target.id);
+      if (agentPrincipalId === undefined)
+        throw new TargetBrokerError('TARGET_NOT_FOUND');
+      const provider
+        = automationProvidersByAgentPrincipalId.get(agentPrincipalId);
+      if (provider === undefined) {
+        throw new TargetBrokerError('FEATURE_UNSUPPORTED', {
+          message: 'No automation provider is registered for this target.',
+        });
+      }
+      if (
+        !provider.descriptor.capabilities.operations.includes(
+          request.operation.kind,
+        )
+        || (request.operation.kind === 'snapshot'
+          && !provider.descriptor.capabilities.snapshotModes.includes(
+            request.operation.mode,
+          ))
+          || (request.operation.kind === 'action'
+            && !provider.descriptor.capabilities.actions.includes(
+              request.operation.action,
+            ))
+      ) {
+        throw new TargetBrokerError('FEATURE_UNSUPPORTED', {
+          message: `Automation provider "${provider.descriptor.id}" does not support this operation.`,
+        });
+      }
+      const executor = executorsByTargetKey.get(
+        getTargetKey(target.id, target.generation),
+      );
+      if (executor === undefined)
+        throw new TargetBrokerError('TARGET_NOT_FOUND');
+      const operation = providerOperation(
+        request.operation,
+        authority,
+        target,
+        agentPrincipalId,
+        provider,
+      );
+      const abortController = new AbortController();
+      cancellationsByOperationId.set(request.operationId, {
+        abortController,
+        connectionId: authority.connectionId,
+      });
+      const targetKey = getTargetKey(target.id, target.generation);
+      const operationIds
+        = commandOperationIdsByTargetKey.get(targetKey) ?? new Set<string>();
+      operationIds.add(request.operationId);
+      commandOperationIdsByTargetKey.set(targetKey, operationIds);
+      const timeout = scheduleTimeout(
+        () => abortController.abort(),
+        commandTimeoutMilliseconds,
+      );
+      let cdbTransportDurationMilliseconds = 0;
+      let cdpCommandCount = 0;
+      let chromeDurationMilliseconds = 0;
+      const listenerRecords = automationEventListenersByTargetKey.get(
+        targetKey,
+      ) ?? new Set<{
+        readonly agentPrincipalId: string;
+        readonly listener: (event: AutomationCdpEvent) => void;
+      }>();
+      automationEventListenersByTargetKey.set(targetKey, listenerRecords);
+      const context = {
+        abortSignal: abortController.signal,
+        principalId: authority.principalId,
+        target,
+        async executeCdp(
+          method: string,
+          parameters: JsonObject = {},
+          sessionId?: string,
+        ): Promise<JsonObject> {
+          if (abortController.signal.aborted)
+            throw new TargetBrokerError('REQUEST_CANCELLED');
+          if (
+            method === 'Browser.close'
+            || method === 'Target.attachToBrowserTarget'
+            || method === 'Target.attachToTarget'
+            || method === 'Target.closeTarget'
+            || method === 'Target.createTarget'
+            || method === 'Target.detachFromTarget'
+          ) {
+            throw new TargetBrokerError('CAPABILITY_DENIED', {
+              message: `Automation providers cannot execute ${method}.`,
+            });
+          }
+          const transportStartedAt = globalThis.performance.now();
+          const [domain, commandName] = method.split('.', 2);
+          if (
+            domain !== undefined
+            && (commandName === 'enable' || commandName === 'disable')
+          ) {
+            await context.setDomainDemand(
+              domain,
+              commandName === 'enable',
+              sessionId,
+            );
+            cdbTransportDurationMilliseconds
+              += globalThis.performance.now() - transportStartedAt;
+            return {};
+          }
+          cdpCommandCount += 1;
+          const chromeStartedAt = globalThis.performance.now();
+          try {
+            const executorLease: Lease = {
+              ...lease,
+              methods: [method],
+            };
+            return await executor.execute(
+              {
+                leaseId: lease.id,
+                method,
+                operationId: generateId(),
+                parameters,
+                ...(sessionId === undefined ? {} : { sessionId }),
+                targetGeneration: target.generation,
+                targetId: target.id,
+              },
+              abortController.signal,
+              executorLease,
+            );
+          } finally {
+            const commandDuration
+              = globalThis.performance.now() - chromeStartedAt;
+            chromeDurationMilliseconds += commandDuration;
+            cdbTransportDurationMilliseconds
+              += globalThis.performance.now()
+                - transportStartedAt
+                - commandDuration;
+          }
+        },
+        onCdpEvent(listener: (event: AutomationCdpEvent) => void): () => void {
+          const record = { agentPrincipalId, listener };
+          listenerRecords.add(record);
+          return () => listenerRecords.delete(record);
+        },
+        async setDomainDemand(
+          domain: string,
+          active: boolean,
+          sessionId?: string,
+        ): Promise<void> {
+          if (!cdpDomainNamePattern.test(domain))
+            throw new TargetBrokerError('CAPABILITY_DENIED');
+          const demand = `${domain}.`;
+          const demandKey = `${agentPrincipalId}:${provider.descriptor.id}:${authority.principalId}:${targetKey}:${sessionId ?? 'root'}:${demand}`;
+          const currentDemand = automationDomainDemandsByKey.get(demandKey);
+          if (active) {
+            if (currentDemand !== undefined) return;
+            await incrementDomainDemand(target, demand, sessionId);
+            automationDomainDemandsByKey.set(demandKey, {
+              agentPrincipalId,
+              demand,
+              ...(sessionId === undefined ? {} : { sessionId }),
+              target,
+            });
+          } else if (currentDemand !== undefined) {
+            automationDomainDemandsByKey.delete(demandKey);
+            decrementDomainDemand(target, demand, sessionId);
+          }
+        },
+      };
+      try {
+        const providerStartedAt = globalThis.performance.now();
+        const result = await provider.execute(
+          { operation, operationId: request.operationId },
+          context,
+        );
+        const providerDurationMilliseconds
+          = globalThis.performance.now() - providerStartedAt;
+        if (abortController.signal.aborted)
+          throw new TargetBrokerError('REQUEST_CANCELLED');
+        const elements: AutomationElementHandle[] | undefined
+          = result.elements?.map((element) => {
+            const id = generateId();
+            automationElementHandlesById.set(id, {
+              agentPrincipalId,
+              generation: target.generation,
+              opaqueHandle: element.handle,
+              principalId: authority.principalId,
+              providerId: provider.descriptor.id,
+              ...(result.snapshotId === undefined
+                ? {}
+                : { snapshotId: result.snapshotId }),
+              targetId: target.id,
+            });
+            return {
+              id,
+              ...(element.metadata === undefined
+                ? {}
+                : { metadata: element.metadata }),
+            };
+          });
+        return {
+          ...(elements === undefined ? {} : { elements }),
+          metrics: {
+            cdbTransportDurationMilliseconds,
+            cdpCommandCount,
+            chromeDurationMilliseconds,
+            providerDurationMilliseconds,
+            totalDurationMilliseconds:
+              globalThis.performance.now() - totalStartedAt,
+          },
+          operationId: request.operationId,
+          provider: provider.descriptor,
+          ...(result.snapshotId === undefined
+            ? {}
+            : { snapshotId: result.snapshotId }),
+          value: result.value,
+        };
+      } catch (error) {
+        if (error instanceof TargetBrokerError) throw error;
+        if (abortController.signal.aborted)
+          throw new TargetBrokerError('REQUEST_CANCELLED');
+        if (error instanceof AutomationProviderError) {
+          throw new TargetBrokerError('CDP_COMMAND_FAILED', {
+            details: {
+              automationCode: error.code,
+              ...(error.details ?? {}),
+              providerId: provider.descriptor.id,
+            },
+            message: error.message,
+            retryable: error.retryable,
+          });
+        }
+        throw new TargetBrokerError('CDP_COMMAND_FAILED', {
+          ...(error instanceof Error ? { message: error.message } : {}),
+        });
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
+        cancellationsByOperationId.delete(request.operationId);
+        operationIds.delete(request.operationId);
         if (operationIds.size === 0)
           commandOperationIdsByTargetKey.delete(targetKey);
       }
@@ -967,9 +1537,14 @@ export function createTargetBroker(
       if (authority.targetGrants === undefined)
         return [...targetsById.values()];
       return [...targetsById.values()].flatMap((target) => {
-        const grant = authority.targetGrants?.find(
-          candidate => candidate.targetId === target.id,
-        );
+        if (authority.authorityAvailable === false) {
+          throw new TargetBrokerError('CAPABILITY_DENIED', {
+            details: { reason: 'authority-store-unavailable' },
+            message: 'The authority store is temporarily unavailable.',
+            retryable: true,
+          });
+        }
+        const grant = combinedTargetGrant(authority, target.id, target.generation);
         return grant === undefined
           ? []
           : [
@@ -985,6 +1560,7 @@ export function createTargetBroker(
     },
     publishTarget(target, authority = localAgentAuthority) {
       ensureActive();
+      ensureCurrentAgentConnection(authority);
       assertAgentOwnsTarget(target.id, authority);
       const highestGeneration = highestGenerationByTargetId.get(target.id);
       if (
@@ -998,8 +1574,25 @@ export function createTargetBroker(
       highestGenerationByTargetId.set(target.id, target.generation);
       publishTargetChange({ kind: 'published', target });
     },
+    registerAutomationProvider(provider, authority = localAgentAuthority) {
+      ensureActive();
+      ensureCurrentAgentConnection(authority);
+      const existing = automationProvidersByAgentPrincipalId.get(
+        authority.principalId,
+      );
+      if (existing === provider) return;
+      if (existing !== undefined) {
+        releaseAutomationResources(authority.principalId);
+        void Promise.resolve(existing.dispose()).catch(() => {});
+      }
+      automationProvidersByAgentPrincipalId.set(
+        authority.principalId,
+        provider,
+      );
+    },
     registerTargetExecutor(target, executor, authority = localAgentAuthority) {
       ensureActive();
+      ensureCurrentAgentConnection(authority);
       assertAgentOwnsTarget(target.id, authority);
       executorsByTargetKey.set(
         getTargetKey(target.id, target.generation),
@@ -1008,6 +1601,7 @@ export function createTargetBroker(
     },
     reconcileTargets(targets, authority = localAgentAuthority) {
       ensureActive();
+      ensureCurrentAgentConnection(authority);
       const targetIds = new Set(targets.map(target => target.id));
       for (const target of [...targetsById.values()]) {
         if (
@@ -1041,8 +1635,46 @@ export function createTargetBroker(
         }
       }
     },
+    refreshClientAuthority(authority) {
+      if (disposed) return;
+      for (const cancellation of cancellationsByOperationId.values()) {
+        if (cancellation.connectionId === authority.connectionId) cancellation.abortController.abort();
+      }
+      for (const [leaseId, principalId] of leasePrincipalIdsById) {
+        if (principalId !== authority.principalId) continue;
+        const lease = leasesById.get(leaseId);
+        const target = lease === undefined ? undefined : targetsById.get(lease.targetId);
+        const grant = lease === undefined || authority.targetGrants === undefined
+          ? undefined
+          : combinedTargetGrant(authority, lease.targetId, lease.targetGeneration);
+        const effectiveCapabilities = target === undefined
+          ? undefined
+          : grant === undefined && authority.targetGrants === undefined
+            ? target.capabilities
+            : grant === undefined
+              ? undefined
+              : intersectCapabilities(target.capabilities, grant.capabilities);
+        if (
+          lease !== undefined
+          && (authority.authorityAvailable === false
+            || target?.generation !== lease.targetGeneration
+            || effectiveCapabilities === undefined
+            || lease.methods.some(method => (
+              !isCdpNameAllowed(effectiveCapabilities, method, 'command')
+              && !isCdpNameAllowed(effectiveCapabilities, method, 'event')
+            ))
+            || (lease.mode === 'shared-read'
+              && requiredLeaseMode(effectiveCapabilities, lease.methods) === 'exclusive-control'))
+        ) {
+          deleteLease(leaseId);
+          closeSubscriptionsUsingLease(leaseId);
+        }
+      }
+      publishTargetChange({ kind: 'snapshot', targets: [...targetsById.values()] });
+    },
     revokeAgentTargets(authority, reason = 'detached') {
       ensureActive();
+      if (!isCurrentAgentConnection(authority)) return;
       for (const target of [...targetsById.values()]) {
         if (
           targetAgentPrincipalIdsById.get(target.id) === authority.principalId
@@ -1058,12 +1690,25 @@ export function createTargetBroker(
     },
     revokeTarget(targetId, generation, reason = 'explicit', authority) {
       ensureActive();
-      if (authority !== undefined) assertAgentOwnsTarget(targetId, authority);
+      if (authority !== undefined) {
+        ensureCurrentAgentConnection(authority);
+        assertAgentOwnsTarget(targetId, authority);
+      }
       const target = targetsById.get(targetId);
       if (target?.generation === generation) {
         recordDiagnostic('TARGET_REVOKED');
+        const agentPrincipalId = targetAgentPrincipalIdsById.get(targetId);
         targetsById.delete(targetId);
         targetAgentPrincipalIdsById.delete(targetId);
+        if (agentPrincipalId !== undefined) {
+          const provider = automationProvidersByAgentPrincipalId.get(
+            agentPrincipalId,
+          );
+          releaseAutomationResources(agentPrincipalId, target);
+          void Promise.resolve(provider?.invalidateTarget?.(target)).catch(
+            () => {},
+          );
+        }
         for (const operationId of commandOperationIdsByTargetKey.get(
           getTargetKey(targetId, generation),
         ) ?? [])
@@ -1097,6 +1742,7 @@ export function createTargetBroker(
     },
     updateTarget(target, authority = localAgentAuthority) {
       ensureActive();
+      ensureCurrentAgentConnection(authority);
       assertAgentOwnsTarget(target.id, authority);
       const currentTarget = getCurrentTarget(target.id, target.generation);
       targetsById.set(target.id, target);
@@ -1144,9 +1790,7 @@ export function createTargetBroker(
             authorizedChange = {
               ...change,
               targets: change.targets.flatMap((target) => {
-                const grant = authority.targetGrants?.find(
-                  candidate => candidate.targetId === target.id,
-                );
+                const grant = combinedTargetGrant(authority, target.id, target.generation);
                 if (authority.targetGrants !== undefined && grant === undefined)
                   return [];
                 return grant === undefined
@@ -1163,9 +1807,7 @@ export function createTargetBroker(
               }),
             };
           } else if (change.kind === 'published' || change.kind === 'updated') {
-            const grant = authority.targetGrants?.find(
-              candidate => candidate.targetId === change.target.id,
-            );
+            const grant = combinedTargetGrant(authority, change.target.id, change.target.generation);
             if (authority.targetGrants !== undefined && grant === undefined)
               return;
             authorizedChange
@@ -1185,7 +1827,8 @@ export function createTargetBroker(
             if (
               authority.targetGrants !== undefined
               && !authority.targetGrants.some(
-                candidate => candidate.targetId === change.targetId,
+                candidate => candidate.targetId === change.targetId
+                  && candidate.targetGeneration === change.targetGeneration,
               )
             )
               return;
@@ -1227,6 +1870,20 @@ export function createTargetBroker(
           && subscription.request.targetGeneration === target.generation
         )
           subscription.offer(method, parameters, sessionId);
+      const event: AutomationCdpEvent = {
+        method,
+        parameters,
+        ...(sessionId === undefined ? {} : { sessionId }),
+      };
+      for (const listener of automationEventListenersByTargetKey.get(
+        getTargetKey(target.id, target.generation),
+      ) ?? []) {
+        try {
+          listener.listener(event);
+        } catch {
+          /** A provider event listener cannot interrupt broker event delivery. */
+        }
+      }
     },
     releaseLease(request, authority = localClientAuthority) {
       ensureActive();
@@ -1264,13 +1921,25 @@ export function createTargetBroker(
       if (
         !Number.isSafeInteger(request.durationMilliseconds)
         || request.durationMilliseconds < 1
-        || request.durationMilliseconds > maximumLeaseMilliseconds
+        || (leaseMaximumDurationMilliseconds !== null
+          && request.durationMilliseconds > leaseMaximumDurationMilliseconds)
       )
         throw new TargetBrokerError('CAPABILITY_DENIED');
       const lease = getActiveLease(request, authority);
+      const maximumExpiry = leaseMaximumLifetimeMilliseconds === null
+        ? undefined
+        : Date.parse(lease.issuedAt) + leaseMaximumLifetimeMilliseconds;
+      if (maximumExpiry !== undefined && maximumExpiry <= now()) {
+        deleteLease(lease.id);
+        closeSubscriptionsUsingLease(lease.id);
+        throw new TargetBrokerError('LEASE_EXPIRED');
+      }
       const renewedLease: Lease = {
         ...lease,
-        expiresAt: new Date(now() + request.durationMilliseconds).toISOString(),
+        expiresAt: new Date(Math.min(
+          now() + request.durationMilliseconds,
+          maximumExpiry ?? Number.POSITIVE_INFINITY,
+        )).toISOString(),
       };
       leasesById.set(lease.id, renewedLease);
       const previousExpiryTimeout = leaseExpiryTimeoutsById.get(lease.id);
@@ -1426,6 +2095,17 @@ export function createTargetBroker(
       });
       subscriptionConnectionIdsById.set(id, authority.connectionId);
       return subscription;
+    },
+    unregisterAutomationProvider(authority = localAgentAuthority) {
+      if (disposed) return;
+      if (!isCurrentAgentConnection(authority)) return;
+      const provider = automationProvidersByAgentPrincipalId.get(
+        authority.principalId,
+      );
+      if (provider === undefined) return;
+      automationProvidersByAgentPrincipalId.delete(authority.principalId);
+      releaseAutomationResources(authority.principalId);
+      void Promise.resolve(provider.dispose()).catch(() => {});
     },
   });
 }

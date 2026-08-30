@@ -68,9 +68,6 @@ async function createTestBridge(options: {
           { id: '30000000-0000-4000-8000-000000000001', role: 'client' as const },
         ),
     limits: {
-      ...(options.handshakeTimeoutMilliseconds === undefined
-        ? {}
-        : { handshakeTimeoutMilliseconds: options.handshakeTimeoutMilliseconds }),
       ...(options.maximumMessageBytes === undefined ? {} : { maximumMessageBytes: options.maximumMessageBytes }),
       ...(options.maximumPreAuthenticationBytes === undefined
         ? {}
@@ -81,9 +78,6 @@ async function createTestBridge(options: {
       ...(options.maximumUnauthenticatedConnections === undefined
         ? {}
         : { maximumUnauthenticatedConnections: options.maximumUnauthenticatedConnections }),
-      ...(options.pairingTimeoutMilliseconds === undefined
-        ? {}
-        : { pairingTimeoutMilliseconds: options.pairingTimeoutMilliseconds }),
     },
     onAgentConnection(connection) {
       options.onAgentConnection?.(connection);
@@ -120,6 +114,14 @@ async function createTestBridge(options: {
     },
     async originPolicy({ origin }) {
       return options.originPolicy?.(origin) ?? true;
+    },
+    timing: {
+      ...(options.handshakeTimeoutMilliseconds === undefined
+        ? {}
+        : { handshakeTimeoutMilliseconds: options.handshakeTimeoutMilliseconds }),
+      ...(options.pairingTimeoutMilliseconds === undefined
+        ? {}
+        : { pairingTimeoutMilliseconds: options.pairingTimeoutMilliseconds }),
     },
   });
   openBridges.push(bridge);
@@ -196,7 +198,7 @@ async function authenticateStoredAgentWebSocket(webSocket: WebSocket, input: {
   readonly credential: Uint8Array;
   readonly credentialId: string;
   readonly origin: string;
-}): Promise<void> {
+}): Promise<number> {
   const clientNonce = generateRandomBase64Url(32);
   webSocket.send(JSON.stringify({
     kind: 'request',
@@ -249,10 +251,17 @@ async function authenticateStoredAgentWebSocket(webSocket: WebSocket, input: {
     protocolVersion: 1,
     requestId: crypto.randomUUID(),
   }));
-  const finishResponse = JSON.parse(await waitForMessage(webSocket)) as { readonly kind: string };
+  const finishResponse = JSON.parse(await waitForMessage(webSocket)) as {
+    readonly kind: string;
+    readonly result?: { readonly connectionGeneration?: number };
+  };
   if (finishResponse.kind !== 'response') {
     throw new Error('Expected authentication to finish');
   }
+  if (!Number.isSafeInteger(finishResponse.result?.connectionGeneration)) {
+    throw new TypeError('Expected a provider connection generation');
+  }
+  return finishResponse.result!.connectionGeneration!;
 }
 
 async function waitForRejectedUpgrade(webSocket: WebSocket): Promise<number | undefined> {
@@ -355,6 +364,50 @@ it('recovers the authenticated agent send queue after a rejected send and reject
   connection.close(1000, 'Test complete');
   await connection.closed;
   await expect(connection.send(validMessage)).rejects.toThrow('WebSocket is not open');
+});
+
+it('increments provider generations and closes the predecessor after credential takeover', async () => {
+  expect.assertions(4);
+  const brokerId = crypto.randomUUID();
+  const agentId = crypto.randomUUID();
+  const credentialId = crypto.randomUUID();
+  const credential = crypto.getRandomValues(new Uint8Array(32));
+  const origin = 'chrome-extension://provider-takeover-test';
+  const principal = { id: crypto.randomUUID(), role: 'agent' as const };
+  const activeRecord = { agentId, brokerId, credential, credentialId, principalId: principal.id, status: 'active' as const };
+  const acceptedGenerations: number[] = [];
+  const bridge = await createTestBridge({
+    agentAuthentication: {
+      async activate() {
+        return undefined;
+      },
+      async authenticate(identity) {
+        return identity.credentialId === credentialId ? principal : undefined;
+      },
+      async load(requestedCredentialId) {
+        return requestedCredentialId === credentialId ? activeRecord : undefined;
+      },
+      async pair() {
+        return undefined;
+      },
+      async revoke() {},
+    },
+    brokerId,
+    onAgentConnection(connection) {
+      acceptedGenerations.push(connection.connectionGeneration);
+    },
+  });
+  const firstWebSocket = await openAgentWebSocket(bridge, origin);
+  const firstGeneration = await authenticateStoredAgentWebSocket(firstWebSocket, { agentId, brokerId, credential, credentialId, origin });
+  const firstClose = waitForClose(firstWebSocket);
+  const replacementWebSocket = await openAgentWebSocket(bridge, origin);
+  const replacementGeneration = await authenticateStoredAgentWebSocket(replacementWebSocket, { agentId, brokerId, credential, credentialId, origin });
+
+  expect(firstGeneration).toBe(1);
+  expect(replacementGeneration).toBe(2);
+  expect(await firstClose).toBe(1008);
+  expect(acceptedGenerations).toEqual([1, 2]);
+  replacementWebSocket.close();
 });
 
 it('rejects invalid client authority without creating a client connection', async () => {

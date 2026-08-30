@@ -1,14 +1,17 @@
 import type {
   CdpSubscription,
+  ClientAuthority,
   TargetBroker,
   TargetChange,
 } from '@dvcol/cdb';
 import type {
   AgentAuthenticationAdapter,
+  AuthenticatedClientConnection,
   AuthenticatedPrincipal,
   ClientAuthenticationAdapter,
   MountAuthenticatedWebSocketBridgeOptions,
   WebSocketBridgeLimits,
+  WebSocketBridgeTimingPolicy,
 } from '@dvcol/cdb-websocket/node';
 import type { CreateTargetBrokerOptions } from '@dvcol/cdb/broker';
 import type { BirpcOptions } from 'birpc';
@@ -34,11 +37,15 @@ export interface MountBirpcChromeDebuggerBridgeOptions<
   readonly broker?: TargetBroker;
   readonly brokerId: string;
   readonly channel: BirpcRpcChannel;
+  /** Explicit authority for the application-owned Birpc channel. */
+  readonly channelAuthority: ClientAuthority;
   readonly clientAuthentication: ClientAuthenticationAdapter<ClientPrincipal>;
   readonly clientPath: string;
   readonly originPolicy: MountAuthenticatedWebSocketBridgeOptions<AgentPrincipal, ClientPrincipal>['originPolicy'];
+  readonly resolveClientAuthority?: (connection: AuthenticatedClientConnection<ClientPrincipal>) => ClientAuthority;
   readonly server: HttpServer;
   readonly webSocketLimits?: WebSocketBridgeLimits;
+  readonly webSocketTiming?: Partial<WebSocketBridgeTimingPolicy>;
 }
 
 export interface MountedBirpcChromeDebuggerBridge {
@@ -84,6 +91,8 @@ export function mountBirpcChromeDebuggerBridge<
   const broker = options.broker ?? createTargetBroker(options);
   const ownsBroker = options.broker === undefined;
   const subscriptions = new Map<string, BirpcSubscriptionState>();
+  const channelAuthority = options.channelAuthority;
+  broker.connectClient(channelAuthority);
   let targetWatch: AsyncIterator<TargetChange> | undefined;
   let disposed = false;
 
@@ -94,35 +103,35 @@ export function mountBirpcChromeDebuggerBridge<
   const rpc = createBirpc<BirpcBridgeClientRpc, BirpcBridgeHostRpc>({
     async acquireLease(request) {
       ensureActive();
-      return broker.acquireLease(request);
+      return broker.acquireLease(request, channelAuthority);
     },
     async cancelCommand(request) {
       ensureActive();
-      broker.cancelCommand(request.operationId);
+      broker.cancelCommand(request.operationId, channelAuthority);
     },
     async executeCommand(command) {
       ensureActive();
-      return broker.executeCommand(command);
+      return broker.executeCommand(command, channelAuthority);
     },
     async listTargets() {
       ensureActive();
-      return broker.listTargets();
+      return broker.listTargets(channelAuthority);
     },
     async readArtifact(request) {
       ensureActive();
-      return broker.readArtifact(request);
+      return broker.readArtifact(request, channelAuthority);
     },
     async releaseArtifact(request) {
       ensureActive();
-      broker.releaseArtifact(request);
+      broker.releaseArtifact(request, channelAuthority);
     },
     async releaseLease(request) {
       ensureActive();
-      broker.releaseLease(request);
+      broker.releaseLease(request, channelAuthority);
     },
     async renewLease(request) {
       ensureActive();
-      return broker.renewLease(request);
+      return broker.renewLease(request, channelAuthority);
     },
     async startSubscription(subscriptionId) {
       ensureActive();
@@ -154,7 +163,7 @@ export function mountBirpcChromeDebuggerBridge<
     async startTargetWatch() {
       ensureActive();
       if (targetWatch !== undefined) return;
-      targetWatch = broker.watchTargets()[Symbol.asyncIterator]();
+      targetWatch = broker.watchTargets(channelAuthority)[Symbol.asyncIterator]();
       void (async () => {
         try {
           while (true) {
@@ -174,7 +183,7 @@ export function mountBirpcChromeDebuggerBridge<
     },
     async subscribe(request): Promise<BirpcSubscriptionDescriptor> {
       ensureActive();
-      const subscription = await broker.subscribe(request);
+      const subscription = await broker.subscribe(request, channelAuthority);
       subscriptions.set(subscription.id, { streaming: false, subscription });
       return {
         id: subscription.id,
@@ -196,11 +205,27 @@ export function mountBirpcChromeDebuggerBridge<
     clientAuthentication: options.clientAuthentication,
     clientPath: options.clientPath,
     ...(options.webSocketLimits === undefined ? {} : { limits: options.webSocketLimits }),
+    ...(options.webSocketTiming === undefined ? {} : { timing: options.webSocketTiming }),
     onAgentConnection(connection) {
-      connectAgentTargetBroker(connection.connection, broker);
+      connectAgentTargetBroker(connection.connection, broker, {
+        authority: {
+          connectionGeneration: connection.connectionGeneration,
+          principalId: connection.principal.id,
+        },
+        connectionGeneration: connection.connectionGeneration,
+      });
     },
     onClientConnection(connection) {
-      connectClientTargetBroker(connection.connection, broker);
+      const authority = options.resolveClientAuthority?.(connection) ?? {
+        connectionId: connection.connectionId,
+        principalId: connection.principal.id,
+        targetGrants: [],
+      };
+      if (authority.connectionId !== connection.connectionId || authority.principalId !== connection.principal.id) {
+        connection.connection.close(1008, 'Client authority identity mismatch');
+        return;
+      }
+      connectClientTargetBroker(connection.connection, broker, authority);
     },
     originPolicy: options.originPolicy,
     server: options.server,
@@ -224,6 +249,7 @@ export function mountBirpcChromeDebuggerBridge<
       targetWatch = undefined;
       for (const state of subscriptions.values()) state.subscription.close();
       subscriptions.clear();
+      broker.disconnectClient(channelAuthority);
       await mountedWebSocketBridge.close();
       if (ownsBroker) broker.dispose();
     },

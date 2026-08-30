@@ -1,9 +1,130 @@
-import type { CdpSubscription, ClientAuthority, TargetBroker, TargetBrokerError } from './broker.js';
+import type { AuthorityRecord, AuthorityStore } from './authority.js';
+import type { CdpSubscription, ClientAuthority, TargetBroker } from './broker.js';
 import type { BrokerToClientMessage, ClientToBrokerMessage } from './protocol.js';
+
+import { TargetBrokerError } from './broker.js';
+import { scheduleTimeout } from './timing.js';
 
 export interface ClientTargetConnection {
   onMessage?: (listener: (message: ClientToBrokerMessage) => void) => () => void;
   send: (message: BrokerToClientMessage) => Promise<void>;
+}
+
+export interface StoreBackedClientTargetConnectionOptions {
+  readonly authorityStore: AuthorityStore;
+  readonly connectionId: string;
+  readonly displayName?: string;
+  readonly logicalSessionId: string;
+  readonly now?: () => number;
+}
+
+function authorityStoreError(): TargetBrokerError {
+  return new TargetBrokerError('CAPABILITY_DENIED', {
+    details: { reason: 'authority-store-unavailable' },
+    message: 'The authority store is temporarily unavailable.',
+    retryable: true,
+  });
+}
+
+function assertConnectedRecord(
+  record: AuthorityRecord | undefined,
+  options: StoreBackedClientTargetConnectionOptions,
+): AuthorityRecord {
+  if (record === undefined) throw authorityStoreError();
+  if (record.activeConnectionId !== options.connectionId) {
+    throw new TargetBrokerError('CAPABILITY_DENIED', {
+      details: { reason: 'logical-session-fenced' },
+      message: 'The logical session connection was fenced.',
+      retryable: false,
+    });
+  }
+  return record;
+}
+
+/** Connects one client using a live AuthorityStore record instead of a captured grant snapshot. */
+export async function connectStoreBackedClientTargetBroker(
+  connection: ClientTargetConnection,
+  broker: TargetBroker,
+  options: StoreBackedClientTargetConnectionOptions,
+): Promise<() => void> {
+  let available = true;
+  let record: AuthorityRecord;
+  try {
+    record = assertConnectedRecord(await options.authorityStore.get(options.logicalSessionId), options);
+  } catch (error) {
+    if (error instanceof Error && 'code' in error) throw error;
+    throw authorityStoreError();
+  }
+  const principalId = record.principalId;
+  const now = options.now ?? Date.now;
+  let bindingExpiryTimeout: ReturnType<typeof setTimeout> | undefined;
+  const activeBindings = (): AuthorityRecord['bindings'] => record.bindings.filter(binding => (
+    binding.expiresAt === undefined
+    || binding.expiresAt === null
+    || Date.parse(binding.expiresAt) > now()
+  ));
+  const authority: ClientAuthority = {
+    get authorityAvailable() {
+      return available;
+    },
+    connectionId: options.connectionId,
+    ...(options.displayName === undefined ? {} : { displayName: options.displayName }),
+    logicalSessionId: options.logicalSessionId,
+    principalId,
+    get targetGrants() {
+      return activeBindings().map(binding => ({
+        bindingId: binding.bindingId,
+        capabilities: binding.capabilities,
+        targetGeneration: binding.targetGeneration,
+        targetId: binding.targetId,
+      }));
+    },
+  };
+  let disposed = false;
+  let refresh = Promise.resolve();
+  const scheduleBindingExpiry = (): void => {
+    if (bindingExpiryTimeout !== undefined) clearTimeout(bindingExpiryTimeout);
+    bindingExpiryTimeout = undefined;
+    const nextExpiry = activeBindings().reduce<number | undefined>((next, binding) => {
+      if (binding.expiresAt === undefined || binding.expiresAt === null) return next;
+      const expiration = Date.parse(binding.expiresAt);
+      return next === undefined || expiration < next ? expiration : next;
+    }, undefined);
+    if (nextExpiry === undefined) return;
+    bindingExpiryTimeout = scheduleTimeout(() => {
+      bindingExpiryTimeout = undefined;
+      broker.refreshClientAuthority(authority);
+      scheduleBindingExpiry();
+    }, Math.max(0, nextExpiry - now()));
+  };
+  const unsubscribe = options.authorityStore.subscribe((change) => {
+    if (change.logicalSessionId !== options.logicalSessionId || disposed) return;
+    refresh = refresh.then(async () => {
+      try {
+        const nextRecord = assertConnectedRecord(
+          await options.authorityStore.get(options.logicalSessionId),
+          options,
+        );
+        if (nextRecord.principalId !== principalId) throw authorityStoreError();
+        record = nextRecord;
+        available = true;
+      } catch {
+        record = { ...record, bindings: [] };
+        available = false;
+      }
+      broker.refreshClientAuthority(authority);
+      scheduleBindingExpiry();
+    });
+  });
+  const disconnect = connectClientTargetBroker(connection, broker, authority);
+  scheduleBindingExpiry();
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    unsubscribe();
+    if (bindingExpiryTimeout !== undefined) clearTimeout(bindingExpiryTimeout);
+    disconnect();
+  };
 }
 
 /** Streams an initial target snapshot and ordered lifecycle changes to one authenticated client. */
