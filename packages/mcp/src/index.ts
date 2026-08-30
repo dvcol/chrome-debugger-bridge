@@ -1253,6 +1253,7 @@ export interface CdbToolSession {
   readonly definitions: readonly CdbToolDefinition[];
   dispose: () => void;
   projectTarget: (target: PublishedTarget) => SemanticTarget | undefined;
+  rebindClient: (client: McpChromeDebuggerBridgeClient) => void;
   revokeTarget: (targetId: string) => void;
   targetIdForReference: (targetRef: string) => string | undefined;
 }
@@ -1352,6 +1353,49 @@ function createCdbToolSessionState(): CdbToolSessionState {
     disposed: false,
     elementReferences: new Map(),
     nextElementReference: 1,
+  };
+}
+
+function createRebindableMcpClient(initialClient: McpChromeDebuggerBridgeClient): {
+  readonly client: McpChromeDebuggerBridgeClient;
+  rebind: (client: McpChromeDebuggerBridgeClient) => void;
+} {
+  const holder: { current: McpChromeDebuggerBridgeClient } = { current: initialClient };
+  const client: McpChromeDebuggerBridgeClient = {
+    acquireLease: async request => holder.current.acquireLease(request),
+    ...(initialClient.cancelAutomation === undefined
+      ? {}
+      : {
+          cancelAutomation: async (request) => {
+            const cancelAutomation = holder.current.cancelAutomation;
+            if (cancelAutomation === undefined) throw new Error('The rebound client does not support automation.');
+            await cancelAutomation(request);
+          },
+        }),
+    cancelCommand: async request => holder.current.cancelCommand(request),
+    ...(initialClient.executeAutomation === undefined
+      ? {}
+      : {
+          executeAutomation: async (request) => {
+            const executeAutomation = holder.current.executeAutomation;
+            if (executeAutomation === undefined) throw new Error('The rebound client does not support automation.');
+            return executeAutomation(request);
+          },
+        }),
+    executeCommand: async command => holder.current.executeCommand(command),
+    listTargets: async () => holder.current.listTargets(),
+    readArtifact: async (request, signal) => holder.current.readArtifact(request, signal),
+    releaseArtifact: async request => holder.current.releaseArtifact(request),
+    releaseLease: async request => holder.current.releaseLease(request),
+    renewLease: async request => holder.current.renewLease(request),
+    subscribe: async request => holder.current.subscribe(request),
+    watchTargets: () => holder.current.watchTargets(),
+  };
+  return {
+    client,
+    rebind(nextClient) {
+      holder.current = nextClient;
+    },
   };
 }
 
@@ -4372,7 +4416,8 @@ export function createCdbToolSession(
   options: RegisterCdbToolsOptions,
 ): CdbToolSession {
   const state = createCdbToolSessionState();
-  const definitions = createCdbToolDefinitionsForSession(options, state);
+  const rebindableClient = createRebindableMcpClient(options.client);
+  const definitions = createCdbToolDefinitionsForSession({ ...options, client: rebindableClient.client }, state);
   return {
     definitions,
     dispose() {
@@ -4381,6 +4426,11 @@ export function createCdbToolSession(
       state.elementReferences.clear();
     },
     projectTarget: target => projectSemanticTarget(state, target),
+    rebindClient(client) {
+      if (state.disposed) return;
+      rebindableClient.rebind(client);
+      state.elementReferences.clear();
+    },
     revokeTarget(targetId) {
       if (state.disposed) return;
       state.agentSession.revoke(targetId);

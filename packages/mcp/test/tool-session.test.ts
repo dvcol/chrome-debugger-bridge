@@ -35,7 +35,7 @@ function lease(generation: number, methods: readonly string[]): Lease {
 }
 
 it('keeps target refs stable across generation renewal and emits disposable element refs', async () => {
-  expect.assertions(11);
+  expect.assertions(13);
   let currentGeneration = 1;
   const acquiredLeases: Array<{ readonly targetGeneration: number }> = [];
   const client = {
@@ -78,7 +78,8 @@ it('keeps target refs stable across generation renewal and emits disposable elem
   const session = createCdbToolSession({ client });
   const listTargets = session.definitions.find(tool => tool.name === 'browser.list_targets');
   const snapshot = session.definitions.find(tool => tool.name === 'browser.snapshot');
-  if (listTargets === undefined || snapshot === undefined)
+  const click = session.definitions.find(tool => tool.name === 'browser.click');
+  if (click === undefined || listTargets === undefined || snapshot === undefined)
     throw new Error('The semantic discovery tools are missing.');
 
   const firstListing = await listTargets.invoke({});
@@ -99,6 +100,13 @@ it('keeps target refs stable across generation renewal and emits disposable elem
   const firstSnapshot = await snapshot.invoke({ targetRef: 't1' });
   expect(firstSnapshot.isError).toBeUndefined();
   expect((firstSnapshot.content[0] as { readonly text: string }).text).toContain('- link "Experiments" [ref=e1]');
+
+  session.rebindClient(client);
+  const staleElement = await click.invoke({ ref: 'e1', targetRef: 't1' });
+  expect(staleElement.isError).toBe(true);
+  expect(JSON.parse((staleElement.content[0] as { readonly text: string }).text)).toMatchObject({
+    code: 'MCP_ELEMENT_REF_STALE',
+  });
 
   currentGeneration = 2;
   const secondListing = await listTargets.invoke({});
