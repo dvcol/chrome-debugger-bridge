@@ -43,14 +43,24 @@ async function runSmoke() {
       principal: { id: 'ecb4e5c2-7597-4fea-9fec-a7f0b6c181d7', role: 'agent' },
     }),
     agentPath: '/birpc-agent',
-    artifactLifetimeMilliseconds: 60_000,
     brokerId: 'a797a9c2-ad27-4ca1-87f7-5bf9f58f936d',
     channel: hostChannel,
+    channelAuthority: {
+      connectionId: 'birpc-example-channel',
+      principalId: 'birpc-example-channel',
+      targetGrants: [{
+        bindingId: 'birpc-example-binding',
+        capabilities: target.capabilities,
+        targetGeneration: target.generation,
+        targetId: target.id,
+      }],
+    },
     clientAuthentication: createStaticClientAuthenticationAdapter('Bearer birpc-client', { id: 'b4fd95e4-b7d4-43b2-b152-a86d07d0aad2', role: 'client' }),
     clientPath: '/birpc-client',
     maximumInlineResultBytes: 1,
     originPolicy: () => true,
     server,
+    timing: { artifactLifetimeMilliseconds: 60_000 },
   });
   const client = createBirpcBridgeClient(clientChannel);
 

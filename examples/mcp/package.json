@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@dvcol/cdb": "workspace:*",
+    "@dvcol/cdb-automation-playwright": "workspace:*",
     "@dvcol/cdb-mcp": "workspace:*",
     "@modelcontextprotocol/client": "catalog:"
   }

@@ -4,12 +4,21 @@ This private package is a network-free application composition. The embedding ap
 
 ```ts
 import {
+  connectStoreBackedClientTargetBroker,
+  createAgentSession,
   createDiagnosticTraceStore,
   createEmbeddedChromeDebuggerBridge,
+  createLogicalSessionManager,
   createMemoryArtifactStore,
+  createMemoryAuthorityStore,
+  createMemoryCredentialStore,
 } from '@dvcol/cdb';
 
 const now = () => Date.now();
+const authorityStore = createMemoryAuthorityStore();
+const credentialStore = createMemoryCredentialStore();
+const logicalSessions = createLogicalSessionManager({ authorityStore });
+const agentSession = createAgentSession();
 const bridge = createEmbeddedChromeDebuggerBridge({
   artifactStore: createMemoryArtifactStore(1_048_576, now),
   authorization: {
@@ -22,7 +31,14 @@ const bridge = createEmbeddedChromeDebuggerBridge({
   now,
 });
 
+// A host can bind a broker client reactively with connectStoreBackedClientTargetBroker after
+// creating a logical session. The credential store remains on the resuming client side.
+void connectStoreBackedClientTargetBroker;
+void credentialStore;
+
 // The application publishes opaque targets, supplies its executor, and disposes at shutdown.
+agentSession.dispose();
+logicalSessions.dispose();
 bridge.dispose();
 ```
 

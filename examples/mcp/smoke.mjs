@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 
 import { createEmbeddedChromeDebuggerBridge } from '@dvcol/cdb';
+import { createPlaywrightAutomationProvider } from '@dvcol/cdb-automation-playwright';
 import { createCdbToolSession, mountMcpStdio, mountMcpStreamableHttp, supportedMcpProtocolVersions, supportedMcpSdkVersion } from '@dvcol/cdb-mcp';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
@@ -16,6 +17,7 @@ const target = {
 
 async function main() {
   const bridge = createEmbeddedChromeDebuggerBridge();
+  const playwrightAutomationProvider = createPlaywrightAutomationProvider();
   const httpServer = createServer();
   let stdioClosed = false;
   let stdioStarted = false;
@@ -124,7 +126,7 @@ async function main() {
       ).content[0].text,
     );
     assert.equal(
-      navigation.command.value.method,
+      navigation.command.method,
       'Page.navigate',
     );
     const screenshot = JSON.parse(
@@ -190,6 +192,7 @@ async function main() {
     await transport.terminateSession();
     await mountedHttp.close();
     await mountedStdio.close();
+    await playwrightAutomationProvider.dispose();
     await new Promise((resolve, reject) => httpServer.close(error => (error === undefined ? resolve() : reject(error))));
     bridge.dispose();
   }

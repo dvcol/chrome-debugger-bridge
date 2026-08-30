@@ -234,6 +234,9 @@ importers:
       '@dvcol/cdb':
         specifier: workspace:*
         version: link:../../packages/core
+      '@dvcol/cdb-automation-playwright':
+        specifier: workspace:*
+        version: link:../../packages/automation-playwright
       '@dvcol/cdb-mcp':
         specifier: workspace:*
         version: link:../../packages/mcp

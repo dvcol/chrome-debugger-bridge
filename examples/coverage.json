@@ -62,6 +62,48 @@
     },
     {
       "example": "embedded",
+      "exportName": "connectStoreBackedClientTargetBroker",
+      "packageName": "@dvcol/cdb",
+      "subpath": "."
+    },
+    {
+      "example": "embedded",
+      "exportName": "createAgentSession",
+      "packageName": "@dvcol/cdb",
+      "subpath": "."
+    },
+    {
+      "example": "embedded",
+      "exportName": "createLogicalSessionManager",
+      "packageName": "@dvcol/cdb",
+      "subpath": "."
+    },
+    {
+      "example": "embedded",
+      "exportName": "createMemoryAuthorityStore",
+      "packageName": "@dvcol/cdb",
+      "subpath": "."
+    },
+    {
+      "example": "embedded",
+      "exportName": "createMemoryCredentialStore",
+      "packageName": "@dvcol/cdb",
+      "subpath": "."
+    },
+    {
+      "example": "embedded",
+      "exportName": "createAgentSession",
+      "packageName": "@dvcol/cdb",
+      "subpath": "./agent"
+    },
+    {
+      "example": "embedded",
+      "exportName": "createMemoryAuthorityStore",
+      "packageName": "@dvcol/cdb",
+      "subpath": "./authority"
+    },
+    {
+      "example": "embedded",
       "exportName": "createTargetBroker",
       "packageName": "@dvcol/cdb",
       "subpath": "./broker"
@@ -83,6 +125,18 @@
       "exportName": "createEmbeddedChromeDebuggerBridge",
       "packageName": "@dvcol/cdb",
       "subpath": "./embedded"
+    },
+    {
+      "example": "embedded",
+      "exportName": "createLogicalSessionManager",
+      "packageName": "@dvcol/cdb",
+      "subpath": "./session"
+    },
+    {
+      "example": "embedded",
+      "exportName": "createMemoryCredentialStore",
+      "packageName": "@dvcol/cdb",
+      "subpath": "./session"
     },
     {
       "example": "extension",
@@ -308,6 +362,12 @@
     },
     {
       "example": "mcp",
+      "exportName": "createCdbToolSession",
+      "packageName": "@dvcol/cdb-mcp",
+      "subpath": "."
+    },
+    {
+      "example": "mcp",
       "exportName": "mountMcpStdio",
       "packageName": "@dvcol/cdb-mcp",
       "subpath": "."
@@ -316,6 +376,12 @@
       "example": "mcp",
       "exportName": "mountMcpStreamableHttp",
       "packageName": "@dvcol/cdb-mcp",
+      "subpath": "."
+    },
+    {
+      "example": "mcp",
+      "exportName": "createPlaywrightAutomationProvider",
+      "packageName": "@dvcol/cdb-automation-playwright",
       "subpath": "."
     }
   ]

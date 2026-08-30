@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { promisify, styleText } from 'node:util';
 
 const executeFile = promisify(execFile);
-const publicPackageDirectories = ['birpc', 'core', 'extension', 'mcp', 'websocket'];
+const publicPackageDirectories = ['automation-playwright', 'birpc', 'core', 'extension', 'mcp', 'websocket'];
 const dependencyFieldNames = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const;
 const corePackageName = '@dvcol/cdb';
 const protocolJsonSchemaIdentifier = 'urn:dvcol:chrome-debugger-bridge:protocol:1';
