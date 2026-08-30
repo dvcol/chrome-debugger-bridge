@@ -6,8 +6,8 @@ CDB is a debugger protocol library. It does not decide which tab a user intended
 UI, start an agent, or own Chrome extension permissions. Its API begins after a grant provider has
 identified a target and ends before a provider-specific debugger command reaches Chrome.
 
-This boundary lets DevKit aggregate any future browser-control provider without putting Chrome IDs,
-extension lifecycles, or `chrome.debugger` behavior into the generic registry.
+This lets an embedding host aggregate browser-control providers without putting Chrome IDs,
+extension lifecycles, or `chrome.debugger` behavior into CDB's broker.
 
 ## Components
 
@@ -31,21 +31,64 @@ agent identity is the provider's stable instance identity, not a caller-provided
 
 An agent-facing client sees only targets granted to its authenticated principal. It can acquire a
 lease, execute debugger tools, subscribe to events, and release the lease. Disconnecting the client
-revokes the live authority owned by that principal.
+cancels its operations and subscriptions, then releases its leases after the broker's configured
+reconnect grace period. A store-backed connection reads bindings reactively from `AuthorityStore`;
+revocation, expiry, generation replacement, session fencing, and store failure refresh authority and
+abort work that is no longer authorized.
+
+### Logical sessions and stable references
+
+`@dvcol/cdb/session` separates a logical session from any one transport connection. The broker stores
+only a hash of the opaque resume credential in the session's `AuthorityRecord`. Successful resume
+rotates the credential, increments the connection generation, and makes the newest connection the
+only active one. The previous connection is fenced even if its transport is half open. The raw
+credential belongs below model-facing tool definitions and may be kept through a `CredentialStore`.
+
+A connected logical session has no inactivity expiry. On final transport loss, the host disconnects
+the CDB client so commands, subscriptions, automation operations, listeners, artifacts, and leases
+are released according to their module policies. The authority record and stable `tN` mapping may be
+retained for the configured resume window. Resume restores authority and those stable target
+references; it does not restore in-flight work or disposable `eN` references. Explicit termination
+or resume-window expiry deletes the authority record and ends the logical session.
+
+Session `metadata` is optional JSON-compatible data. CDB validates and stores it but never interprets
+it as identity, authority, or policy.
 
 ### Extension helpers
 
 `@dvcol/cdb-extension` provides publication and recovery mechanics that remain useful to a browser
-extension but do not import Chrome APIs. QA Helper supplies the Chrome adapter and the user approval
-policy. The separate `presentation` entry is an opt-in content-script helper. It translates
+extension but do not import Chrome APIs. The extension host supplies the Chrome adapter and user
+approval policy. The separate `presentation` entry is an opt-in content-script helper. It translates
 successful CDP pointer commands into sanitized visual events and renders an isolated pointer plus a
 temporary favicon. The host owns installation, messaging, current grant state, and navigation
 reinjection.
 
+### Automation providers
+
+The core automation contract normalizes snapshot, find, inspect, and semantic action requests. An
+embedding broker may register exactly one automation provider for each authenticated extension
+provider connection. Registration does not create authority: every operation still resolves the
+calling principal's exact grant, generation, and lease before the provider runs.
+
+The provider receives only an operation-scoped CDP executor. CDB projects each internal CDP command
+onto that already-validated operation and sends it through the existing target executor. The
+provider cannot attach or create targets, contact the extension directly, open a browser-wide CDP
+endpoint, or turn its implementation commands into agent-supplied raw authority. Provider element
+handles are bound to principal, provider identity, target, generation, and snapshot; replacement,
+revocation, generation renewal, and principal disposal invalidate them.
+
+`@dvcol/cdb-automation-playwright` is an experimental implementation. It adapts Playwright's
+maintained in-process extension relay and target model over the scoped executor, so the provider host
+remains the sole `chrome.debugger` owner. Native CDB semantics remain the default. A host must select the
+registered provider explicitly, and a missing or failed provider produces a structured error rather
+than native fallback. CDB records total, provider, transport, Chrome, and CDP-command metrics for each
+automation operation.
+
 ### MCP definitions
 
 `@dvcol/cdb-mcp` exports `createCdbToolSession`. A host creates one session for each authenticated
-principal and disposes it with that principal. The session owns tool definitions plus a private
+logical session and disposes it when that session terminates. It can rebind the session to a resumed
+client connection without reallocating target references. The session owns tool definitions plus a private
 projection from broker targets to short `tN` references. A reference survives generation renewal for
 the same authorized target but disappears on target revocation or disposal. The compatibility
 `createCdbToolDefinitions` export has no stable cross-request projection and is not suitable for a
@@ -66,6 +109,12 @@ strict match, and retry visibility, stable geometry, enabled/editable state, scr
 checks for a bounded deadline. A generation renewal may be retried before pointer or keyboard input;
 after input may have been dispatched CDB returns `MCP_ACTION_OUTCOME_UNKNOWN` and does not replay.
 
+The native resolver also supports structured XPath through `DOM.performSearch`. XPath follows
+Chromium XPath semantics and therefore does not pierce shadow-root boundaries; portable structured
+locators remain the preferred address. Interactive snapshots include named table/grid cells and row
+and column headers, and `browser.find` may return references for named non-interactive accessibility
+nodes.
+
 The semantic catalogue also owns navigation and history waits, dialogs, console/network inspection,
 and artifacts. Arbitrary JavaScript execution through `browser.evaluate`, `Runtime.evaluate`,
 `Runtime.callFunctionOn`, or `Runtime.runScript` requires `debug`; it bypasses locator actionability
@@ -85,14 +134,17 @@ and debugger event ownership remain grant-provider responsibilities.
 
 ## Identity and authority
 
-There are four distinct identifiers:
+There are seven distinct identifiers:
 
-| Identifier           | Meaning                                               | Lifetime                                |
-| -------------------- | ----------------------------------------------------- | --------------------------------------- |
-| broker ID            | Identity of one persisted DevKit broker installation  | Across DevKit restarts                  |
-| provider instance ID | Stable identity of one provider installation/profile  | Across service-worker restarts          |
-| target ID            | Stable identity of the browser target being recovered | While the provider can prove continuity |
-| target generation    | Authority epoch for one publication                   | Changes on republish or recovery        |
+| Identifier            | Meaning                                                   | Lifetime                                |
+| --------------------- | --------------------------------------------------------- | --------------------------------------- |
+| broker ID             | Identity of one persisted broker installation             | Across broker restarts                  |
+| provider instance ID  | Stable identity of one provider installation/profile     | Across provider-process restarts        |
+| principal ID          | Authenticated actor to which authority belongs             | Host-defined                            |
+| logical session ID    | Resumable principal-scoped tool session                    | Until termination or resume expiry      |
+| connection generation | Fencing epoch for one logical-session or provider transport | Increments on successful takeover       |
+| target ID             | Stable identity of the target being recovered              | While the provider proves continuity    |
+| target generation     | Authority epoch for one target publication                 | Changes on republish or recovery        |
 
 Display names, tab IDs, target IDs, and generations are diagnostic metadata and may be shown to
 trusted localhost UIs. Pairing credentials, bearer material, and grant tokens are never projected
@@ -108,7 +160,7 @@ profiles therefore appear as separate providers even when their display name and
 Diagnostic UIs should show provider and stable instance IDs so operators can distinguish them.
 
 An authenticated WebSocket connection validates the implementation instance ID against the stored
-pairing. The connection exposes a broker-issued connection generation. QA Helper uses that
+pairing. The connection exposes a broker-issued connection generation. The provider uses that
 generation for hello and heartbeat messages so an older connection cannot resume authority after a
 newer connection has taken over.
 
@@ -132,8 +184,25 @@ The requested level is selected by the agent and displayed without modification 
 grants exactly that level. A refusal does not silently downgrade the request. The agent can make a
 new lower-level request.
 
-Several principals may hold grants for the same target. This matches the fact that Chrome shows QA
-Helper as the debugger controller even when several agents are authorized behind it.
+The embedding host owns consent policy and decides when to create or revoke authority. CDB represents
+the result as generation-bound `AuthorityBinding` records. A binding has its own ID and belongs to the
+principal and logical session in its containing `AuthorityRecord`; it names an exact target ID,
+target generation, access level, allowed-method set, and optional expiry.
+
+`AuthorityStore` is asynchronous, supports atomic update and deletion, and publishes changes. The
+store-backed client adapter resolves it reactively instead of retaining a connection-time grant
+snapshot. Store read or subscription failure fails closed: affected authority becomes unavailable,
+matching work is aborted, and no cached binding remains usable. CDB also intersects active bindings
+with the provider target's capabilities before listing, leasing, or executing against it.
+
+Several principals may hold grants for the same target. Chrome still sees one provider as the
+debugger controller while CDB authorizes several principals behind it.
+
+When bindings overlap, authorization combines the maximum level and a canonical sorted union of
+allowed methods. Revoking one binding recalculates the result from the survivors, independently of
+insertion order. A target generation change fences every old binding immediately; a host that accepts
+continuity creates replacement bindings for the new generation rather than mutating the old binding
+identity.
 
 ## Leases
 
@@ -143,10 +212,11 @@ CDB separates durable permission from short-lived command coordination:
 - A shared-read lease allows compatible observation and inspection by several principals.
 - An exclusive-control lease serializes actions that require one controller.
 
-A grant has no lease inactivity timeout. A semantic tool normally acquires and releases a temporary
+A binding has no lease inactivity timeout. A semantic tool normally acquires and releases a temporary
 lease around one operation; an explicit lease remains available for a sequence of raw commands until
-it is released, reaches the embedding broker's configured inactivity or maximum lifetime, loses its
-generation, or its grant/principal is revoked.
+it is released, reaches the broker's configured duration or maximum lifetime, loses its generation,
+or its binding, logical session, or principal is revoked. Explicit leases are renewable; CDB does not
+renew them in the background.
 
 There is no lease queue and no preemption. An incompatible acquire fails with `LEASE_CONFLICT` and a
 retry hint. The agent decides whether and when to retry. Lease inactivity expiry is configurable.
@@ -157,30 +227,53 @@ CDB does not interpret URLs or navigation policies. A provider may renew one sta
 new generation when it proves that the underlying tab continues. Commands carrying the previous
 generation remain fenced regardless of why authority was renewed.
 
-The embedding broker scopes grants. DevKit currently supports `same-origin` and `follow-tab` grants
-on the same CDB target: a cross-origin renewal makes only the former unavailable, while the latter
-continues. CDB receives the resulting per-principal target authority and remains unaware of Chrome
-origins.
+The embedding broker scopes grants. It may apply different navigation policies to principals on the
+same CDB target. CDB receives the resulting per-principal target authority and remains unaware of
+URLs and origins.
 
-When the provider transport drops, targets and grants enter recovery for a configurable bounded
-window. A matching provider identity can reconnect, reconcile its exact targets, and continue under
-new generations. Once the window expires, state is revoked. Recovery state remains visible so a user
-can revoke it manually.
+When the provider transport drops, the host removes the dead executor and exposes retryable target
+unavailability for a configurable bounded recovery window. A matching provider identity can
+reconnect, reconcile its exact targets, and continue under higher generations. A newer provider
+connection generation fences its predecessor. Once the window expires, the host revokes recovery
+state; CDB never delivers work to the dead executor.
 
-DevKit daemon death and MCP bridge death are different hard boundaries:
+Broker-process death and client-session death are different authority boundaries:
 
-- DevKit daemon death kills all live grants and leases. Persisted pairing does not imply trust in a
-  new daemon process.
-- MCP bridge death disconnects that agent principal and revokes only its live grants and leases.
+- Broker-process death kills all live grants and leases. Persisted pairing does not imply trust in a
+  replacement process.
+- Logical-session termination revokes only that principal's bindings, references, and live resources.
+- A resumable transport loss releases live resources but may retain bindings and `tN` references for
+  the configured resume window.
 
-## Persistence
+## Stores and persistence
 
-CDB itself does not choose a filesystem location. The embedding DevKit broker persists only broker
-identity and provider pairing credentials under its configurable state directory, defaulting to
-`~/.devkit/broker`.
+CDB exposes two separate store contracts:
 
-Requests, grants, leases, principals, targets, generations, and recovery timers are memory-only.
-Starting a new DevKit daemon therefore starts with no live authority.
+- `AuthorityStore` holds broker-side logical-session records, hashed resume credentials, and
+  generation-bound bindings.
+- `CredentialStore` holds the raw credential on the resuming client side, below model-facing tools.
+
+Both default to asynchronous in-memory implementations with no I/O. CDB does not select a filesystem,
+database, storage API, or persistence setting. A consumer injects a compatible persistent
+implementation when it accepts that implementation's I/O, consistency, and recovery tradeoffs. Both
+contracts may share one storage technology without becoming one trust boundary.
+
+Persistent stores can recover authority after process restart only through a fresh authenticated
+connection generation. In-flight commands, leases, subscriptions, automation handles, listeners,
+artifacts, and timers are never recovered.
+
+## Timing policies
+
+Each module owns a typed timing policy and immutable defaults for the timers it creates. A deadline is
+expressed in milliseconds as `number | null`: a positive value schedules expiry, `0` expires
+immediately, and `null` disables that deadline as an explicit consumer-owned tradeoff. Construction
+validates overrides before work starts.
+
+The core defaults are a 15-minute logical-session resume window, at most 60 seconds for lease
+acquisition or renewal, a 15-minute explicit-lease lifetime, no connected-session inactivity expiry,
+and the existing transport handshake, heartbeat, retry, command, artifact, and cleanup intervals.
+Provider recovery belongs to the embedding host because it owns the provider process and continuity
+policy. Disabling a security expiry can keep authority indefinitely and must be chosen deliberately.
 
 ## Structured failures
 
@@ -196,14 +289,15 @@ not parse the message.
 - A provider ID cannot silently rotate to a different stable instance.
 - Target commands require an exact granted principal, target ID, and target generation.
 - A generation superseded by recovery cannot execute commands.
-- The grant provider remains authoritative even if DevKit state is stale.
-- Browser input never supplies the tab ID used for acceptance. QA Helper derives it from the
-  extension message sender.
+- Only the newest logical-session and provider connection generations may execute work.
+- Resume credentials are opaque, hashed broker-side, rotated after use, and excluded from model input.
+- The grant provider remains authoritative even if embedding-host state is stale.
+- A browser-extension adapter derives accepted target identity from a trusted platform source, not
+  from page or agent input.
 - Credentials are bounded, stored outside aggregate state, and never rendered in registry UIs.
 
 ## Validation boundary
 
-Unit tests cover protocol behavior and the DevKit linked integration test covers the complete
-provider path over a real authenticated WebSocket. The final local gate additionally loads QA Helper
-in Chromium, accepts from the intended tab, and executes debugger operations through the DevKit MCP
-surface.
+Unit tests cover protocol behavior. Repository integration tests cover authenticated transports,
+browser clients, extension helpers, package consumers, and example compositions. Embedding hosts
+remain responsible for end-to-end validation of their approval policy and platform adapter.

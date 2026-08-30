@@ -15,8 +15,8 @@ Domain documentation uses the single-context layout. See `docs/agents/domain.md`
 ## Browser-control integration
 
 Read `ARCHITECTURE.md` before changing broker, WebSocket, extension, or MCP behavior. CDB is a
-transport-neutral dependency of DevKit and QA Helper. It must not start a DevKit daemon, discover a
-Chrome tab, show approval UI, or add one MCP host per Vite server.
+transport-neutral library. Embedding hosts own application processes and MCP lifecycle. Provider
+hosts own target discovery, Chrome integration, and approval UI.
 
 Preserve these invariants:
 
@@ -36,8 +36,8 @@ Preserve these invariants:
 - Keep Chrome APIs and tab-selection policy out of CDB.
 - Keep URL and navigation-grant policy out of CDB. The embedding broker may scope different
   principals differently while they share one target.
-- Keep MCP definitions transport-neutral. DevKit owns the MCP server and passes its current RPC
-  session through as principal identity.
+- Keep MCP definitions transport-neutral. The embedding host owns the MCP server and passes its
+  authenticated session through as principal identity.
 - Return structured errors with retry hints where retry can succeed.
 
 The user-visible access levels are `observe`, `inspect`, `interact`, `debug`, and `unsafe`. Do not
@@ -54,9 +54,5 @@ pnpm typecheck
 pnpm lint
 ```
 
-For changes to public transport types, rebuild the affected package before testing linked DevKit or
-QA Helper. Also run DevKit's `src/broker/runtime.test.ts`, which verifies authenticated pairing,
-multiple grants, lease conflicts, recovery, generation fencing, and principal disconnect behavior.
-
-Do not claim the local browser-control proof is complete from unit tests alone. The end-to-end gate
-must load QA Helper, accept a request in a real tab, and execute debugger actions through DevKit.
+Run `pnpm verify` when the change affects transport, browser, extension, packaging, or example
+composition behavior. Consumer applications own their approval-policy and platform-adapter tests.

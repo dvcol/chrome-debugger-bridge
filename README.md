@@ -1,50 +1,53 @@
 # CDB: Chrome Debugger Bridge
 
-CDB is the transport-neutral debugger core used by DevKit browser control. It exposes Chrome
-DevTools Protocol operations as agent tools while keeping authorization, target generations,
-leases, cancellation, and event subscriptions independent from Chrome extension APIs.
+CDB is a transport-neutral debugger protocol library. It exposes Chrome DevTools Protocol
+operations as agent tools while keeping authorization, target generations, leases, cancellation,
+and event subscriptions independent from Chrome extension APIs.
 
-In the local integration, CDB is a library dependency. It is not an MCP server per Vite process and
-it does not discover browser tabs on its own.
+An embedding host composes CDB as a library. CDB does not discover browser tabs, start application
+servers, or own an application's MCP lifecycle.
 
-## Place in the local browser-control stack
+## Place in a browser-control stack
 
 ```text
 agent MCP client
-    | stdio
-DevKit MCP bridge
-    | authenticated DevKit RPC session
-DevKit registry and browser broker (11112)
-    | authenticated CDB provider transport (11113)
-QA Helper service worker
+    | application-owned transport
+embedding host and principal registry
+    | CDB client and broker adapters
+CDB target broker
+    | authenticated provider transport
+browser-extension provider
     | chrome.debugger
-granted Chrome tab
+authorized Chrome target
 ```
 
 The responsibilities are intentionally split:
 
-- DevKit owns agent principals, access requests, aggregate state, provider registration, and tool
-  routing.
-- QA Helper owns the user grant, the selected Chrome tab, debugger attachment, and final command
+- The embedding host owns agent principals, user-facing access requests, aggregate state, provider
+  registration, policy, and tool routing.
+- The provider host owns target selection, approval UI, debugger attachment, and final command
   enforcement.
-- CDB owns the reusable target protocol, target generations, grants, shared and exclusive leases,
-  command execution, cancellation, and subscriptions.
-- DevTools and QA Helper render the same DevKit state. They do not mint grants or bypass CDB.
+- CDB owns the reusable target protocol, target generations, grant enforcement, shared and exclusive
+  leases, command execution, cancellation, and subscriptions.
+- Application frontends may render host state, but they do not mint CDB authority or bypass the
+  provider.
 
 One provider identity represents one grant-provider installation/profile and may publish many
 targets. It is not created per browser tab or window. Trusted diagnostic UIs can show provider IDs,
 stable instance IDs, tab IDs, target IDs, and generations; pairing and authority secrets stay out of
 aggregate state.
 
-Navigation scope is intentionally above CDB. DevKit can authorize `same-origin` and `follow-tab`
-principals independently against one stable target; QA Helper renews that target generation as the
-tab crosses HTTP(S) origins. CDB only fences generations and applies the per-principal authority it
-receives.
+Navigation scope is intentionally above CDB. An embedding host may authorize principals with
+different navigation policies against one stable target. The provider renews the target generation
+when its platform policy requires it. CDB only fences generations and applies the per-principal
+authority it receives.
 
 Each authenticated MCP principal owns one `createCdbToolSession`. The session projects authorized
-targets as short `tN` references that survive document and generation renewal, and disposes them when
-the target is revoked or the principal disconnects. Raw target IDs and generations remain available
-only through the diagnostic listing and trusted host UI.
+targets as short `tN` references that survive document renewal, target-generation replacement, and a
+logical-session resume. Rebinding a resumed client drops disposable `eN` references and all in-flight
+work. Manual authority revocation or logical-session termination removes the stable target reference.
+Raw target IDs and generations remain available only through the diagnostic listing and trusted host
+UI.
 
 Agents do not need to infer page structure from screenshots. `browser.snapshot` defaults to a compact
 interactive accessibility tree and returns monotonic disposable `eN` element references. Complete
@@ -56,16 +59,30 @@ been dispatched. Coordinate-only controls are named with an `_at` suffix. `brows
 debug-level escape hatch: it bypasses locator guarantees and visible pointer feedback. Hosts can also
 expose the generated raw CDP catalogue for lossless protocol access.
 
+The native semantic implementation remains the default. An embedding broker can explicitly select
+one registered automation provider for an authenticated extension-provider connection. The
+experimental `@dvcol/cdb-automation-playwright` package adapts Playwright's maintained in-process
+extension relay to CDB's authorized target executor: Playwright neither opens another debugger
+attachment nor receives a browser-wide CDP endpoint. Provider initialization or execution failure is
+reported as a structured failure; it never silently falls back to native semantics.
+
 Extension hosts can opt into `@dvcol/cdb-extension/presentation`. It renders an isolated pointer and
 temporary control favicon from sanitized successful input events. The host still owns installation,
 current grant state, navigation reinjection, approval UI, and Chrome policy. See the
 [browser-control parity matrix](./docs/browser-control-parity.md) for supported and intentionally
 excluded behavior.
 
-Grants and leases have different lifetimes. A grant is durable authority owned by the embedding
-broker; a lease is short-lived command coordination. Semantic tools acquire, use, and release their
-temporary leases in one operation. Tools that deliberately return an artifact retain that lease until
-the caller reads and releases the artifact.
+Authority bindings and leases have different lifetimes. The embedding host owns consent policy and
+creates exact target-generation bindings in an injected `AuthorityStore`. CDB observes those records
+reactively, fails closed when the store is unavailable, and owns short-lived lease coordination.
+Semantic tools acquire, use, and release their temporary leases in one operation. Tools that
+deliberately return an artifact retain that lease until the caller reads and releases the artifact.
+
+`@dvcol/cdb/session` uses opaque rotating resume credentials to keep a logical session across
+transport replacement. Only the broker-side hash is stored with authority. A separate
+`CredentialStore` keeps the raw client credential below the model-facing layer. Both stores default
+to asynchronous memory implementations. Persistence is dependency injection, not a CDB setting, so
+consumers choose their own I/O and restart-recovery tradeoff.
 
 CDB owns lifecycle activation for leased CDP domains. Callers request the commands and events they
 need, not `*.enable` or `*.disable`; the broker activates a managed domain before first use and
@@ -87,18 +104,63 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the protocol and failure model. See
 | `@dvcol/cdb-birpc`     | RPC transport adapter                                                                    |
 | `@dvcol/cdb-extension` | Browser-extension helpers for publication, recovery, and opt-in control presentation |
 | `@dvcol/cdb-mcp`       | Principal-scoped semantic and raw MCP tool sessions over a CDB client                    |
+| `@dvcol/cdb-automation-playwright` | Experimental Playwright semantic provider over a broker-authorized CDB executor |
 | `@dvcol/cdb-websocket` | Authenticated browser and Node WebSocket transports                                      |
+
+## Store and timing composition
+
+The zero-I/O composition uses the memory stores:
+
+```ts
+import { createMemoryAuthorityStore } from '@dvcol/cdb/authority';
+import { createLogicalSessionManager, createMemoryCredentialStore } from '@dvcol/cdb/session';
+
+const authorityStore = createMemoryAuthorityStore();
+const credentialStore = createMemoryCredentialStore();
+const logicalSessions = createLogicalSessionManager({
+  authorityStore,
+  timing: { resumeWindowMilliseconds: 15 * 60_000 },
+});
+```
+
+A consumer may implement the two contracts over the same database while keeping the records and
+trust boundaries separate:
+
+```ts
+import type { AuthorityStore } from '@dvcol/cdb/authority';
+import type { CredentialStore } from '@dvcol/cdb/session';
+
+declare const persistentAuthorityStore: AuthorityStore;
+declare const persistentCredentialStore: CredentialStore;
+```
+
+All CDB-owned deadlines are constructor policy. Positive milliseconds schedule expiry, `0` expires
+immediately, and `null` disables the deadline:
+
+```ts
+import { createTargetBroker } from '@dvcol/cdb/broker';
+
+const broker = createTargetBroker({
+  timing: {
+    commandTimeoutMilliseconds: 30_000,
+    leaseMaximumDurationMilliseconds: 60_000,
+    leaseMaximumLifetimeMilliseconds: 15 * 60_000,
+    reconnectGraceMilliseconds: 0,
+  },
+});
+```
 
 ## Local linking
 
-The proof of concept links source packages directly. Nothing needs to be published.
+Applications can link source packages directly while developing an adapter. Nothing needs to be
+published first.
 
 ```json
 {
   "dependencies": {
-    "@dvcol/cdb": "link:../../../private/chrome-debugger-bridge/packages/core",
-    "@dvcol/cdb-extension": "link:../../../private/chrome-debugger-bridge/packages/extension",
-    "@dvcol/cdb-websocket": "link:../../../private/chrome-debugger-bridge/packages/websocket"
+    "@dvcol/cdb": "link:../chrome-debugger-bridge/packages/core",
+    "@dvcol/cdb-extension": "link:../chrome-debugger-bridge/packages/extension",
+    "@dvcol/cdb-websocket": "link:../chrome-debugger-bridge/packages/websocket"
   }
 }
 ```
@@ -121,8 +183,6 @@ tests, builds, Chromium tests, extension E2E, browser runtime-boundary checks, p
 construction, package consumers, and packed example smoke commands. Loopback permission is required
 because the HTTP and WebSocket suites bind `127.0.0.1`.
 
-The cross-package proof additionally links these packages into DevKit and QA Helper, loads the
-extension in Chromium, and launches an agent from DevTools. The validated agent requested DEBUG,
-acquired exclusive control, set a breakpoint, observed `21` in the paused call frame, resumed to
-`42`, removed the breakpoint, reloaded the page, and released its lease. The same run proves that CDB
-is tool and transport infrastructure inside the single DevKit MCP surface, not another MCP host.
+Consumer applications own their policy, UI, and platform-specific end-to-end checks. CDB's own
+validation proves the public packages, authenticated transports, extension helpers, and example
+compositions without importing a consumer application.

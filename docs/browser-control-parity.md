@@ -12,6 +12,7 @@ generation fencing.
 | Diagnostic DOM snapshot | supported | Explicit `dom` mode; screenshots remain a separate tool. |
 | Semantic find | supported | Small contextual matches using the same locator resolver as actions. |
 | Locator model | supported core subset | Role/name, text, label, placeholder, alt, title, test ID, CSS, descendants, frame chains, `has`, text/visibility/exclusion/`nth` filters. |
+| Native XPath | supported with boundary | Structured XPath uses Chromium `DOM.performSearch`; XPath does not cross shadow roots. |
 | Shadow DOM | supported | Open and closed author roots are pierced by default; user-agent roots are excluded. |
 | Frames | supported | Same-process frames and OOPIF child sessions. |
 | Strictness and actionability | supported | One strict match; bounded visible, stable, enabled/editable, scroll, and hit-target checks. |
@@ -24,7 +25,7 @@ generation fencing.
 | Multiple agents | stronger than benchmark | Principal-scoped grants plus compatible shared and exclusive leases. |
 | Arbitrary JavaScript/CDP | debug/raw only | Explicit escape hatch; bypasses locator and pointer guarantees. |
 | Snapshot diffs | deferred | Version one returns complete fresh compact snapshots. |
-| Full Playwright selector language and XPath | deferred | The first release uses the serializable core locator model. |
+| Full Playwright selector language | experimental provider | The opt-in Playwright provider accepts the portable model through Playwright's maintained selector engine. Provider-dialect escape hatches remain capability gated. |
 | File upload, downloads, clipboard | host-owned | Browser permissions, paths, and user policy stay outside CDB. |
 | Tab discovery, selection, approval | host-owned | CDB receives already-authorized targets and never discovers Chrome tabs. |
 | Chrome debugger disclosure | intentionally excluded | Browser-owned security UI is never hidden. |
@@ -46,3 +47,17 @@ Semantic callers never supply a generation. A tool session resolves its `tN` ref
 current target generation before acquiring a lease or dispatching CDP. Raw lease/CDP/provider APIs
 continue to require exact target ID and generation. CDB does not infer a tab, weaken a requested
 access level, or move navigation and approval policy into the transport-neutral core.
+
+## Provider boundary
+
+Native CDB semantics are the lightweight default. The experimental Playwright provider runs inside
+the embedding broker and adapts Playwright's maintained extension relay to CDB's operation-scoped
+executor. It does not launch Chrome, attach another debugger, expose a loopback CDP endpoint, or add
+an MCP host. The extension provider remains the only grant provider and debugger owner. Selecting
+Playwright is explicit, and provider failure never triggers a silent native fallback.
+
+Vitest's Playwright browser provider is not reused here. It is a test-runner integration that owns
+browser launch/connection and its CDP sessions; it does not export the extension relay as a scoped
+executor for an already-authorized tab. CDB therefore wraps Playwright's maintained extension-relay
+internals directly while retaining the provider host's single debugger attachment and CDB's grant
+boundary.
