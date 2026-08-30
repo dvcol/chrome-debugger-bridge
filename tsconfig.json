@@ -1,5 +1,6 @@
 {
   "references": [
+    { "path": "./packages/automation-playwright" },
     { "path": "./packages/core" },
     { "path": "./packages/extension" },
     { "path": "./packages/websocket" },

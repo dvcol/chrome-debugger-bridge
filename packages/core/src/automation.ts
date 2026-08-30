@@ -52,16 +52,34 @@ export type AutomationActionName
     | 'type'
     | 'uncheck';
 
-export type AutomationOperation
-  = | {
-    readonly kind: 'action';
-    readonly action: AutomationActionName;
+interface AutomationActionTarget {
+  readonly elementHandleId?: string;
+  readonly locator?: AutomationLocator;
+}
+
+interface AutomationActionOptions {
+  readonly modifiers?: readonly ('alt' | 'control' | 'meta' | 'shift')[];
+  readonly timeoutMilliseconds?: number;
+}
+
+export type AutomationAction = AutomationActionTarget & AutomationActionOptions & (
+  | { readonly action: 'check' | 'focus' | 'hover' | 'scroll-into-view' | 'uncheck' }
+  | { readonly action: 'click'; readonly button: 'back' | 'forward' | 'left' | 'middle' | 'right'; readonly clickCount: number }
+  | {
+    readonly action: 'drag';
+    readonly button: 'back' | 'forward' | 'left' | 'middle' | 'right';
     readonly destinationElementHandleId?: string;
     readonly destinationLocator?: AutomationLocator;
-    readonly elementHandleId?: string;
-    readonly locator?: AutomationLocator;
-    readonly options?: JsonObject;
   }
+  | { readonly action: 'fill' | 'type'; readonly text: string }
+  | { readonly action: 'press'; readonly key: string }
+  | { readonly action: 'select-option'; readonly label: string }
+);
+
+export type AutomationOperation
+  = | (AutomationAction & {
+    readonly kind: 'action';
+  })
   | {
     readonly kind: 'find';
     readonly locator: AutomationLocator;
@@ -135,6 +153,10 @@ export interface AutomationCdpEvent {
 
 export interface AutomationProviderExecutionContext {
   readonly abortSignal: AbortSignal;
+  readonly authorityBindingId: string;
+  readonly connectionId: string;
+  readonly leaseId: string;
+  readonly logicalSessionId?: string;
   readonly principalId: string;
   readonly target: PublishedTarget;
   executeCdp: (

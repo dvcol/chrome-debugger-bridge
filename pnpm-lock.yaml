@@ -5,6 +5,10 @@ settings:
   excludeLinksFromLockfile: false
 
 catalogs:
+  automation:
+    playwright-core:
+      specifier: 1.62.1
+      version: 1.62.1
   build:
     '@dvcol/eslint-config':
       specifier: 1.8.6
@@ -254,6 +258,15 @@ importers:
       '@dvcol/cdb-websocket':
         specifier: workspace:*
         version: link:../../packages/websocket
+
+  packages/automation-playwright:
+    dependencies:
+      '@dvcol/cdb':
+        specifier: workspace:^
+        version: link:../core
+      playwright-core:
+        specifier: catalog:automation
+        version: 1.62.1
 
   packages/birpc:
     dependencies:

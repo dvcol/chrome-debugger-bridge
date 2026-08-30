@@ -16,6 +16,8 @@ catalog:
   '@modelcontextprotocol/server': 2.0.0
   birpc: ^4.0.0
 catalogs:
+  automation:
+    playwright-core: 1.62.1
   build:
     '@dvcol/eslint-config': 1.8.6
     '@prettier/plugin-xml': 3.4.2

@@ -909,6 +909,12 @@ export function createTargetBroker(
       };
     }
     const elementHandleId = resolveHandle(operation.elementHandleId);
+    if (operation.action !== 'drag') {
+      return {
+        ...operation,
+        ...(elementHandleId === undefined ? {} : { elementHandleId }),
+      };
+    }
     const destinationElementHandleId = resolveHandle(
       operation.destinationElementHandleId,
     );
@@ -1283,6 +1289,11 @@ export function createTargetBroker(
         request.targetGeneration,
         authority,
       );
+      const authorityBindingId = combinedTargetGrant(
+        authority,
+        target.id,
+        target.generation,
+      )?.bindingId ?? 'trusted-in-process';
       const lease = getActiveLease(request, authority);
       const requiredLevel = requiredAutomationLevel(request.operation);
       if (
@@ -1358,6 +1369,10 @@ export function createTargetBroker(
       automationEventListenersByTargetKey.set(targetKey, listenerRecords);
       const context = {
         abortSignal: abortController.signal,
+        authorityBindingId,
+        connectionId: authority.connectionId,
+        leaseId: lease.id,
+        ...(authority.logicalSessionId === undefined ? {} : { logicalSessionId: authority.logicalSessionId }),
         principalId: authority.principalId,
         target,
         async executeCdp(

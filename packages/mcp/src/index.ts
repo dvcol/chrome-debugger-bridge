@@ -3477,14 +3477,12 @@ function createCdbToolDefinitionsForSession(
               target,
               {
                 action: 'click',
+                button: input.button,
+                clickCount: input.clickCount,
                 ...automationElementTarget(sessionState, target, input),
                 kind: 'action',
-                options: {
-                  button: input.button,
-                  clickCount: input.clickCount,
-                  modifiers: input.modifiers,
-                  timeout: input.timeoutMilliseconds,
-                },
+                modifiers: input.modifiers,
+                timeoutMilliseconds: input.timeoutMilliseconds,
               },
               context.mcpReq.signal,
             );
@@ -3817,6 +3815,7 @@ function createCdbToolDefinitionsForSession(
             target,
             {
               action: 'drag',
+              button: input.button,
               ...(destination.elementHandleId === undefined
                 ? {}
                 : { destinationElementHandleId: destination.elementHandleId }),
@@ -3825,11 +3824,8 @@ function createCdbToolDefinitionsForSession(
                 : { destinationLocator: destination.locator }),
               ...source,
               kind: 'action',
-              options: {
-                button: input.button,
-                modifiers: input.modifiers,
-                timeout: input.timeoutMilliseconds,
-              },
+              modifiers: input.modifiers,
+              timeoutMilliseconds: input.timeoutMilliseconds,
             },
             context.mcpReq.signal,
           );
@@ -3965,21 +3961,36 @@ function createCdbToolDefinitionsForSession(
             const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
             const text = stringValue(property(input, 'text'));
             const key = stringValue(property(input, 'key'));
+            const targetInput = automationElementTarget(sessionState, target, input);
+            const operation: AutomationOperation = interaction === 'fill' || interaction === 'type'
+              ? {
+                  action: interaction,
+                  ...targetInput,
+                  kind: 'action',
+                  modifiers: input.modifiers,
+                  text: text ?? '',
+                  timeoutMilliseconds: input.timeoutMilliseconds,
+                }
+              : interaction === 'press'
+                ? {
+                    action: 'press',
+                    ...targetInput,
+                    key: key ?? '',
+                    kind: 'action',
+                    modifiers: input.modifiers,
+                    timeoutMilliseconds: input.timeoutMilliseconds,
+                  }
+                : {
+                    action: interaction,
+                    ...targetInput,
+                    kind: 'action',
+                    modifiers: input.modifiers,
+                    timeoutMilliseconds: input.timeoutMilliseconds,
+                  };
             const result = await executeRegisteredAutomation(
               client,
               target,
-              {
-                action: interaction,
-                ...automationElementTarget(sessionState, target, input),
-                kind: 'action',
-                options: {
-                  ...(key === undefined ? {} : { key }),
-                  modifiers: input.modifiers,
-                  ...(interaction === 'fill' && text !== undefined ? { value: text } : {}),
-                  ...(interaction === 'type' && text !== undefined ? { text } : {}),
-                  timeout: input.timeoutMilliseconds,
-                },
-              },
+              operation,
               context.mcpReq.signal,
             );
             return jsonContent(result.value);
@@ -4048,10 +4059,8 @@ function createCdbToolDefinitionsForSession(
                 action: desiredState ? 'check' : 'uncheck',
                 ...automationElementTarget(sessionState, target, input),
                 kind: 'action',
-                options: {
-                  modifiers: input.modifiers,
-                  timeout: input.timeoutMilliseconds,
-                },
+                modifiers: input.modifiers,
+                timeoutMilliseconds: input.timeoutMilliseconds,
               },
               context.mcpReq.signal,
             );
@@ -4108,10 +4117,8 @@ function createCdbToolDefinitionsForSession(
               action: 'select-option',
               ...automationElementTarget(sessionState, target, input),
               kind: 'action',
-              options: {
-                label: input.label,
-                timeout: input.timeoutMilliseconds,
-              },
+              label: input.label,
+              timeoutMilliseconds: input.timeoutMilliseconds,
             },
             context.mcpReq.signal,
           );

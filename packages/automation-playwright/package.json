@@ -1,0 +1,35 @@
+{
+  "name": "@dvcol/cdb-automation-playwright",
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Experimental Playwright automation provider for CDB embedding brokers.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dvcol/chrome-debugger-bridge.git",
+    "directory": "packages/automation-playwright"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsdown",
+    "lint": "eslint src test tsdown.config.ts vitest.config.ts --cache",
+    "pack": "pnpm pack --pack-destination artifacts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "verify:pack": "publint"
+  },
+  "dependencies": {
+    "@dvcol/cdb": "workspace:^",
+    "playwright-core": "catalog:automation"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

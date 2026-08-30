@@ -2216,6 +2216,8 @@ it('routes automation through one target-owner provider with scoped handles and 
       leaseId: lease.id,
       operation: {
         action: 'click',
+        button: 'left',
+        clickCount: 1,
         elementHandleId,
         kind: 'action',
       },
@@ -2301,7 +2303,7 @@ it('preserves structured automation-provider failures', async () => {
   const result = broker.executeAutomation(
     {
       leaseId: lease.id,
-      operation: { action: 'click', kind: 'action', locator: { role: 'button' } },
+      operation: { action: 'click', button: 'left', clickCount: 1, kind: 'action', locator: { role: 'button' } },
       operationId: '30000000-0000-4000-8000-000000000035',
       targetGeneration: target.generation,
       targetId: target.id,
@@ -2390,7 +2392,13 @@ it('fences automation cancellation, forbidden provider commands, replacement, an
   const pending = broker.executeAutomation(
     {
       leaseId: lease.id,
-      operation: { action: 'click', locator: { text: { exact: true, pattern: 'Save' } }, kind: 'action' },
+      operation: {
+        action: 'click',
+        button: 'left',
+        clickCount: 1,
+        kind: 'action',
+        locator: { text: { exact: true, pattern: 'Save' } },
+      },
       operationId: '30000000-0000-4000-8000-000000000033',
       targetGeneration: target.generation,
       targetId: target.id,
@@ -2415,7 +2423,13 @@ it('fences automation cancellation, forbidden provider commands, replacement, an
   await expect(broker.executeAutomation(
     {
       leaseId: lease.id,
-      operation: { action: 'click', kind: 'action', locator: { text: { pattern: 'Save' } } },
+      operation: {
+        action: 'click',
+        button: 'left',
+        clickCount: 1,
+        kind: 'action',
+        locator: { text: { pattern: 'Save' } },
+      },
       operationId: '30000000-0000-4000-8000-000000000034',
       targetGeneration: target.generation,
       targetId: target.id,
