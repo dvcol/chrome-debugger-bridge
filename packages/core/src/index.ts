@@ -88,6 +88,21 @@ export {
   type EmbeddedChromeDebuggerBridge,
   type EmbeddedChromeDebuggerBridgeClient,
 } from './embedded.js';
+export {
+  createGrantRequestCoordinator,
+  type CreateGrantRequestCoordinatorOptions,
+  defaultGrantRequestTimingPolicy,
+  type GrantedTargetReference,
+  type GrantRequest,
+  type GrantRequestChange,
+  type GrantRequestClaim,
+  type GrantRequestCoordinator,
+  GrantRequestError,
+  type GrantRequestInput,
+  type GrantRequestProvider,
+  type GrantRequestTargetDirectory,
+  type GrantRequestTimingPolicy,
+} from './grant-request.js';
 export * from './protocol.js';
 export {
   createLogicalSessionManager,

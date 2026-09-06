@@ -1,6 +1,15 @@
 export { type HeartbeatAgentConnection, sendAgentHeartbeat } from './agent-heartbeat.js';
 export { type AgentRecovery, type AgentRecoveryState, createAgentRecovery, type CreateAgentRecoveryOptions, type RecoverableAgentConnection } from './agent-recovery.js';
 export {
+  type ApprovalChannel,
+  type ApprovalChannelOptions,
+  type ApprovalChannelResult,
+  createApprovalChannel,
+  createExtensionApprovalSenderValidator,
+  type ExtensionApprovalSender,
+  type ExtensionApprovalSenderValidatorOptions,
+} from './approval-channel.js';
+export {
   type BirpcAgentBootstrap,
   type BirpcConnectionOffer,
   type BirpcOfferContentRelay,
@@ -45,4 +54,5 @@ export {
   type TabScopeLifecycle,
   type TabScopeLifecycleOptions,
 } from './tab-scope-lifecycle.js';
-export { matchesTabScope, type TabScopeSelector } from './tab-scope.js';
+export { createTabScopeManager, type TabScopeManager, type TabScopeManagerOptions } from './tab-scope-manager.js';
+export { matchesTabScope, parseTabScopeSelector, type TabScopeSelector } from './tab-scope.js';

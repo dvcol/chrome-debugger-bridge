@@ -28,6 +28,7 @@
     "@modelcontextprotocol/client": "catalog:",
     "@modelcontextprotocol/server": "catalog:",
     "@prettier/plugin-xml": "catalog:build",
+    "@types/chrome": "catalog:types",
     "@types/node": "catalog:types",
     "@vitest/browser-playwright": "catalog:testing",
     "@vitest/coverage-v8": "catalog:testing",

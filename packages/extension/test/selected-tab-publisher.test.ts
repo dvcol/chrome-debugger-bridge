@@ -6,6 +6,77 @@ import { createSelectedTabPublisher } from '../src/selected-tab-publisher.js';
 
 const scopeId = '40000000-0000-4000-8000-000000000001';
 
+it('publishes the target before forwarding child attachment events raised during debugger setup', async () => {
+  expect.assertions(3);
+  const publicationStarted = Promise.withResolvers<void>();
+  const publicationFinished = Promise.withResolvers<void>();
+  const events: string[] = [];
+  const publisher = createSelectedTabPublisher({
+    capabilities: { level: 'inspect' },
+    chromeDebugger: {
+      attach() {},
+      detach() {},
+      async sendCommand(target, method) {
+        if (method === 'Target.setAutoAttach' && target.sessionId === undefined) {
+          publisher.debuggerEvent({ tabId: 42 }, 'Target.attachedToTarget', {
+            sessionId: 'private-frame',
+            targetInfo: { targetId: 'frame', type: 'iframe' },
+          });
+        }
+        return {};
+      },
+    },
+    publishEvent(_target, method) {
+      events.push(method);
+    },
+    async publishTarget() {
+      publicationStarted.resolve();
+      await publicationFinished.promise;
+      events.push('target-published');
+    },
+    revokeTarget() {},
+    scopeId,
+    updateTarget() {},
+  });
+  const publishing = publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+  await publicationStarted.promise;
+  expect(events).toEqual([]);
+  publicationFinished.resolve();
+  await publishing;
+  expect(events).toEqual(['target-published', 'Bridge.childSessionAttached']);
+  await publisher.revoke();
+  publisher.publishEvent('Bridge.childSessionAttached', { type: 'iframe' });
+  expect(events).toHaveLength(2);
+});
+
+it('detaches the debugger even when notifying the host of revocation fails', async () => {
+  expect.assertions(2);
+  let attached = false;
+  const publisher = createSelectedTabPublisher({
+    capabilities: { level: 'inspect' },
+    chromeDebugger: {
+      attach() {
+        attached = true;
+      },
+      detach() {
+        attached = false;
+      },
+      async sendCommand() {
+        return {};
+      },
+    },
+    publishTarget() {},
+    revokeTarget() {
+      throw new Error('The provider transport disconnected.');
+    },
+    scopeId,
+    updateTarget() {},
+  });
+  await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+  await expect(publisher.revoke()).rejects.toThrow('provider transport disconnected');
+  expect(attached).toBe(false);
+});
+
 it('attaches one selected tab and publishes a redacted opaque target', async () => {
   expect.assertions(7);
   const attachedTabs: number[] = [];
@@ -529,4 +600,32 @@ it('replays active root domain demand for an eligible child session', async () =
   expect(sendCommand).toHaveBeenNthCalledWith(2, { sessionId: 'private-worker-session', tabId: 42 }, 'Target.setAutoAttach', { autoAttach: true, filter: [{ exclude: false, type: 'iframe' }, { exclude: false, type: 'service_worker' }, { exclude: false, type: 'shared_worker' }, { exclude: false, type: 'worker' }], flatten: true, waitForDebuggerOnStart: true });
   expect(sendCommand).toHaveBeenNthCalledWith(3, { sessionId: 'private-worker-session', tabId: 42 }, 'Runtime.enable');
   expect(sendCommand).toHaveBeenNthCalledWith(4, { sessionId: 'private-worker-session', tabId: 42 }, 'Runtime.runIfWaitingForDebugger');
+});
+
+it('rejects an oversized debugger result while retaining usable target authority', async () => {
+  expect.assertions(2);
+  let oversized = true;
+  const publisher = createSelectedTabPublisher({
+    capabilities: { level: 'inspect' },
+    chromeDebugger: {
+      attach() {},
+      detach() {},
+      async sendCommand(_target, method) {
+        return method === 'Accessibility.getFullAXTree' && oversized ? { value: 'x'.repeat(2_000) } : {};
+      },
+    },
+    maximumResultBytes: 1_024,
+    publishTarget() {},
+    revokeTarget() {},
+    scopeId,
+    updateTarget() {},
+  });
+  const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.com/' });
+  const lease: Lease = { id: crypto.randomUUID(), issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 30_000).toISOString(), methods: ['Accessibility.getFullAXTree'], mode: 'shared-read', targetId: target.id, targetGeneration: target.generation };
+  const command: CdpCommand = { leaseId: lease.id, method: 'Accessibility.getFullAXTree', operationId: crypto.randomUUID(), targetGeneration: target.generation, targetId: target.id };
+
+  await expect(publisher.executeCommand(command, new AbortController().signal, lease)).rejects.toThrow('CDB_RESULT_TOO_LARGE');
+  oversized = false;
+  await expect(publisher.executeCommand({ ...command, operationId: crypto.randomUUID() }, new AbortController().signal, lease)).resolves.toEqual({});
+  await publisher.revoke();
 });

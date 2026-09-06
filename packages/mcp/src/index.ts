@@ -25,6 +25,7 @@ import type {
   ServerResponse,
 } from 'node:http';
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 
@@ -38,11 +39,13 @@ import { z } from 'zod/v4';
 export const supportedMcpProtocolVersions = ['2026-07-28'] as const;
 export const supportedMcpSdkVersion = '2.0.0';
 const cdpMethodPattern = /^[A-Za-z]+\.[A-Za-z]+$/u;
+const detachedNodeMessagePattern = /No node with given|Could not find node|Node is detached/iu;
+const providerReferenceAnnotationPattern = /\[ref=([^\]]+)\]/gu;
 const elementReferencePattern = /^e[1-9]\d*$/u;
 const maximumArtifactReadBytes = 49_152;
 const maximumReadableSnapshotBytes = 16_777_216;
 const maximumSnapshotCharacters = 120_000;
-const maximumInteractiveSnapshotCharacters = 60_000;
+const maximumInteractiveSnapshotCharacters = 6_000;
 const maximumInputActionSteps = 120;
 const omittedTextElementNames = new Set(['noscript', 'script', 'style']);
 const whitespacePattern = /\s+/gu;
@@ -202,6 +205,8 @@ function toolError(error: unknown): CallToolResult {
     = error !== null && typeof error === 'object'
       ? (error as Record<string, unknown>)
       : {};
+  if (error instanceof Error && error.message.includes('CDB_RESULT_TOO_LARGE'))
+    return toolError(new McpToolError('MCP_SEARCH_INCOMPLETE', 'Debugger discovery exceeded the response size limit. Narrow the query or scope.', { reason: 'result-too-large' }));
   const payload = {
     code: typeof record.code === 'string' ? record.code : 'MCP_TOOL_FAILED',
     message:
@@ -478,6 +483,7 @@ async function readRetainedArtifact(
   input: { readonly targetGeneration: number; readonly targetId: string },
   retained: RetainedArtifactResult,
   signal: AbortSignal,
+  releaseLease = true,
 ): Promise<unknown> {
   const { artifact, lease } = retained;
   const chunks: Uint8Array[] = [];
@@ -500,7 +506,7 @@ async function readRetainedArtifact(
           leaseId: lease.id,
           range: {
             length: Math.min(
-              maximumArtifactReadBytes,
+              maximumReadableSnapshotBytes,
               artifact.length - offset,
             ),
             offset,
@@ -531,7 +537,7 @@ async function readRetainedArtifact(
       /** A disconnected provider may already have discarded the temporary artifact. */
     } finally {
       try {
-        await client.releaseLease({
+        if (releaseLease) await client.releaseLease({
           leaseId: lease.id,
           targetGeneration: input.targetGeneration,
           targetId: input.targetId,
@@ -760,7 +766,7 @@ async function executeInputAction(
   requestedMethods: readonly string[],
   signal: AbortSignal,
   action: (
-    execute: (method: string, parameters: JsonObject) => Promise<unknown>,
+    execute: (method: string, parameters: JsonObject, sessionOverride?: string | null) => Promise<unknown>,
     executeCleanup: (method: string, parameters: JsonObject) => Promise<void>,
     lease: Lease,
   ) => Promise<unknown>,
@@ -780,20 +786,22 @@ async function executeInputAction(
           targetId: input.targetId,
         }).catch(() => {});
       };
-      const execute = async (method: string, parameters: JsonObject): Promise<unknown> => {
+      const execute = async (method: string, parameters: JsonObject, sessionOverride?: string | null): Promise<unknown> => {
         if (signal.aborted)
           throw new McpToolError('MCP_WAIT_CANCELLED', 'The input action was cancelled.');
         activeOperationId = randomUUID();
         try {
-          return await client.executeCommand({
+          const result = await client.executeCommand({
             leaseId: lease.id,
             method,
             operationId: activeOperationId,
             parameters,
-            ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+            ...((sessionOverride === undefined ? input.sessionId : sessionOverride) == null ? {} : { sessionId: (sessionOverride ?? input.sessionId) }),
             targetGeneration: input.targetGeneration,
             targetId: input.targetId,
           });
+          const artifact = artifactFromCommandResult(result);
+          return artifact === undefined ? result : { value: await readRetainedArtifact(client, input, { artifact, lease }, signal, false) };
         } catch (error) {
           if (signal.aborted)
             throw new McpToolError('MCP_WAIT_CANCELLED', 'The input action was cancelled.');
@@ -1288,6 +1296,7 @@ interface AccessibilityCandidate extends NativeElementReference {
 }
 
 interface LocatorContext {
+  readonly frameId?: string;
   readonly rootBackendNodeId?: number;
   readonly sessionId?: string;
 }
@@ -1651,12 +1660,48 @@ function allocateProviderElements(
   }));
 }
 
+async function accessibilityFrameContexts(
+  client: McpChromeDebuggerBridgeClient,
+  target: PublishedTarget,
+  contexts: readonly LocatorContext[],
+  signal: AbortSignal,
+): Promise<LocatorContext[]> {
+  const output: LocatorContext[] = [];
+  const sessionFrames = new Set<string>();
+  for (const context of contexts) {
+    const result = commandResultValue(await executeSemanticCommand(client, { targetId: target.id, targetGeneration: target.generation, ...(context.sessionId === undefined ? {} : { sessionId: context.sessionId }) }, 'shared-read', 'Page.getFrameTree', {}, signal));
+    const tree = property(result, 'frameTree');
+    const rootFrameId = stringValue(property(property(tree, 'frame'), 'id'));
+    if (rootFrameId === undefined) {
+      output.push(context);
+      continue;
+    }
+    sessionFrames.add(rootFrameId);
+    const pending = [tree];
+    while (pending.length > 0) {
+      if (output.length >= 128) throw new McpToolError('MCP_SEARCH_INCOMPLETE', 'Frame discovery exceeded 128 frames. Narrow the scope.');
+      const current = pending.pop();
+      const frameId = stringValue(property(property(current, 'frame'), 'id'));
+      if (frameId !== undefined) output.push({ ...context, frameId });
+      pending.push(...arrayValue(property(current, 'childFrames')));
+    }
+  }
+  const ownedRoots = new Map<string, string | undefined>();
+  for (const context of output) {
+    if (context.frameId !== undefined && sessionFrames.has(context.frameId)) ownedRoots.set(context.frameId, context.sessionId);
+  }
+  return output.filter(context => context.frameId === undefined || !ownedRoots.has(context.frameId) || ownedRoots.get(context.frameId) === context.sessionId);
+}
+
+type ContainmentDocumentCache = Map<string, Promise<ReadonlyMap<number, number>>>;
+
 async function collectAccessibilityCandidates(
   client: McpChromeDebuggerBridgeClient,
   target: PublishedTarget,
   signal: AbortSignal,
   locator: SemanticLocatorStrategy,
   contexts?: readonly LocatorContext[],
+  containmentDocuments: ContainmentDocumentCache = new Map(),
 ): Promise<AccessibilityCandidate[]> {
   const authority = { targetGeneration: target.generation, targetId: target.id };
   const resolvedContexts = contexts ?? await (async (): Promise<LocatorContext[]> => {
@@ -1672,12 +1717,11 @@ async function collectAccessibilityCandidates(
       {},
       ...childSessionReferences(listedSessions)
         .filter(session => session.type === 'iframe')
-        .slice(0, 16)
         .map(session => ({ sessionId: session.id })),
     ];
   })();
   const candidates: AccessibilityCandidate[] = [];
-  for (const context of resolvedContexts) {
+  for (const context of contexts === undefined ? await accessibilityFrameContexts(client, target, resolvedContexts, signal) : resolvedContexts) {
     const sessionAuthority = {
       ...authority,
       ...(context.sessionId === undefined ? {} : { sessionId: context.sessionId }),
@@ -1685,7 +1729,7 @@ async function collectAccessibilityCandidates(
     const exactAccessibleName = [locator.name, locator.text, locator.label].find(
       matcher => matcher?.match === 'exact',
     )?.value;
-    const canQueryAccessibilityTree = locator.role !== undefined || exactAccessibleName !== undefined;
+    const canQueryAccessibilityTree = context.frameId === undefined && (locator.role !== undefined || exactAccessibleName !== undefined);
     const commandValue = canQueryAccessibilityTree
       ? await (async (): Promise<unknown> => {
           const documentValue = commandResultValue(await executeSemanticCommand(
@@ -1710,11 +1754,11 @@ async function collectAccessibilityCandidates(
             },
           );
         })()
-      : executeArtifactCommand(
+      : await executeArtifactCommand(
           client,
           sessionAuthority,
           'Accessibility.getFullAXTree',
-          {},
+          context.frameId === undefined ? {} : { frameId: context.frameId },
         );
     const contextCandidates = accessibilityCandidates(await readableCommandValue(
       client,
@@ -1738,7 +1782,7 @@ async function collectAccessibilityCandidates(
       targetId: target.id,
     };
     for (const candidate of contextCandidates)
-      if (await candidateContains(client, target, rootCandidate, candidate, signal)) candidates.push(candidate);
+      if (await candidateContains(client, target, rootCandidate, candidate, signal, containmentDocuments)) candidates.push(candidate);
   }
   return candidates;
 }
@@ -1785,12 +1829,96 @@ function locatorDomQuery(locator: SemanticLocatorStrategy): string | undefined {
   return undefined;
 }
 
+async function collectCssCandidates(
+  client: McpChromeDebuggerBridgeClient,
+  target: PublishedTarget,
+  query: string,
+  context: LocatorContext,
+  signal: AbortSignal,
+): Promise<AccessibilityCandidate[]> {
+  const authority = { targetId: target.id, targetGeneration: target.generation, ...(context.sessionId === undefined ? {} : { sessionId: context.sessionId }) };
+  return withLease(client, authority, 'shared-read', ['DOM.getDocument', 'DOM.getFlattenedDocument', 'DOM.querySelectorAll', 'Accessibility.getFullAXTree'], async (lease) => {
+    const execute = async (method: string, parameters: JsonObject): Promise<unknown> => {
+      if (signal.aborted) throw new McpToolError('MCP_WAIT_CANCELLED', 'CSS discovery was cancelled.');
+      const result = await client.executeCommand({ ...authority, leaseId: lease.id, operationId: randomUUID(), method, parameters });
+      const artifact = artifactFromCommandResult(result);
+      return artifact === undefined ? commandResultValue(result) : readRetainedArtifact(client, authority, { artifact, lease }, signal, false);
+    };
+    await execute('DOM.getDocument', { depth: 0, pierce: true });
+    /** Flat protocol nodes avoid chrome.debugger's recursive JSON conversion stack limit. */
+    const document = await execute('DOM.getFlattenedDocument', { depth: -1, pierce: true });
+    const nodes = new Map<number, unknown>();
+    const roots: number[] = [];
+    const pending = [...arrayValue(property(document, 'nodes'))];
+    const parents = new Map<number, number>();
+    let visited = 0;
+    while (pending.length > 0) {
+      if (++visited > 100_000)
+        throw new McpToolError('MCP_SEARCH_INCOMPLETE', 'CSS discovery exceeded 100,000 DOM nodes. Narrow the search scope.');
+      const node = pending.pop();
+      const nodeId = numberValue(property(node, 'nodeId'));
+      if (nodeId !== undefined) {
+        nodes.set(nodeId, node);
+        const parentId = numberValue(property(node, 'parentId'));
+        if (parentId !== undefined) parents.set(nodeId, parentId);
+        for (const root of arrayValue(property(node, 'shadowRoots'))) {
+          const rootId = numberValue(property(root, 'nodeId'));
+          if (rootId !== undefined) parents.set(rootId, nodeId);
+        }
+        if (property(node, 'nodeType') === 9 || ['open', 'closed'].includes(String(property(node, 'shadowRootType')))) roots.push(nodeId);
+      }
+      for (const key of ['children', 'contentDocument', 'shadowRoots', 'templateContent']) {
+        const children = property(node, key);
+        if (Array.isArray(children)) {
+          for (const child of children) pending.push(child);
+        } else if (children !== undefined) pending.push(children);
+      }
+    }
+    if (roots.length === 0)
+      throw new McpToolError('MCP_SEARCH_INCOMPLETE', 'Chrome did not return a searchable document. Refresh the target.', undefined, true);
+    const selected = new Set<number>();
+    for (const nodeId of roots) {
+      const result = await execute('DOM.querySelectorAll', { nodeId, selector: query });
+      for (const selectedId of arrayValue(property(result, 'nodeIds'))) {
+        if (typeof selectedId === 'number') selected.add(selectedId);
+      }
+    }
+    const accessibility = await execute('Accessibility.getFullAXTree', {});
+    const accessibleNodes = new Map(arrayValue(property(accessibility, 'nodes')).map(node => [numberValue(property(node, 'backendDOMNodeId')), node]));
+    const scopeNodeId = context.rootBackendNodeId === undefined ? undefined : numberValue(property([...nodes.values()].find(node => property(node, 'backendNodeId') === context.rootBackendNodeId), 'nodeId'));
+    if (context.rootBackendNodeId !== undefined && scopeNodeId === undefined)
+      throw new McpToolError('MCP_SEARCH_INCOMPLETE', 'The scoped document changed during discovery.');
+    const candidates: AccessibilityCandidate[] = [];
+    for (const nodeId of selected) {
+      const node = nodes.get(nodeId);
+      const backendNodeId = numberValue(property(node, 'backendNodeId'));
+      if (backendNodeId === undefined)
+        throw new McpToolError('MCP_SEARCH_INCOMPLETE', 'The document changed during CSS discovery. Refresh the search.', undefined, true);
+      if (scopeNodeId !== undefined) {
+        let ancestorId: number | undefined = nodeId;
+        const visitedAncestors = new Set<number>();
+        while (ancestorId !== undefined && ancestorId !== scopeNodeId && !visitedAncestors.has(ancestorId)) {
+          visitedAncestors.add(ancestorId);
+          ancestorId = parents.get(ancestorId);
+        }
+        if (ancestorId !== scopeNodeId) continue;
+      }
+      const accessibleNode = accessibleNodes.get(backendNodeId);
+      const name = accessibilityValue(property(accessibleNode, 'name'));
+      const nodeName = stringValue(property(node, 'nodeName'));
+      candidates.push({ attributes: domNodeAttributes(node), backendNodeId, generation: target.generation, ...(name === undefined ? {} : { name }), ...(nodeName === undefined ? {} : { nodeName }), role: accessibilityValue(property(accessibleNode, 'role')) ?? 'generic', ...(context.sessionId === undefined ? {} : { sessionId: context.sessionId }), targetId: target.id });
+    }
+    return candidates;
+  });
+}
+
 async function collectDomSearchCandidates(
   client: McpChromeDebuggerBridgeClient,
   target: PublishedTarget,
   locator: SemanticLocatorStrategy,
   signal: AbortSignal,
   contexts?: readonly LocatorContext[],
+  containmentDocuments: ContainmentDocumentCache = new Map(),
 ): Promise<AccessibilityCandidate[]> {
   const query = locatorDomQuery(locator);
   if (query === undefined) return [];
@@ -1808,12 +1936,15 @@ async function collectDomSearchCandidates(
       {},
       ...childSessionReferences(listedSessions)
         .filter(session => session.type === 'iframe')
-        .slice(0, 16)
         .map(session => ({ sessionId: session.id })),
     ];
   })();
   const candidates: AccessibilityCandidate[] = [];
   for (const context of resolvedContexts) {
+    if (locator.xpath === undefined) {
+      candidates.push(...await collectCssCandidates(client, target, query, context, signal));
+      continue;
+    }
     const sessionId = context.sessionId;
     const sessionAuthority = {
       ...authority,
@@ -1854,10 +1985,12 @@ async function collectDomSearchCandidates(
         const resultCount = numberValue(property(search, 'resultCount')) ?? 0;
         if (searchId === undefined || resultCount === 0) return;
         try {
+          if (resultCount > 10_000)
+            throw new McpToolError('MCP_SEARCH_INCOMPLETE', 'The search exceeded 10,000 candidates. Narrow the locator or its scope.', { resultCount });
           const results = commandResultValue(await execute('DOM.getSearchResults', {
             fromIndex: 0,
             searchId,
-            toIndex: Math.min(resultCount, 100),
+            toIndex: resultCount,
           }));
           for (const nodeIdValue of arrayValue(property(results, 'nodeIds'))) {
             const nodeId = numberValue(nodeIdValue);
@@ -1897,7 +2030,7 @@ async function collectDomSearchCandidates(
                 ...(sessionId === undefined ? {} : { sessionId }),
                 targetId: target.id,
               };
-              if (await candidateContains(client, target, rootCandidate, candidate, signal)) candidates.push(candidate);
+              if (await candidateContains(client, target, rootCandidate, candidate, signal, containmentDocuments)) candidates.push(candidate);
             }
           }
         } finally {
@@ -1919,13 +2052,14 @@ async function resolveLocatorCandidates(
   locator: SemanticLocator,
   signal: AbortSignal,
 ): Promise<AccessibilityCandidate[]> {
+  const containmentDocuments: ContainmentDocumentCache = new Map();
   const resolveStrategy = async (
     strategy: SemanticLocatorStrategy,
     contexts: readonly LocatorContext[],
   ): Promise<AccessibilityCandidate[]> => {
     const candidates = locatorDomQuery(strategy) === undefined
-      ? await collectAccessibilityCandidates(client, target, signal, strategy, contexts)
-      : await collectDomSearchCandidates(client, target, strategy, signal, contexts);
+      ? await collectAccessibilityCandidates(client, target, signal, strategy, contexts, containmentDocuments)
+      : await collectDomSearchCandidates(client, target, strategy, signal, contexts, containmentDocuments);
     return candidates.filter(candidate => matchesAccessibilityLocator(candidate, strategy));
   };
   let contexts: LocatorContext[] = [{}];
@@ -1997,7 +2131,7 @@ async function resolveLocatorCandidates(
     const descendantCandidates = await resolveStrategy(descendant, contexts);
     const retained: AccessibilityCandidate[] = [];
     for (const descendantCandidate of descendantCandidates) {
-      if (await anyCandidateContains(client, target, candidates, [descendantCandidate], signal))
+      if (await anyCandidateContains(client, target, candidates, [descendantCandidate], signal, containmentDocuments))
         retained.push(descendantCandidate);
     }
     candidates = retained;
@@ -2006,7 +2140,7 @@ async function resolveLocatorCandidates(
     const requiredDescendants = await resolveStrategy(locator.has, contexts);
     const retained: AccessibilityCandidate[] = [];
     for (const candidate of candidates) {
-      if (await anyCandidateContains(client, target, [candidate], requiredDescendants, signal))
+      if (await anyCandidateContains(client, target, [candidate], requiredDescendants, signal, containmentDocuments))
         retained.push(candidate);
     }
     candidates = retained;
@@ -2015,7 +2149,7 @@ async function resolveLocatorCandidates(
     const excluded = await resolveStrategy(locator.exclude, contexts);
     const retained: AccessibilityCandidate[] = [];
     for (const candidate of candidates) {
-      const containsExcluded = await anyCandidateContains(client, target, [candidate], excluded, signal);
+      const containsExcluded = await anyCandidateContains(client, target, [candidate], excluded, signal, containmentDocuments);
       const isExcluded = excluded.some(excludedCandidate => sameElement(candidate, excludedCandidate));
       if (!containsExcluded && !isExcluded) retained.push(candidate);
     }
@@ -2027,7 +2161,7 @@ async function resolveLocatorCandidates(
     for (const candidate of candidates) {
       if (
         matchesText(candidate.name, locator.hasText)
-        || await anyCandidateContains(client, target, [candidate], textCandidates, signal)
+        || await anyCandidateContains(client, target, [candidate], textCandidates, signal, containmentDocuments)
       ) retained.push(candidate);
     }
     candidates = retained;
@@ -2038,7 +2172,7 @@ async function resolveLocatorCandidates(
     for (const candidate of candidates) {
       if (
         !matchesText(candidate.name, locator.hasNotText)
-        && !await anyCandidateContains(client, target, [candidate], excludedTextCandidates, signal)
+        && !await anyCandidateContains(client, target, [candidate], excludedTextCandidates, signal, containmentDocuments)
       ) retained.push(candidate);
     }
     candidates = retained;
@@ -2065,18 +2199,33 @@ function sameElement(first: NativeElementReference, second: NativeElementReferen
     && first.targetId === second.targetId;
 }
 
-function collectBackendNodeIds(value: unknown, output = new Set<number>()): Set<number> {
-  const backendNodeId = numberValue(property(value, 'backendNodeId'));
-  if (backendNodeId !== undefined) output.add(backendNodeId);
-  for (const key of ['children', 'contentDocument', 'pseudoElements', 'shadowRoots', 'templateContent']) {
-    const childValue = property(value, key);
-    if (Array.isArray(childValue)) {
-      for (const child of childValue) collectBackendNodeIds(child, output);
-    } else if (childValue !== undefined) {
-      collectBackendNodeIds(childValue, output);
+function documentParentGraph(document: unknown): ReadonlyMap<number, number> {
+  const backendIdentifiers = new Map<number, number>();
+  const frontendParents = new Map<number, number>();
+  const pending: Array<{ readonly node: unknown; readonly parentNodeId?: number }> = arrayValue(property(document, 'nodes')).map(node => ({ node }));
+  let visited = 0;
+  while (pending.length > 0) {
+    if (++visited > 100_000) throw new McpToolError('MCP_SEARCH_INCOMPLETE', 'Subtree discovery exceeded 100,000 DOM nodes. Narrow the scope.');
+    const entry = pending.pop();
+    if (entry === undefined) break;
+    const nodeId = numberValue(property(entry.node, 'nodeId'));
+    const backendNodeId = numberValue(property(entry.node, 'backendNodeId'));
+    if (nodeId === undefined || backendNodeId === undefined) continue;
+    backendIdentifiers.set(nodeId, backendNodeId);
+    const parentId = entry.parentNodeId ?? numberValue(property(entry.node, 'parentId'));
+    if (parentId !== undefined) frontendParents.set(nodeId, parentId);
+    for (const key of ['children', 'contentDocument', 'pseudoElements', 'shadowRoots', 'templateContent']) {
+      const children = property(entry.node, key);
+      for (const child of Array.isArray(children) ? arrayValue(children) : children === undefined ? [] : [children]) pending.push({ node: child, parentNodeId: nodeId });
     }
   }
-  return output;
+  const parents = new Map<number, number>();
+  for (const [nodeId, parentId] of frontendParents) {
+    const backendNodeId = backendIdentifiers.get(nodeId);
+    const parentBackendNodeId = backendIdentifiers.get(parentId);
+    if (backendNodeId !== undefined && parentBackendNodeId !== undefined) parents.set(backendNodeId, parentBackendNodeId);
+  }
+  return parents;
 }
 
 async function candidateContains(
@@ -2085,23 +2234,41 @@ async function candidateContains(
   ancestor: AccessibilityCandidate,
   descendant: AccessibilityCandidate,
   signal: AbortSignal,
+  containmentDocuments: ContainmentDocumentCache = new Map(),
 ): Promise<boolean> {
   if (ancestor.sessionId !== descendant.sessionId) return false;
   if (sameElement(ancestor, descendant)) return false;
-  const result = await executeSemanticCommand(
-    client,
-    {
+  const contextKey = ancestor.sessionId ?? '';
+  let documentParents = containmentDocuments.get(contextKey);
+  if (documentParents === undefined) {
+    const authority = {
       ...(ancestor.sessionId === undefined ? {} : { sessionId: ancestor.sessionId }),
       targetGeneration: target.generation,
       targetId: target.id,
-    },
-    'shared-read',
-    'DOM.describeNode',
-    { backendNodeId: ancestor.backendNodeId, depth: -1, pierce: true },
-    signal,
-  );
-  const node = property(commandResultValue(result), 'node');
-  return collectBackendNodeIds(node).has(descendant.backendNodeId);
+    };
+    documentParents = withLease(client, authority, 'shared-read', ['DOM.getDocument', 'DOM.getFlattenedDocument'], async (lease) => {
+      const execute = async (method: string, parameters: JsonObject): Promise<unknown> => {
+        if (signal.aborted) throw new McpToolError('MCP_WAIT_CANCELLED', 'Subtree discovery was cancelled.');
+        const result = await client.executeCommand({ ...authority, leaseId: lease.id, method, operationId: randomUUID(), parameters });
+        const artifact = artifactFromCommandResult(result);
+        return artifact === undefined ? commandResultValue(result) : readRetainedArtifact(client, authority, { artifact, lease }, signal, false);
+      };
+      await execute('DOM.getDocument', { depth: 0, pierce: true });
+      const document = await execute('DOM.getFlattenedDocument', { depth: -1, pierce: true });
+      return documentParentGraph(document);
+    });
+    containmentDocuments.set(contextKey, documentParents);
+  }
+  const parents = await documentParents;
+  const visited = new Set<number>();
+  let parentId = parents.get(descendant.backendNodeId);
+  while (parentId !== undefined) {
+    if (parentId === ancestor.backendNodeId) return true;
+    if (visited.has(parentId)) throw new McpToolError('MCP_SEARCH_INCOMPLETE', 'The document changed during subtree discovery.');
+    visited.add(parentId);
+    parentId = parents.get(parentId);
+  }
+  return false;
 }
 
 async function anyCandidateContains(
@@ -2110,10 +2277,11 @@ async function anyCandidateContains(
   ancestors: readonly AccessibilityCandidate[],
   descendants: readonly AccessibilityCandidate[],
   signal: AbortSignal,
+  containmentDocuments: ContainmentDocumentCache = new Map(),
 ): Promise<boolean> {
   for (const ancestor of ancestors) {
     for (const descendant of descendants) {
-      if (await candidateContains(client, target, ancestor, descendant, signal)) return true;
+      if (await candidateContains(client, target, ancestor, descendant, signal, containmentDocuments)) return true;
     }
   }
   return false;
@@ -2150,6 +2318,85 @@ function accessibilityProperty(node: unknown, name: string): unknown {
   return property(property(matchingProperty, 'value'), 'value');
 }
 
+const ancestorFrameMethods = ['Bridge.listChildSessions', 'Page.getFrameTree', 'Page.getLayoutMetrics', 'DOM.getFrameOwner', 'DOM.getBoxModel', 'DOM.getNodeForLocation'] as const;
+
+async function assertElementHit(
+  backendNodeId: number,
+  hitBackendNodeId: number | undefined,
+  execute: (method: string, parameters: JsonObject) => Promise<unknown>,
+): Promise<void> {
+  if (hitBackendNodeId === backendNodeId) return;
+  if (hitBackendNodeId !== undefined) {
+    await execute('DOM.getDocument', { depth: 0, pierce: true });
+    const parents = documentParentGraph(commandResultValue(await execute('DOM.getFlattenedDocument', { depth: -1, pierce: true })));
+    const visited = new Set<number>();
+    let parentId = parents.get(hitBackendNodeId);
+    while (parentId !== undefined) {
+      if (parentId === backendNodeId) return;
+      if (visited.has(parentId)) throw new McpToolError('MCP_SEARCH_INCOMPLETE', 'The document changed during the input hit test.');
+      visited.add(parentId);
+      parentId = parents.get(parentId);
+    }
+  }
+  throw new McpToolError('MCP_ELEMENT_COVERED', 'Another element covers the requested element.', undefined, true);
+}
+
+async function assertAncestorFrameHit(
+  element: NativeElementReference,
+  point: ViewportPoint,
+  execute: (method: string, parameters: JsonObject, sessionOverride?: string | null) => Promise<unknown>,
+): Promise<void> {
+  if (element.sessionId === undefined) return;
+  const sessions = childSessionReferences(await execute('Bridge.listChildSessions', {}, null)).filter(session => session.type === 'iframe');
+  const frameContexts = new Map<string, { parentId?: string; sessionId?: string }>();
+  const rootFrames = new Map<string, string>();
+  for (const sessionId of [undefined, ...sessions.map(session => session.id)]) {
+    const tree = commandResultValue(await execute('Page.getFrameTree', {}, sessionId ?? null));
+    const pending = [property(tree, 'frameTree')];
+    const rootId = stringValue(property(property(pending[0], 'frame'), 'id'));
+    if (sessionId !== undefined && rootId !== undefined) rootFrames.set(sessionId, rootId);
+    while (pending.length > 0) {
+      const current = pending.pop();
+      const frame = property(current, 'frame');
+      const frameId = stringValue(property(frame, 'id'));
+      const parentId = stringValue(property(frame, 'parentId')) ?? (frameId === undefined ? undefined : frameContexts.get(frameId)?.parentId);
+      if (frameId !== undefined) frameContexts.set(frameId, { ...(parentId === undefined ? {} : { parentId }), ...(sessionId === undefined ? {} : { sessionId }) });
+      pending.push(...arrayValue(property(current, 'childFrames')));
+    }
+  }
+  let frameId = rootFrames.get(element.sessionId);
+  if (frameId === undefined) throw new McpToolError('MCP_ELEMENT_DETACHED', 'The containing frame is no longer attached.');
+  let mappedPoint = point;
+  const visited = new Set<string>();
+  while (frameId !== undefined) {
+    if (visited.has(frameId)) throw new McpToolError('MCP_SEARCH_INCOMPLETE', 'Chrome returned an incomplete ancestor frame chain.');
+    visited.add(frameId);
+    const frame = frameContexts.get(frameId);
+    if (frame?.parentId === undefined) break;
+    const parent = frameContexts.get(frame.parentId);
+    if (parent === undefined) throw new McpToolError('MCP_SEARCH_INCOMPLETE', 'The ancestor frame could not be resolved.');
+    const owner = commandResultValue(await execute('DOM.getFrameOwner', { frameId }, parent.sessionId ?? null));
+    const backendNodeId = numberValue(property(owner, 'backendNodeId'));
+    if (backendNodeId === undefined) throw new McpToolError('MCP_ELEMENT_DETACHED', 'The ancestor frame element is detached.');
+    const box = commandResultValue(await execute('DOM.getBoxModel', { backendNodeId }, parent.sessionId ?? null));
+    const quad = arrayValue(property(property(box, 'model'), 'content')).map(value => typeof value === 'number' && Number.isFinite(value) ? value : undefined);
+    const viewport = commandResultValue(await execute('Page.getLayoutMetrics', {}, frame.sessionId ?? null));
+    const layout = property(viewport, 'cssLayoutViewport') ?? property(viewport, 'layoutViewport');
+    const width = numberValue(property(layout, 'clientWidth'));
+    const height = numberValue(property(layout, 'clientHeight'));
+    if (quad.length !== 8 || quad.includes(undefined) || !width || !height)
+      throw new McpToolError('MCP_ELEMENT_HIDDEN', 'The containing frame has no visible geometry.', undefined, true);
+    const [left = 0, top = 0, right = 0, rightTop = 0, , , bottomLeft = 0, bottom = 0] = quad;
+    mappedPoint = { x: left + mappedPoint.x / width * (right - left) + mappedPoint.y / height * (bottomLeft - left), y: top + mappedPoint.x / width * (rightTop - top) + mappedPoint.y / height * (bottom - top) };
+    const parentViewport = commandResultValue(await execute('Page.getLayoutMetrics', {}, parent.sessionId ?? null));
+    const parentLayout = property(parentViewport, 'cssLayoutViewport') ?? property(parentViewport, 'layoutViewport');
+    const hit = commandResultValue(await execute('DOM.getNodeForLocation', { x: Math.round(mappedPoint.x + (numberValue(property(parentLayout, 'pageX')) ?? 0)), y: Math.round(mappedPoint.y + (numberValue(property(parentLayout, 'pageY')) ?? 0)), includeUserAgentShadowDOM: false }, parent.sessionId ?? null));
+    if (property(hit, 'backendNodeId') !== backendNodeId && property(hit, 'frameId') !== frameId)
+      throw new McpToolError('MCP_ELEMENT_COVERED', 'An ancestor frame is covered by another element.', undefined, true);
+    frameId = frame.parentId;
+  }
+}
+
 async function executeElementClick(
   client: McpChromeDebuggerBridgeClient,
   target: PublishedTarget,
@@ -2173,10 +2420,13 @@ async function executeElementClick(
     [
       'Accessibility.getPartialAXTree',
       'DOM.describeNode',
+      'DOM.getDocument',
+      'DOM.getFlattenedDocument',
       'DOM.getContentQuads',
       'DOM.getNodeForLocation',
       'DOM.scrollIntoViewIfNeeded',
       'Input.dispatchMouseEvent',
+      ...ancestorFrameMethods,
     ],
     signal,
     async (execute, executeCleanup) => {
@@ -2185,11 +2435,11 @@ async function executeElementClick(
       while (point === undefined) {
         let retryableError: McpToolError | undefined;
         try {
-          const describedElement = commandResultValue(await execute('DOM.describeNode', {
+          await execute('DOM.describeNode', {
             backendNodeId: element.backendNodeId,
-            depth: -1,
+            depth: 0,
             pierce: true,
-          }));
+          });
           const accessibility = commandResultValue(await execute('Accessibility.getPartialAXTree', {
             backendNodeId: element.backendNodeId,
             fetchRelatives: false,
@@ -2198,32 +2448,34 @@ async function executeElementClick(
           if (accessibilityProperty(accessibilityNode, 'disabled') === true)
             throw new McpToolError('MCP_ELEMENT_DISABLED', 'The element is disabled.', undefined, true);
           await execute('DOM.scrollIntoViewIfNeeded', { backendNodeId: element.backendNodeId });
+          const viewport = commandResultValue(await execute('Page.getLayoutMetrics', {}));
+          const layout = property(viewport, 'cssLayoutViewport') ?? property(viewport, 'layoutViewport');
+          const viewportWidth = numberValue(property(layout, 'clientWidth')) ?? Number.MAX_SAFE_INTEGER;
+          const viewportHeight = numberValue(property(layout, 'clientHeight')) ?? Number.MAX_SAFE_INTEGER;
           const firstGeometry = await execute('DOM.getContentQuads', { backendNodeId: element.backendNodeId });
           await waitForInputStep(50, signal);
           const secondGeometry = await execute('DOM.getContentQuads', { backendNodeId: element.backendNodeId });
-          const firstPoint = contentQuadPoint(firstGeometry, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
-          const candidatePoint = contentQuadPoint(secondGeometry, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+          const firstPoint = contentQuadPoint(firstGeometry, viewportWidth, viewportHeight);
+          const candidatePoint = contentQuadPoint(secondGeometry, viewportWidth, viewportHeight);
           if (firstPoint === undefined || candidatePoint === undefined)
             throw new McpToolError('MCP_ELEMENT_HIDDEN', 'The element has no visible geometry.', undefined, true);
           if (firstPoint.x !== candidatePoint.x || firstPoint.y !== candidatePoint.y)
             throw new McpToolError('MCP_ELEMENT_UNSTABLE', 'The element geometry is still moving.', undefined, true);
           const hitResult = commandResultValue(await execute('DOM.getNodeForLocation', {
             includeUserAgentShadowDOM: false,
-            x: candidatePoint.x,
-            y: candidatePoint.y,
+            x: candidatePoint.x + (numberValue(property(layout, 'pageX')) ?? 0),
+            y: candidatePoint.y + (numberValue(property(layout, 'pageY')) ?? 0),
           }));
           const hitBackendNodeId = numberValue(property(hitResult, 'backendNodeId'));
-          if (
-            hitBackendNodeId !== element.backendNodeId
-            && (hitBackendNodeId === undefined
-              || !collectBackendNodeIds(property(describedElement, 'node')).has(hitBackendNodeId))
-          )
-            throw new McpToolError('MCP_ELEMENT_COVERED', 'Another element covers the requested element.', undefined, true);
+          await assertElementHit(element.backendNodeId, hitBackendNodeId, execute);
+          await assertAncestorFrameHit(element, candidatePoint, execute);
           point = candidatePoint;
         } catch (error) {
           if (error instanceof McpToolError && error.retryable)
             retryableError = error;
-          else if (property(error, 'code') === 'TARGET_GENERATION_STALE')
+          else if (property(error, 'code') === 'CDP_COMMAND_FAILED' && detachedNodeMessagePattern.test(error instanceof Error ? error.message : String(property(error, 'message'))))
+            throw new McpToolError('MCP_ELEMENT_DETACHED', 'The element is detached from the current document.');
+          else if (error instanceof McpToolError || property(error, 'code') !== undefined)
             throw error;
           else
             throw new McpToolError('MCP_ELEMENT_DETACHED', 'The element is detached from the current document.');
@@ -2263,6 +2515,7 @@ async function executeElementClick(
           buttonPressed = false;
         }
       } catch (error) {
+        if (error instanceof McpToolError && error.code === 'MCP_ACTION_VERIFICATION_FAILED') throw error;
         if (inputDispatched)
           throw new McpToolError('MCP_ACTION_OUTCOME_UNKNOWN', 'Input may have been dispatched before the action failed. The action was not replayed.');
         throw error;
@@ -2277,7 +2530,7 @@ async function executeElementClick(
           });
         }
       }
-      return results;
+      return { clicked: true };
     },
   );
 }
@@ -2340,16 +2593,29 @@ async function resolveSemanticElementWithRetry(
 async function executeWithRenewedLocatorRetry<Value>(
   client: McpChromeDebuggerBridgeClient,
   state: CdbToolSessionState,
-  input: { readonly locator?: SemanticLocator | undefined; readonly targetRef: string },
+  input: { readonly locator?: SemanticLocator | undefined; readonly ref?: string | undefined; readonly targetRef: string; readonly timeoutMilliseconds?: number },
   action: (target: PublishedTarget) => Promise<Value>,
 ): Promise<Value> {
-  const attempt = async (): Promise<Value> => action(await resolveSemanticTarget(client, state, input.targetRef));
-  try {
-    return await attempt();
-  } catch (error) {
-    if (input.locator === undefined || property(error, 'code') !== 'TARGET_GENERATION_STALE') throw error;
-    return attempt();
+  const deadline = Date.now() + (input.timeoutMilliseconds ?? 10_000);
+  while (true) {
+    try {
+      return await action(await resolveSemanticTarget(client, state, input.targetRef));
+    } catch (error) {
+      const code = property(error, 'code');
+      if (input.ref !== undefined && code === 'MCP_ELEMENT_DETACHED') {
+        state.elementReferences.delete(input.ref);
+        throw new McpToolError('MCP_ELEMENT_REF_STALE', `Element reference ${input.ref} is stale. Capture a new snapshot.`);
+      }
+      if (input.locator === undefined || !['TARGET_GENERATION_STALE', 'MCP_ELEMENT_DETACHED'].includes(String(code)) || Date.now() >= deadline) throw error;
+    }
   }
+}
+
+function keyboardParameters(key: string): JsonObject {
+  const namedKeys: Readonly<Record<string, number>> = { 'ArrowDown': 40, 'ArrowLeft': 37, 'ArrowRight': 39, 'ArrowUp': 38, 'Backspace': 8, 'Delete': 46, 'End': 35, 'Enter': 13, 'Escape': 27, 'Home': 36, 'PageDown': 34, 'PageUp': 33, ' ': 32, 'Space': 32, 'Tab': 9 };
+  const normalizedKey = key === 'Space' ? ' ' : key;
+  const virtualKeyCode = namedKeys[key] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : undefined);
+  return { key: normalizedKey, ...(virtualKeyCode === undefined ? {} : { windowsVirtualKeyCode: virtualKeyCode, nativeVirtualKeyCode: virtualKeyCode }), ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : key.length === 1 ? { text: key, unmodifiedText: key } : {}) };
 }
 
 type ElementInteraction
@@ -2372,8 +2638,11 @@ async function executeElementInteraction(
     || interaction.kind === 'press'
     || interaction.kind === 'type';
   const methods = [
+    ...ancestorFrameMethods,
     'Accessibility.getPartialAXTree',
     'DOM.describeNode',
+    'DOM.getDocument',
+    'DOM.getFlattenedDocument',
     'DOM.getContentQuads',
     'DOM.scrollIntoViewIfNeeded',
     ...(needsPointer ? ['DOM.getNodeForLocation', 'Input.dispatchMouseEvent'] : []),
@@ -2396,11 +2665,11 @@ async function executeElementInteraction(
       while (point === undefined) {
         let retryableError: McpToolError | undefined;
         try {
-          const describedElement = commandResultValue(await execute('DOM.describeNode', {
+          await execute('DOM.describeNode', {
             backendNodeId: element.backendNodeId,
-            depth: -1,
+            depth: 0,
             pierce: true,
-          }));
+          });
           const accessibility = commandResultValue(await execute('Accessibility.getPartialAXTree', {
             backendNodeId: element.backendNodeId,
             fetchRelatives: false,
@@ -2412,36 +2681,40 @@ async function executeElementInteraction(
           ) throw new McpToolError('MCP_ELEMENT_DISABLED', 'The element is disabled.', undefined, true);
           if (
             (interaction.kind === 'fill' || interaction.kind === 'type')
-            && accessibilityProperty(accessibilityNode, 'editable') !== true
-            && !['searchbox', 'textbox'].includes(accessibilityValue(property(accessibilityNode, 'role')) ?? '')
+            && (accessibilityProperty(accessibilityNode, 'readonly') === true
+              || (!['plaintext', 'richtext', true].includes(accessibilityProperty(accessibilityNode, 'editable') as string | boolean)
+                && !['searchbox', 'textbox'].includes(accessibilityValue(property(accessibilityNode, 'role')) ?? '')))
           ) throw new McpToolError('MCP_ELEMENT_NOT_EDITABLE', 'The element does not accept text.', undefined, true);
           await execute('DOM.scrollIntoViewIfNeeded', { backendNodeId: element.backendNodeId });
+          const viewport = commandResultValue(await execute('Page.getLayoutMetrics', {}));
+          const layout = property(viewport, 'cssLayoutViewport') ?? property(viewport, 'layoutViewport');
+          const viewportWidth = numberValue(property(layout, 'clientWidth')) ?? Number.MAX_SAFE_INTEGER;
+          const viewportHeight = numberValue(property(layout, 'clientHeight')) ?? Number.MAX_SAFE_INTEGER;
           const firstGeometry = await execute('DOM.getContentQuads', { backendNodeId: element.backendNodeId });
           await waitForInputStep(50, signal);
           const secondGeometry = await execute('DOM.getContentQuads', { backendNodeId: element.backendNodeId });
-          const firstPoint = contentQuadPoint(firstGeometry, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
-          const candidatePoint = contentQuadPoint(secondGeometry, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+          const firstPoint = contentQuadPoint(firstGeometry, viewportWidth, viewportHeight);
+          const candidatePoint = contentQuadPoint(secondGeometry, viewportWidth, viewportHeight);
           if (firstPoint === undefined || candidatePoint === undefined)
             throw new McpToolError('MCP_ELEMENT_HIDDEN', 'The element has no visible geometry.', undefined, true);
           if (firstPoint.x !== candidatePoint.x || firstPoint.y !== candidatePoint.y)
             throw new McpToolError('MCP_ELEMENT_UNSTABLE', 'The element geometry is still moving.', undefined, true);
-          if (needsPointer) {
+          if (needsPointer || needsFocus) {
             const hitResult = commandResultValue(await execute('DOM.getNodeForLocation', {
               includeUserAgentShadowDOM: false,
-              x: candidatePoint.x,
-              y: candidatePoint.y,
+              x: candidatePoint.x + (numberValue(property(layout, 'pageX')) ?? 0),
+              y: candidatePoint.y + (numberValue(property(layout, 'pageY')) ?? 0),
             }));
             const hitBackendNodeId = numberValue(property(hitResult, 'backendNodeId'));
-            if (
-              hitBackendNodeId !== element.backendNodeId
-              && (hitBackendNodeId === undefined
-                || !collectBackendNodeIds(property(describedElement, 'node')).has(hitBackendNodeId))
-            ) throw new McpToolError('MCP_ELEMENT_COVERED', 'Another element covers the requested element.', undefined, true);
+            await assertElementHit(element.backendNodeId, hitBackendNodeId, execute);
           }
+          await assertAncestorFrameHit(element, candidatePoint, execute);
           point = candidatePoint;
         } catch (error) {
           if (error instanceof McpToolError && error.retryable) retryableError = error;
-          else if (property(error, 'code') === 'TARGET_GENERATION_STALE') throw error;
+          else if (property(error, 'code') === 'CDP_COMMAND_FAILED' && detachedNodeMessagePattern.test(error instanceof Error ? error.message : String(property(error, 'message'))))
+            throw new McpToolError('MCP_ELEMENT_DETACHED', 'The element is detached from the current document.');
+          else if (error instanceof McpToolError || property(error, 'code') !== undefined) throw error;
           else throw new McpToolError('MCP_ELEMENT_DETACHED', 'The element is detached from the current document.');
         }
         if (point === undefined) {
@@ -2461,7 +2734,11 @@ async function executeElementInteraction(
           throw new McpToolError('MCP_ACTION_OUTCOME_UNKNOWN', 'Pointer input may have been dispatched before the action failed. The action was not replayed.');
         }
       }
-      await execute('DOM.focus', { backendNodeId: element.backendNodeId });
+      try {
+        await execute('DOM.focus', { backendNodeId: element.backendNodeId });
+      } catch {
+        throw new McpToolError('MCP_ACTION_OUTCOME_UNKNOWN', 'Focus may have been dispatched before the action failed. It was not replayed.');
+      }
       if (interaction.kind === 'focus') return { focused: true };
       let inputDispatched = false;
       try {
@@ -2485,7 +2762,12 @@ async function executeElementInteraction(
             keyPressed = true;
             await execute('Input.dispatchKeyEvent', { key: 'Backspace', type: 'keyUp' });
             keyPressed = false;
-            return await execute('Input.insertText', { text: interaction.text });
+            await execute('Input.insertText', { text: interaction.text });
+            const verification = commandResultValue(await execute('Accessibility.getPartialAXTree', { backendNodeId: element.backendNodeId, fetchRelatives: false }));
+            const value = accessibilityValue(property(arrayValue(property(verification, 'nodes'))[0], 'value'));
+            if (value !== interaction.text)
+              throw new McpToolError('MCP_ACTION_VERIFICATION_FAILED', 'The filled value did not match the requested value. Inspect the control before taking another action.');
+            return { filled: true };
           } finally {
             if (keyPressed)
               await executeCleanup('Input.dispatchKeyEvent', { key: 'Unidentified', type: 'keyUp' });
@@ -2498,7 +2780,7 @@ async function executeElementInteraction(
           const encodedModifiers = encodeInputModifiers(modifiers);
           inputDispatched = true;
           await execute('Input.dispatchKeyEvent', {
-            key: interaction.key,
+            ...keyboardParameters(interaction.key),
             modifiers: encodedModifiers,
             type: 'keyDown',
           });
@@ -2515,6 +2797,7 @@ async function executeElementInteraction(
             await executeCleanup('Input.dispatchKeyEvent', { key: interaction.key, type: 'keyUp' });
         }
       } catch (error) {
+        if (error instanceof McpToolError && error.code === 'MCP_ACTION_VERIFICATION_FAILED') throw error;
         if (inputDispatched)
           throw new McpToolError('MCP_ACTION_OUTCOME_UNKNOWN', 'Input may have been dispatched before the action failed. The action was not replayed.');
         throw error;
@@ -2528,7 +2811,7 @@ async function elementCheckedState(
   target: PublishedTarget,
   element: NativeElementReference,
   signal: AbortSignal,
-): Promise<boolean | undefined> {
+): Promise<boolean | 'mixed' | undefined> {
   const result = await executeSemanticCommand(
     client,
     {
@@ -2543,7 +2826,7 @@ async function elementCheckedState(
   );
   const node = arrayValue(property(commandResultValue(result), 'nodes'))[0];
   const checked = accessibilityProperty(node, 'checked');
-  return typeof checked === 'boolean' ? checked : undefined;
+  return checked === 'mixed' ? 'mixed' : checked === true || checked === 'true' ? true : checked === false || checked === 'false' ? false : undefined;
 }
 
 async function elementCenterPoint(
@@ -2579,12 +2862,27 @@ async function elementCenterPoint(
   return point;
 }
 
+interface AccessibilitySnapshotBudget {
+  remainingCharacters: number;
+  remainingNodes: number;
+  truncated: boolean;
+}
+
+const snapshotTruncationNotice = '… snapshot truncated. Use a scoped snapshot, browser.find, or a larger explicit budget to expand.';
+
+function boundSnapshotText(value: string, maximumCharacters: number): string {
+  if (value.length <= maximumCharacters) return value;
+  const limit = maximumCharacters - snapshotTruncationNotice.length - 1;
+  const lastLine = value.lastIndexOf('\n', limit);
+  return `${lastLine < 0 ? '' : value.slice(0, lastLine)}\n${snapshotTruncationNotice}`;
+}
+
 function formatAccessibilityTree(
   value: unknown,
   options: {
+    readonly budget: AccessibilitySnapshotBudget;
     readonly generation: number;
     readonly maximumDepth: number;
-    readonly maximumNodes: number;
     readonly mode: 'accessibility' | 'interactive';
     readonly sessionId?: string;
     readonly state: CdbToolSessionState;
@@ -2605,20 +2903,44 @@ function formatAccessibilityTree(
   const roots = [...nodesById.entries()]
     .filter(([nodeId]) => !childNodeIds.has(nodeId))
     .map(([, node]) => node);
+  const pending = roots.reverse().map(node => ({ depth: 0, node }));
+  const visited = new Set<unknown>();
   const lines: string[] = [];
-  let renderedNodes = 0;
-  const visit = (node: unknown, depth: number): void => {
-    if (renderedNodes >= options.maximumNodes || depth > options.maximumDepth)
-      return;
+  while (pending.length > 0) {
+    const { node, depth } = pending.pop()!;
+    if (visited.has(node)) continue;
+    visited.add(node);
     const ignored = property(node, 'ignored') === true;
     const role = accessibilityValue(property(node, 'role')) ?? 'generic';
     const name = accessibilityValue(property(node, 'name'));
     const backendNodeId = numberValue(property(node, 'backendDOMNodeId'));
     const actionable = interactiveAccessibilityRoles.has(role) && backendNodeId !== undefined;
-    if (!ignored && (options.mode === 'accessibility' || actionable)) {
-      const reference = actionable
-        ? `e${options.state.nextElementReference}`
-        : undefined;
+    const contextual = ['heading', 'alert', 'status', 'dialog', 'navigation', 'region'].includes(role)
+      && name !== undefined && name.length > 0;
+    const rendered = !ignored && (options.mode === 'accessibility' || actionable || contextual);
+    if (rendered) {
+      if (options.budget.remainingNodes === 0 || (options.mode === 'accessibility' && depth > options.maximumDepth)) {
+        options.budget.truncated = true;
+        if (options.budget.remainingNodes === 0) break;
+        continue;
+      }
+      const reference = actionable ? `e${options.state.nextElementReference}` : undefined;
+      const accessibleName = name === undefined || name.length === 0 ? '' : ` ${JSON.stringify(name)}`;
+      const state: string[] = [];
+      const controlValue = accessibilityValue(property(node, 'value'));
+      if (controlValue !== undefined && controlValue.length > 0) state.push(`value=${JSON.stringify(controlValue)}`);
+      for (const propertyName of ['checked', 'expanded', 'selected', 'pressed']) {
+        const propertyValue = accessibilityProperty(node, propertyName);
+        if (propertyValue !== undefined) state.push(`[${propertyName}=${String(propertyValue)}]`);
+      }
+      for (const propertyName of ['disabled', 'readonly', 'required', 'focused']) {
+        if (accessibilityProperty(node, propertyName) === true) state.push(`[${propertyName}]`);
+      }
+      const line = `${'  '.repeat(Math.min(depth, options.maximumDepth))}- ${role}${accessibleName}${state.length === 0 ? '' : ` ${state.join(' ')}`}${reference === undefined ? '' : ` [ref=${reference}]`}`;
+      if (line.length + 1 > options.budget.remainingCharacters) {
+        options.budget.truncated = true;
+        break;
+      }
       if (reference !== undefined && backendNodeId !== undefined) {
         options.state.nextElementReference += 1;
         options.state.elementReferences.set(reference, {
@@ -2628,18 +2950,16 @@ function formatAccessibilityTree(
           targetId: options.targetId,
         });
       }
-      const accessibleName = name === undefined || name.length === 0
-        ? ''
-        : ` ${JSON.stringify(name)}`;
-      lines.push(`${'  '.repeat(depth)}- ${role}${accessibleName}${reference === undefined ? '' : ` [ref=${reference}]`}`);
-      renderedNodes += 1;
+      lines.push(line);
+      options.budget.remainingNodes -= 1;
+      options.budget.remainingCharacters -= line.length + 1;
     }
-    for (const childId of arrayValue(property(node, 'childIds'))) {
+    for (const childId of [...arrayValue(property(node, 'childIds'))].reverse()) {
       const child = nodesById.get(stringValue(childId) ?? '');
-      if (child !== undefined) visit(child, ignored ? depth : depth + 1);
+      if (child !== undefined) pending.push({ depth: depth + (rendered ? 1 : 0), node: child });
     }
-  };
-  for (const root of roots) visit(root, 0);
+  }
+  if (visited.size < nodesById.size) options.budget.truncated = true;
   return lines.length === 0 ? '(no matching accessibility nodes)' : lines.join('\n');
 }
 
@@ -2657,9 +2977,12 @@ function createCdbToolDefinitionsForSession(
       context: { readonly mcpReq: { readonly signal: AbortSignal } },
     ) => Promise<CallToolResult>,
   ): void => {
+    const inputSchema = z.toJSONSchema(config.inputSchema, { io: 'input', reused: 'ref' });
+    /** Keep SDK discovery compact while retaining Zod's complete runtime validation. */
+    Object.defineProperty(config.inputSchema, '~standard', { value: { ...config.inputSchema['~standard'], jsonSchema: { input: () => inputSchema, output: () => inputSchema } } });
     definitions.push({
       description: config.description,
-      inputSchema: z.toJSONSchema(config.inputSchema, { io: 'input' }),
+      inputSchema,
       async invoke(input, context = { signal: new AbortController().signal }) {
         if (sessionState.disposed)
           return toolError(new McpToolError('MCP_TOOL_SESSION_DISPOSED', 'The browser tool session has been disposed.'));
@@ -2672,10 +2995,19 @@ function createCdbToolDefinitionsForSession(
   };
   const timing = resolveMcpTimingPolicy(options.timing);
   const rawClient = options.client;
+  const batchLease = new AsyncLocalStorage<Lease>();
   const cancelAutomation = rawClient.cancelAutomation;
   const executeAutomation = rawClient.executeAutomation;
   const client: McpChromeDebuggerBridgeClient = {
     async acquireLease(request) {
+      const activeLease = batchLease.getStore();
+      if (activeLease !== undefined) {
+        if (request.targetId !== activeLease.targetId || request.targetGeneration !== activeLease.targetGeneration)
+          throw new McpToolError('MCP_BATCH_AUTHORITY_REPLACED', 'Target authority changed during the batch.');
+        if (request.requestedMethods.some(method => !activeLease.methods.includes(method)))
+          throw new McpToolError('MCP_BATCH_METHOD_UNAVAILABLE', 'The batch action requested an unavailable command.');
+        return activeLease;
+      }
       return rawClient.acquireLease({ ...request, durationMilliseconds: timing.semanticLeaseDurationMilliseconds });
     },
     ...(cancelAutomation === undefined ? {} : { cancelAutomation: async request => cancelAutomation(request) }),
@@ -2685,7 +3017,9 @@ function createCdbToolDefinitionsForSession(
     listTargets: async () => rawClient.listTargets(),
     readArtifact: async (request, signal) => rawClient.readArtifact(request, signal),
     releaseArtifact: async request => rawClient.releaseArtifact(request),
-    releaseLease: async request => rawClient.releaseLease(request),
+    releaseLease: async (request) => {
+      if (batchLease.getStore()?.id !== request.leaseId) await rawClient.releaseLease(request);
+    },
     renewLease: async request => rawClient.renewLease(request),
     subscribe: async request => rawClient.subscribe(request),
     watchTargets: () => rawClient.watchTargets(),
@@ -2869,14 +3203,15 @@ function createCdbToolDefinitionsForSession(
               : { role: stringValue(property(element.metadata, 'role')) }),
           })));
         }
-        const matches = (await resolveLocatorCandidates(client, target, input.locator, context.mcpReq.signal))
+        const candidates = await resolveLocatorCandidates(client, target, input.locator, context.mcpReq.signal);
+        const matches = candidates
           .slice(0, input.maximumMatches)
           .map(candidate => ({
             ...(candidate.name === undefined ? {} : { name: candidate.name }),
             ref: allocateElementReference(sessionState, candidate),
             role: candidate.role,
           }));
-        return jsonContent(matches);
+        return jsonContent(candidates.length > input.maximumMatches ? { matches, totalMatches: candidates.length, truncated: true } : matches);
       } catch (error) {
         return toolError(error);
       }
@@ -3178,14 +3513,20 @@ function createCdbToolDefinitionsForSession(
       inputSchema: z.object({
         targetRef: z.string().regex(targetReferencePattern),
         mode: z.enum(['interactive', 'accessibility', 'dom']).default('interactive'),
-        maximumDepth: z.number().int().nonnegative().max(50).default(20),
+        maximumCharacters: z.number().int().min(256).max(maximumSnapshotCharacters).optional(),
+        root: z.union([z.object({ ref: z.string().regex(elementReferencePattern) }).strict(), z.object({ locator: locatorSchema }).strict()]).optional(),
+        maximumDepth: z.number().int().nonnegative().max(1_000).default(20),
         maximumNodes: z.number().int().positive().max(5_000).optional(),
       }),
     },
     async (input, context) => {
       try {
         const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        if (input.root !== undefined && (useRegisteredAutomation || input.mode === 'dom'))
+          throw new McpToolError('MCP_SNAPSHOT_SCOPE_UNSUPPORTED', 'Scoped snapshots require native interactive or accessibility mode.');
+        const root = input.root === undefined ? undefined : await resolveSemanticElement(client, sessionState, target, input.root, context.mcpReq.signal);
         const maximumNodes = input.maximumNodes ?? (input.mode === 'interactive' ? 500 : 1_500);
+        const maximumCharacters = input.maximumCharacters ?? (input.mode === 'interactive' ? maximumInteractiveSnapshotCharacters : maximumSnapshotCharacters);
         const targetAuthority = { targetGeneration: target.generation, targetId: target.id };
         for (const [reference, element] of sessionState.elementReferences) {
           if (element.targetId === target.id)
@@ -3206,16 +3547,12 @@ function createCdbToolDefinitionsForSession(
           const allocated = allocateProviderElements(sessionState, target, result.elements);
           const snapshot = stringValue(property(result.value, 'snapshot'));
           if (snapshot === undefined) return jsonContent(result.value);
-          let projectedSnapshot = snapshot;
-          for (const { element, ref } of allocated) {
-            const providerReference = stringValue(property(element.metadata, 'providerReference'));
-            if (providerReference !== undefined)
-              projectedSnapshot = projectedSnapshot.split(providerReference).join(ref);
-          }
-          return textContent(projectedSnapshot.slice(
-            0,
-            input.mode === 'interactive' ? maximumInteractiveSnapshotCharacters : maximumSnapshotCharacters,
-          ));
+          const references = new Map(allocated.map(({ element, ref }) => [stringValue(property(element.metadata, 'providerReference')), ref]));
+          const projectedSnapshot = snapshot.replace(providerReferenceAnnotationPattern, (_annotation, providerReference: string) => {
+            const reference = references.get(providerReference);
+            return reference === undefined ? '' : `[ref=${reference}]`;
+          });
+          return textContent(boundSnapshotText(projectedSnapshot, maximumCharacters));
         }
         const listedSessions = await executeSemanticCommand(
           client,
@@ -3226,16 +3563,16 @@ function createCdbToolDefinitionsForSession(
           context.mcpReq.signal,
         );
         const iframeSessions = childSessionReferences(listedSessions)
-          .filter(session => session.type === 'iframe')
-          .slice(0, 16);
+          .filter(session => session.type === 'iframe');
         if (input.mode !== 'dom') {
           const accessibilityMode = input.mode;
-          const captureAccessibility = async (sessionId?: string): Promise<string> => {
+          const budget: AccessibilitySnapshotBudget = { remainingCharacters: Math.max(0, maximumCharacters - snapshotTruncationNotice.length - 128), remainingNodes: maximumNodes, truncated: false };
+          const captureAccessibility = async (sessionId?: string, frameId?: string): Promise<string> => {
             const commandValue = await executeArtifactCommand(
               client,
               { ...targetAuthority, ...(sessionId === undefined ? {} : { sessionId }) },
-              'Accessibility.getFullAXTree',
-              {},
+              root === undefined ? 'Accessibility.getFullAXTree' : 'Accessibility.queryAXTree',
+              root === undefined ? (frameId === undefined ? {} : { frameId }) : { backendNodeId: root.backendNodeId },
             );
             return formatAccessibilityTree(await readableCommandValue(
               client,
@@ -3243,22 +3580,27 @@ function createCdbToolDefinitionsForSession(
               commandValue,
               context.mcpReq.signal,
             ), {
+              budget,
               generation: target.generation,
               maximumDepth: input.maximumDepth,
-              maximumNodes,
               mode: accessibilityMode,
               ...(sessionId === undefined ? {} : { sessionId }),
               state: sessionState,
               targetId: target.id,
             });
           };
-          const sections = [`# Root session\n${await captureAccessibility()}`];
-          for (const session of iframeSessions)
-            sections.push(`# Frame session\n${await captureAccessibility(session.id)}`);
-          return textContent(sections.join('\n\n').slice(
-            0,
-            input.mode === 'interactive' ? maximumInteractiveSnapshotCharacters : maximumSnapshotCharacters,
-          ));
+          const contexts = root === undefined ? await accessibilityFrameContexts(client, target, [{}, ...iframeSessions.map(session => ({ sessionId: session.id }))], context.mcpReq.signal) : [{ ...(root.sessionId === undefined ? {} : { sessionId: root.sessionId }) }];
+          const sections: string[] = [];
+          for (const [index, frame] of contexts.entries()) {
+            if (budget.remainingNodes === 0 || budget.remainingCharacters < 128) {
+              budget.truncated = true;
+              break;
+            }
+            sections.push(`# ${root !== undefined ? 'Scoped subtree' : index === 0 ? 'Root session' : 'Frame session'}\n${await captureAccessibility(frame.sessionId, 'frameId' in frame ? frame.frameId : undefined)}`);
+            budget.remainingCharacters -= 18;
+          }
+          if (budget.truncated) sections.push(snapshotTruncationNotice);
+          return textContent(boundSnapshotText(sections.join('\n\n'), maximumCharacters));
         }
         const capture = async (
           maximumNodes: number,
@@ -3310,7 +3652,7 @@ function createCdbToolDefinitionsForSession(
           );
         }
         return textContent(
-          sections.join('\n\n').slice(0, maximumSnapshotCharacters),
+          boundSnapshotText(sections.join('\n\n'), maximumCharacters),
         );
       } catch (error) {
         return toolError(error);
@@ -3321,23 +3663,23 @@ function createCdbToolDefinitionsForSession(
     'browser.screenshot',
     {
       description:
-        'Capture a screenshot, returning the bridge inline-or-artifact result without base64 expansion.',
+        'Capture a screenshot as image content. Debug sessions preserve the inline-or-artifact protocol result.',
       inputSchema: z.object({
         format: z.enum(['jpeg', 'png', 'webp']).default('png'),
         targetRef: z.string().regex(targetReferencePattern),
       }),
     },
-    async (input) => {
+    async (input, context) => {
       try {
         const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
-        return jsonContent(
-          await executeArtifactCommand(
-            client,
-            { targetGeneration: target.generation, targetId: target.id },
-            'Page.captureScreenshot',
-            { format: input.format },
-          ),
-        );
+        const authority = { targetGeneration: target.generation, targetId: target.id };
+        const result = await executeArtifactCommand(client, authority, 'Page.captureScreenshot', { format: input.format });
+        if (enableRawCdp) return jsonContent(result);
+        const retained = retainedArtifactResult(result);
+        const value = retained === undefined ? result : await readRetainedArtifact(client, authority, retained, context.mcpReq.signal);
+        const data = stringValue(property(value, 'data'));
+        if (data === undefined) throw new McpToolError('MCP_SCREENSHOT_INVALID', 'Chrome returned no screenshot image data.');
+        return { content: [{ type: 'image', data, mimeType: `image/${input.format}` }] };
       } catch (error) {
         return toolError(error);
       }
@@ -3538,17 +3880,10 @@ function createCdbToolDefinitionsForSession(
             return jsonContent((await automationAttempt()).value);
           }
         }
-        const attempt = async (): Promise<unknown> => {
-          const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        return jsonContent(await executeWithRenewedLocatorRetry(client, sessionState, input, async (target) => {
           const element = await resolveSemanticElementWithRetry(client, sessionState, target, input, context.mcpReq.signal);
           return executeElementClick(client, target, element, input, context.mcpReq.signal);
-        };
-        try {
-          return jsonContent(await attempt());
-        } catch (error) {
-          if (input.locator === undefined || property(error, 'code') !== 'TARGET_GENERATION_STALE') throw error;
-          return jsonContent(await attempt());
-        }
+        }));
       } catch (error) {
         return toolError(error);
       }
@@ -4132,7 +4467,15 @@ function createCdbToolDefinitionsForSession(
                 modifiers: input.modifiers,
                 timeoutMilliseconds: input.timeoutMilliseconds,
               }, context.mcpReq.signal);
-              return { changed: true, checked: desiredState };
+              let verifiedState: boolean | 'mixed' | undefined;
+              try {
+                verifiedState = await elementCheckedState(client, target, element, context.mcpReq.signal);
+              } catch {
+                throw new McpToolError('MCP_ACTION_OUTCOME_UNKNOWN', 'The check action was dispatched but its resulting state could not be read. It was not replayed.');
+              }
+              if (verifiedState !== desiredState)
+                throw new McpToolError('MCP_ACTION_VERIFICATION_FAILED', 'The control did not reach the requested checked state. Inspect it before taking another action.');
+              return { changed: true, checked: verifiedState };
             },
           ));
         } catch (error) {
@@ -4141,6 +4484,95 @@ function createCdbToolDefinitionsForSession(
       },
     );
   }
+  register(
+    'browser.batch',
+    {
+      description: 'Run up to 20 ordered element actions on one target under one lease. Stops on failure, cancellation, authority or document replacement. Never rolls back or replays input.',
+      inputSchema: z.object({
+        targetRef: z.string().regex(targetReferencePattern),
+        actions: z.array(z.strictObject({
+          action: z.enum(['click', 'fill', 'type', 'press', 'check', 'uncheck', 'focus', 'hover', 'scroll-into-view']),
+          ref: z.string().regex(elementReferencePattern).optional(),
+          locator: locatorSchema.optional(),
+          text: z.string().max(20_000).optional(),
+          key: z.string().max(100).optional(),
+          modifiers: inputModifiersSchema,
+          button: pointerButtonSchema.optional(),
+          clickCount: z.number().int().min(1).max(3).optional(),
+        }).refine(hasExactlyOneElementTarget, { message: 'Each action requires exactly one ref or locator.' })).min(1).max(20),
+        observe: z.boolean().default(false),
+        timeoutMilliseconds: z.number().int().min(1).max(30_000).default(30_000),
+      }),
+    },
+    async (input, context) => {
+      const completed: { index: number; action: string }[] = [];
+      const cancellation = new AbortController();
+      const signal = AbortSignal.any([context.mcpReq.signal, cancellation.signal]);
+      const timeout = setTimeout(() => cancellation.abort(new McpToolError('MCP_BATCH_TIMEOUT', 'The batch exceeded its total deadline.')), input.timeoutMilliseconds);
+      timeout.unref?.();
+      const subscriptions: CdpSubscription[] = [];
+      let acquiredLease: Lease | undefined;
+      const deadline = Date.now() + input.timeoutMilliseconds;
+      try {
+        if (useRegisteredAutomation) throw new McpToolError('MCP_BATCH_PROVIDER_UNSUPPORTED', 'Batches currently require the native engine.');
+        const steps = await Promise.all(input.actions.map(async ({ action, ...parameters }) => {
+          const definition = definitions.find(candidate => candidate.name === `browser.${action === 'scroll-into-view' ? 'scroll_into_view' : action}`);
+          if (definition === undefined) throw new McpToolError('MCP_BATCH_ACTION_UNSUPPORTED', 'The requested batch action is unavailable.');
+          const parsed = await definition.mcpInputSchema.parseAsync({ ...parameters, targetRef: input.targetRef });
+          return { action, definition, parameters: parsed };
+        }));
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        const authority = { targetId: target.id, targetGeneration: target.generation };
+        acquiredLease = await rawClient.acquireLease({ ...authority, mode: 'exclusive-control', durationMilliseconds: input.timeoutMilliseconds, requestedMethods: [...new Set([...ancestorFrameMethods, 'Accessibility.getPartialAXTree', 'Accessibility.getFullAXTree', 'Accessibility.queryAXTree', 'DOM.describeNode', 'DOM.getContentQuads', 'DOM.getDocument', 'DOM.getFlattenedDocument', 'DOM.querySelectorAll', 'DOM.performSearch', 'DOM.getSearchResults', 'DOM.discardSearchResults', 'DOM.scrollIntoViewIfNeeded', 'DOM.focus', 'Input.dispatchMouseEvent', 'Input.dispatchKeyEvent', 'Input.insertText', 'Page.frameNavigated', 'DOM.documentUpdated'])] });
+        const lease = acquiredLease;
+        return await batchLease.run(lease, async () => {
+          const sessions = childSessionReferences(await executeSemanticCommand(client, authority, 'shared-read', 'Bridge.listChildSessions', {}, signal)).filter(session => session.type === 'iframe');
+          for (const sessionId of [undefined, ...sessions.map(session => session.id)]) {
+            for (const method of ['Page.frameNavigated', 'DOM.documentUpdated']) {
+              const subscription = await client.subscribe({ ...authority, leaseId: lease.id, match: { method }, ...(sessionId === undefined ? {} : { sessionId }), buffer: { capacity: 1, overflowStrategy: 'drop-oldest' } });
+              subscriptions.push(subscription);
+              void subscription[Symbol.asyncIterator]().next().then((event) => {
+                if (!event.done) cancellation.abort(new McpToolError('MCP_BATCH_DOCUMENT_REPLACED', 'A document was replaced during the batch.'));
+              }).catch(() => cancellation.abort(new McpToolError('MCP_BATCH_AUTHORITY_REPLACED', 'The batch event channel closed.')));
+            }
+          }
+          for (const [index, step] of steps.entries()) {
+            if (signal.aborted) throw signal.reason;
+            const currentTarget = await resolveSemanticTarget(client, sessionState, input.targetRef);
+            if (currentTarget.generation !== target.generation) throw new McpToolError('MCP_BATCH_AUTHORITY_REPLACED', 'Target authority changed during the batch.');
+            const result = await step.definition.invoke({ ...step.parameters, timeoutMilliseconds: Math.max(1, deadline - Date.now()) }, { signal });
+            if (result.isError) {
+              const content = result.content.find(item => item.type === 'text');
+              const error = content?.type === 'text' ? JSON.parse(content.text) as Record<string, unknown> : { code: 'MCP_TOOL_FAILED' };
+              return { ...jsonContent({ completed, failedStep: index, error, ...(error.code === 'MCP_ACTION_OUTCOME_UNKNOWN' ? { uncertain: true } : {}), ...(signal.aborted ? { stopped: property(signal.reason, 'code') ?? 'MCP_WAIT_CANCELLED' } : {}) }), isError: true };
+            }
+            completed.push({ index, action: step.action });
+          }
+          if (signal.aborted) throw signal.reason;
+          if (input.observe) {
+            const snapshot = definitions.find(definition => definition.name === 'browser.snapshot');
+            const observation = await snapshot?.invoke({ targetRef: input.targetRef }, { signal });
+            if (observation?.isError) return { ...jsonContent({ completed, observation }), isError: true };
+            const content = observation?.content.find(item => item.type === 'text');
+            return jsonContent({ completed, observation: content?.type === 'text' ? content.text : undefined });
+          }
+          return jsonContent({ completed });
+        });
+      } catch (error) {
+        const failure = toolError(signal.aborted ? signal.reason : error);
+        const content = failure.content.find(item => item.type === 'text');
+        return { ...jsonContent({ completed, failedStep: completed.length, error: content?.type === 'text' ? JSON.parse(content.text) as unknown : undefined }), isError: true };
+      } finally {
+        clearTimeout(timeout);
+        for (const subscription of subscriptions) subscription.close();
+        if (acquiredLease !== undefined) {
+          try {
+            await rawClient.releaseLease({ leaseId: acquiredLease.id, targetId: acquiredLease.targetId, targetGeneration: acquiredLease.targetGeneration });
+          } catch { /** A revoked lease needs no further cleanup. */ }
+        }
+      }
+    },
+  );
   register(
     'browser.select_option',
     {
@@ -4408,7 +4840,8 @@ function createCdbToolDefinitionsForSession(
       }
     },
   );
-  return definitions;
+  const diagnosticTools = new Set(['browser.acquire', 'browser.renew', 'browser.release', 'browser.release_artifact', 'browser.read_artifact', 'browser.evaluate', 'browser.network_body', 'browser.console', 'browser.network']);
+  return enableRawCdp ? definitions : definitions.filter(definition => !diagnosticTools.has(definition.name));
 }
 
 /** Creates one stateful semantic tool session owned by an MCP principal. */

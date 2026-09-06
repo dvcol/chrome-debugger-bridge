@@ -60,7 +60,7 @@ it('keeps authority epochs out of every semantic input schema', () => {
   expect(rawCdpSchema.includes('targetGeneration') && rawCdpSchema.includes('targetId')).toBe(true);
 });
 
-it('bounds the default interactive snapshot while keeping short actionable refs', async () => {
+it('bounds an expanded interactive snapshot while keeping short actionable refs', async () => {
   expect.assertions(5);
   const nodes = Array.from({ length: 2_000 }, (_value, index) => ({
     backendDOMNodeId: index + 1,
@@ -90,7 +90,7 @@ it('bounds the default interactive snapshot while keeping short actionable refs'
   const snapshot = session.definitions.find(definition => definition.name === 'browser.snapshot');
   if (targetRef === undefined || snapshot === undefined) throw new Error('browser.snapshot is missing.');
 
-  const result = await snapshot.invoke({ targetRef });
+  const result = await snapshot.invoke({ maximumCharacters: 60_000, targetRef });
   const snapshotText = text(result);
 
   expect(result.isError).toBeUndefined();
@@ -330,7 +330,7 @@ it('reads an artifact-backed accessibility tree before formatting the interactiv
   expect(result.isError).toBeUndefined();
   expect(text(result)).toContain('- link "Experiments" [ref=e1]');
   expect(releasedArtifacts).toEqual(['accessibility-tree']);
-  expect(releasedLeases).toHaveLength(2);
+  expect(releasedLeases).toHaveLength(3);
   expect(releasedLeases.every(leaseId => leaseId === '017c10a7-e0af-40ec-879f-cd87dffaf036')).toBe(true);
 });
 
@@ -347,8 +347,10 @@ it('supports the core Playwright-style locator strategies and XPath through DOM 
       if (command.method === 'Bridge.listChildSessions') return { value: { sessions: [] } };
       if (command.method === 'Accessibility.queryAXTree' || command.method === 'Accessibility.getFullAXTree')
         return { value: { nodes: [{ backendDOMNodeId: 7, childIds: [], ignored: false, name: { value: 'Save' }, nodeId: 'save', role: { value: 'button' } }] } };
-      if (command.method === 'DOM.getDocument')
-        return { value: { root: { backendNodeId: 1, shadowRoots: [{ shadowRootType: 'open' }, { shadowRootType: 'closed' }] } } };
+      if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
+      if (command.method === 'DOM.getFlattenedDocument')
+        return { value: { nodes: [{ nodeId: 1, nodeType: 9, backendNodeId: 1, children: [{ nodeId: 70, backendNodeId: 7, nodeName: 'BUTTON', attributes: ['placeholder', 'Search', 'alt', 'Hero', 'title', 'Save title', 'data-testid', 'save'] }], shadowRoots: [{ nodeId: 2, shadowRootType: 'open' }, { nodeId: 3, shadowRootType: 'closed' }] }] } };
+      if (command.method === 'DOM.querySelectorAll') return { value: { nodeIds: [70] } };
       if (command.method === 'DOM.performSearch') return { value: { resultCount: 1, searchId: 'search-1' } };
       if (command.method === 'DOM.getSearchResults') return { value: { nodeIds: [70] } };
       if (command.method === 'DOM.describeNode')
@@ -370,7 +372,7 @@ it('supports the core Playwright-style locator strategies and XPath through DOM 
     { name: { match: 'exact', value: 'Save' }, role: 'button' },
     { text: { match: 'substring', value: 'Sav' } },
     { label: { flags: 'i', match: 'regex', pattern: '^save$' } },
-    { css: 'app-shell >>> button.save' },
+    { css: 'button.save' },
     { placeholder: { match: 'exact', value: 'Search' } },
     { altText: { match: 'exact', value: 'Hero' } },
     { title: { match: 'exact', value: 'Save title' } },
@@ -386,7 +388,7 @@ it('supports the core Playwright-style locator strategies and XPath through DOM 
 
   expect(references).toEqual(['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7', 'e8', 'e9']);
   expect(commands.filter(command => command.method === 'DOM.getDocument').every(command =>
-    command.parameters?.depth === 0 && command.parameters.pierce === true)).toBe(true);
+    [0, -1].includes(Number(command.parameters?.depth)) && command.parameters?.pierce === true)).toBe(true);
   expect(commands.filter(command => command.method === 'DOM.performSearch').every(command =>
     command.parameters?.includeUserAgentShadowDOM === false)).toBe(true);
   expect(commands.some(command => command.method === 'DOM.performSearch'
@@ -462,8 +464,8 @@ it('scopes locators through a same-process iframe document', async () => {
       }
       if (command.method === 'DOM.describeNode' && command.parameters?.backendNodeId === 20)
         return { value: { node: { backendNodeId: 20, contentDocument: { backendNodeId: 25 }, nodeName: 'IFRAME' } } };
-      if (command.method === 'DOM.describeNode' && command.parameters?.backendNodeId === 25)
-        return { value: { node: { backendNodeId: 25, children: [{ backendNodeId: 30 }] } } };
+      if (command.method === 'DOM.getFlattenedDocument')
+        return { value: { nodes: [{ nodeId: 25, backendNodeId: 25, children: [{ nodeId: 30, backendNodeId: 30 }] }] } };
       return { value: {} };
     },
     async listTargets() {
@@ -491,7 +493,8 @@ it('scopes locators through a same-process iframe document', async () => {
 });
 
 it('applies descendant, has-text, exclusion, and nth filters against DOM ancestry', async () => {
-  expect.assertions(6);
+  expect.assertions(7);
+  let containmentReads = 0;
   const client = {
     async acquireLease(request: { readonly requestedMethods: readonly string[] }) {
       return lease(request.requestedMethods);
@@ -511,14 +514,15 @@ it('applies descendant, has-text, exclusion, and nth filters against DOM ancestr
             ],
           },
         };
-      if (command.method === 'DOM.describeNode') {
-        const backendNodeId = command.parameters?.backendNodeId;
-        const children = backendNodeId === 10
-          ? [{ backendNodeId: 11 }, { backendNodeId: 12 }]
-          : backendNodeId === 20
-            ? [{ backendNodeId: 21 }]
-            : [];
-        return { value: { node: { backendNodeId, children } } };
+      if (command.method === 'DOM.getFlattenedDocument') {
+        containmentReads += 1;
+        return { value: { nodes: [
+          { backendNodeId: 10, nodeId: 10, shadowRoots: [{ backendNodeId: 15, nodeId: 15, shadowRootType: 'closed' }] },
+          { backendNodeId: 11, nodeId: 11, parentId: 15 },
+          { backendNodeId: 12, nodeId: 12, parentId: 15 },
+          { backendNodeId: 20, nodeId: 20 },
+          { backendNodeId: 21, nodeId: 21, parentId: 20 },
+        ] } };
       }
       return { value: command.method === 'Bridge.listChildSessions' ? { sessions: [] } : {} };
     },
@@ -554,6 +558,7 @@ it('applies descendant, has-text, exclusion, and nth filters against DOM ancestr
   const ambiguous = await find.invoke({ locator: { role: 'button' }, targetRef });
   expect(ambiguous.isError).toBeUndefined();
   expect(JSON.parse(text(ambiguous))).toHaveLength(2);
+  expect(containmentReads).toBe(2);
 });
 
 it('re-resolves a locator once when authority renews before input dispatch', async () => {

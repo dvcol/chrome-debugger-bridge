@@ -34,6 +34,7 @@ interface BridgeTestGlobal {
   recoverPublishedTargetAgentTest: (input: ServiceWorkerTestInput) => Promise<Pick<PublishedTarget, 'generation' | 'id'>>;
   interruptPublishedTargetAgentTest: () => Promise<void>;
   revokePublishedTargetAgentTest: () => Promise<void>;
+  readPublishedTargetConnectionClose: () => Promise<{ readonly code: number; readonly reason: string } | null>;
 }
 
 declare const chrome: {
@@ -421,7 +422,7 @@ bridgeTestGlobal.runPublishedTargetAgentTest = async (input) => {
       cancellations.set(command.operationId, abortController);
       void publisher.executeCommand(command, abortController.signal, lease).then(
         async value => connection.send({ kind: 'response', method: 'cdp.execute', protocolVersion: 1, requestId: executionRequest.requestId, result: { operationId: command.operationId, value } }),
-        async () => connection.send({ error: { code: 'CDP_COMMAND_FAILED', message: 'The debugger command failed.', retryable: false }, kind: 'error', method: 'cdp.execute', protocolVersion: 1, requestId: executionRequest.requestId }),
+        async error => connection.send({ error: { code: 'CDP_COMMAND_FAILED', message: `${command.method}: ${error instanceof Error ? error.message : 'The debugger command failed.'}`, retryable: false }, kind: 'error', method: 'cdp.execute', protocolVersion: 1, requestId: executionRequest.requestId }),
       ).finally(() => cancellations.delete(command.operationId));
     });
   };
@@ -475,4 +476,12 @@ bridgeTestGlobal.interruptPublishedTargetAgentTest = async () => {
   activeAgent.removeDebuggerEventListener();
   activeAgent.connection.close(3001, 'Published target transport interruption');
   await activeAgent.connection.closed;
+};
+
+bridgeTestGlobal.readPublishedTargetConnectionClose = async () => {
+  if (publishedTargetAgent === undefined) return null;
+  return Promise.race([
+    publishedTargetAgent.connection.closed,
+    new Promise<null>(resolve => setTimeout(resolve, 20, null)),
+  ]);
 };

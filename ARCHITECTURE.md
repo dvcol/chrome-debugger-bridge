@@ -3,8 +3,9 @@
 ## Scope
 
 CDB is a debugger protocol library. It does not decide which tab a user intended, host a registry
-UI, start an agent, or own Chrome extension permissions. Its API begins after a grant provider has
-identified a target and ends before a provider-specific debugger command reaches Chrome.
+UI, start an agent, or own Chrome extension permissions. It coordinates principal-bound access
+requests and enforces grants for targets supplied by authenticated providers. Hosts decide which
+targets the user approved and how provider-specific commands reach the browser.
 
 This lets an embedding host aggregate browser-control providers without putting Chrome IDs,
 extension lifecycles, or `chrome.debugger` behavior into CDB's broker.
@@ -53,6 +54,20 @@ or resume-window expiry deletes the authority record and ends the logical sessio
 
 Session `metadata` is optional JSON-compatible data. CDB validates and stores it but never interprets
 it as identity, authority, or policy.
+
+### Grant request coordinator
+
+`createGrantRequestCoordinator` stores the authenticated logical session, principal, requested
+capabilities, and expiry before approval begins. A current authenticated provider claims the request
+and completes it once with exact target IDs and generations. The host supplies its real target
+directory; completion validates ownership and atomically installs bindings in `AuthorityStore`.
+Cancellation and live-scope reconciliation change only bindings owned by that request.
+
+Hosts authenticate the final approval source. Page notifications may request presentation but do not
+authorize access. The extension approval channel separates those intents from trusted popup or side
+panel decisions, while the tab-scope manager shares publishers across overlapping live scopes.
+Chrome and URL policy stay in the host. See [grant requests and trusted approval](docs/grant-requests.md)
+for the contract and runnable public example.
 
 ### Extension helpers
 

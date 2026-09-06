@@ -43,6 +43,10 @@
       "types": "./dist/embedded.d.ts",
       "import": "./dist/embedded.js"
     },
+    "./grant-request": {
+      "types": "./dist/grant-request.d.ts",
+      "import": "./dist/grant-request.js"
+    },
     "./protocol": {
       "types": "./dist/protocol.d.ts",
       "import": "./dist/protocol.js"

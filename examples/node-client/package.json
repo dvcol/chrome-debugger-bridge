@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@dvcol/cdb": "workspace:*",
+    "@dvcol/cdb-mcp": "workspace:*",
     "@dvcol/cdb-websocket": "workspace:*"
   }
 }

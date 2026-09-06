@@ -7,7 +7,11 @@
     "smoke": "node --input-type=module --eval \"await Promise.all([import('@dvcol/cdb-extension'), import('@dvcol/cdb-extension/presentation')])\""
   },
   "dependencies": {
+    "@dvcol/cdb": "workspace:*",
     "@dvcol/cdb-extension": "workspace:*",
     "@dvcol/cdb-websocket": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "catalog:devtools"
   }
 }

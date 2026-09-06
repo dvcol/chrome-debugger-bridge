@@ -52,3 +52,37 @@ it('serves authorized range reads without credentials in the artifact URL', asyn
   const missing = await fetch(`http://127.0.0.1:${address.port}${defaultArtifactHttpPath}missing`, { headers: { authorization: 'Bearer artifact-token' } });
   expect(missing.status).toBe(404);
 });
+
+it('releases artifacts only for their authenticated owner and makes replayed deletion harmless', async () => {
+  expect.assertions(5);
+  const server = createServer();
+  servers.push(server);
+  let retained = true;
+  mountAuthenticatedArtifactHttpEndpoint({
+    authenticate: { async authenticate({ authorization }) {
+      return authorization === undefined ? undefined : { id: authorization, role: 'client' as const };
+    } },
+    async originPolicy() {
+      return true;
+    },
+    async readArtifact(_artifactId, principal) {
+      return retained && principal.id === 'owner' ? { bytes: new Uint8Array([1]), descriptor: { id: 'artifact', length: 1, mediaType: 'application/octet-stream', expiresAt: new Date(Date.now() + 60_000).toISOString() } } : undefined;
+    },
+    async releaseArtifact(artifactId, principal) {
+      if (!retained || artifactId !== 'artifact' || principal.id !== 'owner') return false;
+      retained = false;
+      return true;
+    },
+    server,
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('Expected a TCP address.');
+  const endpoint = `http://127.0.0.1:${address.port}${defaultArtifactHttpPath}artifact`;
+
+  expect((await fetch(endpoint, { method: 'DELETE' })).status).toBe(401);
+  expect((await fetch(endpoint, { method: 'DELETE', headers: { authorization: 'stranger' } })).status).toBe(404);
+  expect((await fetch(endpoint, { method: 'DELETE', headers: { authorization: 'owner' } })).status).toBe(204);
+  expect((await fetch(endpoint, { method: 'DELETE', headers: { authorization: 'owner' } })).status).toBe(404);
+  expect((await fetch(endpoint, { headers: { authorization: 'owner' } })).status).toBe(404);
+});

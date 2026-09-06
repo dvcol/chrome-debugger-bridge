@@ -68,6 +68,7 @@ it('keeps target refs stable across generation renewal and emits disposable elem
           },
         };
       }
+      if (command.method === 'Page.getFrameTree') return { value: { frameTree: { frame: { id: 'root' } } } };
       throw new Error(`Unexpected command: ${command.method}`);
     },
     async listTargets() {
@@ -115,7 +116,7 @@ it('keeps target refs stable across generation renewal and emits disposable elem
   ]);
   const secondSnapshot = await snapshot.invoke({ targetRef: 't1' });
   expect((secondSnapshot.content[0] as { readonly text: string }).text).toContain('[ref=e2]');
-  expect(acquiredLeases.map(request => request.targetGeneration)).toEqual([1, 1, 2, 2]);
+  expect(acquiredLeases.map(request => request.targetGeneration)).toEqual([1, 1, 1, 2, 2, 2]);
 
   session.dispose();
   const disposedResult = await snapshot.invoke({ targetRef: 't1' });

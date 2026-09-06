@@ -557,7 +557,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       };
     },
   } as unknown as McpChromeDebuggerBridgeClient;
-  const mounted = mountMcpStreamableHttp({ client: bridgeClient, server });
+  const mounted = mountMcpStreamableHttp({ client: bridgeClient, enableRawCdp: true, server });
   await new Promise<void>((resolve, reject) => {
     server.listen(0, '127.0.0.1', resolve);
     server.once('error', reject);
@@ -578,6 +578,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
     const tools = await client.listTools();
     expect(tools.tools.map(tool => tool.name)).toEqual([
       'browser.list_targets',
+      'browser.list_target_authorities',
       'browser.find',
       'browser.acquire',
       'browser.renew',
@@ -585,6 +586,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       'browser.release_artifact',
       'browser.read_artifact',
       'browser.inspect',
+      'browser.raw_cdp',
       'browser.snapshot',
       'browser.screenshot',
       'browser.network_body',
@@ -607,6 +609,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       'browser.scroll_into_view',
       'browser.check',
       'browser.uncheck',
+      'browser.batch',
       'browser.select_option',
       'browser.wait_for_navigation',
       'browser.wait_for_dialog',
@@ -616,8 +619,8 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       'browser.wait_for',
     ]);
     expect(
-      tools.tools.find(tool => tool.name === 'browser.acquire')?.description,
-    ).toContain('"Runtime.evaluate"');
+      tools.tools.find(tool => tool.name === 'browser.batch')?.description,
+    ).toContain('one lease');
     const result = await client.callTool({
       arguments: {},
       name: 'browser.list_targets',

@@ -33,7 +33,7 @@ function send(response: ServerResponse, statusCode: number): void {
 function setCorsHeaders(response: ServerResponse, origin: string | undefined): void {
   if (origin === undefined) return;
   response.setHeader('access-control-allow-headers', 'authorization, range');
-  response.setHeader('access-control-allow-methods', 'GET, HEAD, OPTIONS');
+  response.setHeader('access-control-allow-methods', 'GET, HEAD, DELETE, OPTIONS');
   response.setHeader('access-control-allow-origin', origin);
   response.setHeader('vary', 'origin');
 }
@@ -54,6 +54,8 @@ export function mountAuthenticatedArtifactHttpEndpoint<Principal extends Authent
   readonly originPolicy: (claims: TransportClaims, signal: AbortSignal) => boolean | Promise<boolean>;
   readonly path?: string;
   readonly readArtifact: (artifactId: string, principal: Principal, signal: AbortSignal) => Promise<{ readonly bytes: Uint8Array; readonly descriptor: ArtifactDescriptor } | undefined>;
+  /** Releases only artifacts owned by the authenticated principal. Omit for a read-only endpoint. */
+  readonly releaseArtifact?: (artifactId: string, principal: Principal, signal: AbortSignal) => Promise<boolean>;
   readonly server: import('node:http').Server;
 }): MountedAuthenticatedArtifactHttpEndpoint {
   const path = input.path ?? defaultArtifactHttpPath;
@@ -63,7 +65,7 @@ export function mountAuthenticatedArtifactHttpEndpoint<Principal extends Authent
       const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
       if (!url.pathname.startsWith(path)) return;
       if (url.search || url.hash) return send(response, 400);
-      if (request.method !== 'GET' && request.method !== 'HEAD' && request.method !== 'OPTIONS') return send(response, 405);
+      if (request.method !== 'GET' && request.method !== 'HEAD' && request.method !== 'OPTIONS' && request.method !== 'DELETE') return send(response, 405);
       const encodedArtifactId = url.pathname.slice(path.length);
       if (encodedArtifactId.length === 0 || encodedArtifactId.includes('/')) return send(response, 404);
       let artifactId: string;
@@ -87,6 +89,10 @@ export function mountAuthenticatedArtifactHttpEndpoint<Principal extends Authent
         remoteAddress: claims.remoteAddress,
       });
       if (principal === undefined || principal.role !== 'client') return send(response, 401);
+      if (request.method === 'DELETE') {
+        if (input.releaseArtifact === undefined) return send(response, 405);
+        return send(response, await input.releaseArtifact(artifactId, principal, abortController.signal) ? 204 : 404);
+      }
       const artifact = await input.readArtifact(artifactId, principal, abortController.signal);
       if (artifact === undefined) return send(response, 404);
       if (artifact.descriptor.digest !== undefined && createHash('sha256').update(artifact.bytes).digest('hex') !== artifact.descriptor.digest) return send(response, 500);

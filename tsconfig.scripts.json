@@ -3,7 +3,7 @@
   "compilerOptions": {
     "composite": false,
     "lib": ["ES2024", "DOM", "DOM.Iterable"],
-    "types": ["node"],
+    "types": ["node", "chrome"],
     "allowImportingTsExtensions": true,
     "declaration": false,
     "declarationMap": false
@@ -19,6 +19,7 @@
     "scripts/**/*.ts",
     "tests/browser/**/*.ts",
     "tests/e2e/**/*.ts",
+    "tests/fixtures/**/*.ts",
     "vitest.config.ts"
   ]
 }

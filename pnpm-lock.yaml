@@ -97,6 +97,9 @@ catalogs:
       specifier: 8.21.1
       version: 8.21.1
   types:
+    '@types/chrome':
+      specifier: 0.2.9
+      version: 0.2.9
     '@types/node':
       specifier: 26.1.2
       version: 26.1.2
@@ -123,6 +126,9 @@ importers:
       '@prettier/plugin-xml':
         specifier: catalog:build
         version: 3.4.2(prettier@3.9.6)
+      '@types/chrome':
+        specifier: catalog:types
+        version: 0.2.9
       '@types/node':
         specifier: catalog:types
         version: 26.1.2
@@ -222,12 +228,19 @@ importers:
 
   examples/extension:
     dependencies:
+      '@dvcol/cdb':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@dvcol/cdb-extension':
         specifier: workspace:*
         version: link:../../packages/extension
       '@dvcol/cdb-websocket':
         specifier: workspace:*
         version: link:../../packages/websocket
+    devDependencies:
+      vite:
+        specifier: catalog:devtools
+        version: 8.2.0(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0)
 
   examples/mcp:
     dependencies:
@@ -249,6 +262,9 @@ importers:
       '@dvcol/cdb':
         specifier: workspace:*
         version: link:../../packages/core
+      '@dvcol/cdb-mcp':
+        specifier: workspace:*
+        version: link:../../packages/mcp
       '@dvcol/cdb-websocket':
         specifier: workspace:*
         version: link:../../packages/websocket
@@ -1003,6 +1019,9 @@ packages:
   '@types/chai@5.2.3':
     resolution: {integrity: sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==}
 
+  '@types/chrome@0.2.9':
+    resolution: {integrity: sha512-6rXrDPkkWv4D2Q23HqT+iED4voODU5CpOSc2VFgKyecSFItuEsIBvz9CY6jUQ3dd+Q7zo1bnCE9pKRMtkYut5g==}
+
   '@types/debug@4.1.13':
     resolution: {integrity: sha512-KSVgmQmzMwPlmtljOomayoR89W4FynCAi3E8PPs7vmDVPe84hT+vGPKkJfThkmXs0x0jAaa9U8uW8bbfyS2fWw==}
 
@@ -1014,6 +1033,15 @@ packages:
 
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
+
+  '@types/filesystem@0.0.36':
+    resolution: {integrity: sha512-vPDXOZuannb9FZdxgHnqSwAG/jvdGM8Wq+6N4D/d80z+D4HWH+bItqsZaVRQykAn6WEVeEkLm2oQigyHtgb0RA==}
+
+  '@types/filewriter@0.0.33':
+    resolution: {integrity: sha512-xFU8ZXTw4gd358lb2jw25nxY9QAgqn2+bKKjKOYfNCzN4DKCFetK7sPtrlpg66Ywe3vWY9FNxprZawAh9wfJ3g==}
+
+  '@types/har-format@1.2.16':
+    resolution: {integrity: sha512-fluxdy7ryD3MV6h8pTfTYpy/xQzCFC7m89nOH9y94cNqJ1mDIDPut7MnRHI3F6qRmh/cT2fUjG1MLdCNb4hE9A==}
 
   '@types/json-schema@7.0.15':
     resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
@@ -3510,6 +3538,11 @@ snapshots:
       '@types/deep-eql': 4.0.2
       assertion-error: 2.0.1
 
+  '@types/chrome@0.2.9':
+    dependencies:
+      '@types/filesystem': 0.0.36
+      '@types/har-format': 1.2.16
+
   '@types/debug@4.1.13':
     dependencies:
       '@types/ms': 2.1.0
@@ -3519,6 +3552,14 @@ snapshots:
   '@types/esrecurse@4.3.1': {}
 
   '@types/estree@1.0.9': {}
+
+  '@types/filesystem@0.0.36':
+    dependencies:
+      '@types/filewriter': 0.0.33
+
+  '@types/filewriter@0.0.33': {}
+
+  '@types/har-format@1.2.16': {}
 
   '@types/json-schema@7.0.15': {}
 

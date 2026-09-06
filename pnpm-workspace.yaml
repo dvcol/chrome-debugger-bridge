@@ -47,6 +47,7 @@ catalogs:
   transport:
     ws: 8.21.1
   types:
+    '@types/chrome': 0.2.9
     '@types/node': 26.1.2
     '@types/ws': 8.18.1
     typescript: 5.9.3

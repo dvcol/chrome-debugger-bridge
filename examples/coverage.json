@@ -383,6 +383,36 @@
       "exportName": "createPlaywrightAutomationProvider",
       "packageName": "@dvcol/cdb-automation-playwright",
       "subpath": "."
+    },
+    {
+      "example": "standalone-host",
+      "exportName": "createGrantRequestCoordinator",
+      "packageName": "@dvcol/cdb",
+      "subpath": "."
+    },
+    {
+      "example": "standalone-host",
+      "exportName": "createGrantRequestCoordinator",
+      "packageName": "@dvcol/cdb",
+      "subpath": "./grant-request"
+    },
+    {
+      "example": "extension",
+      "exportName": "createApprovalChannel",
+      "packageName": "@dvcol/cdb-extension",
+      "subpath": "."
+    },
+    {
+      "example": "extension",
+      "exportName": "createExtensionApprovalSenderValidator",
+      "packageName": "@dvcol/cdb-extension",
+      "subpath": "."
+    },
+    {
+      "example": "extension",
+      "exportName": "createTabScopeManager",
+      "packageName": "@dvcol/cdb-extension",
+      "subpath": "."
     }
   ]
 }

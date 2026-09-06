@@ -56,8 +56,10 @@ actions accept serializable Playwright-style locators for roles, names, text, la
 alt text, titles, test IDs, CSS, frames, descendants, and filters. Locator actions re-resolve before
 input, traverse author shadow roots, wait for actionability, and never replay after input might have
 been dispatched. Coordinate-only controls are named with an `_at` suffix. `browser.evaluate` is a
-debug-level escape hatch: it bypasses locator guarantees and visible pointer feedback. Hosts can also
-expose the generated raw CDP catalogue for lossless protocol access.
+debug-level escape hatch: it bypasses locator guarantees and visible pointer feedback. Set
+`enableRawCdp: true` to expose evaluation, artifact diagnostics, and the raw CDP catalogue. The default
+catalogue keeps these tools out of agent discovery. See the [native MVP guide](./docs/native-mvp.md)
+for batches, snapshot limits, and recorded browser measurements.
 
 The native semantic implementation remains the default. An embedding broker can explicitly select
 one registered automation provider for an authenticated extension-provider connection. The

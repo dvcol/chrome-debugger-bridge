@@ -1,0 +1,68 @@
+{
+  "budgets": {
+    "nativeActionP95Milliseconds": 500,
+    "nativeSnapshotP95Milliseconds": 1000
+  },
+  "chromiumVersion": "151.0.7922.34",
+  "environment": {
+    "architecture": "arm64",
+    "nodeVersion": "v24.20.0",
+    "operatingSystem": "darwin",
+    "processorModel": "Apple M3 Pro",
+    "processors": 11
+  },
+  "fixture": {
+    "depth": 200,
+    "frames": 3,
+    "nodes": 10000,
+    "shadowRoots": 20
+  },
+  "measuredAt": "2026-09-06T20:38:04.690Z",
+  "modelExcluded": true,
+  "native": {
+    "actionP95Milliseconds": null,
+    "errors": 0,
+    "initialSnapshotIncludesDeepControls": false,
+    "initialSnapshotDurationMilliseconds": 1102.6072909999998,
+    "measurements": [],
+    "module": "preserved MCP build at 811909f17b83fda8ca198acd0cb96573cf205ab1",
+    "selectorMode": "ref",
+    "snapshotP95Milliseconds": null,
+    "warmupFailures": [
+      "{\"code\":\"REQUEST_CANCELLED\",\"message\":\"The requested target operation is not available.\",\"retryable\":false}",
+      "{\"code\":\"MCP_TARGET_REF_STALE\",\"message\":\"Target reference t1 is no longer available.\",\"retryable\":false}"
+    ]
+  },
+  "playwrightReference": {
+    "actionP95Milliseconds": 33.924125000000004,
+    "limitation": "Direct Playwright locator actions in open shadow roots only; no CDB/MCP transport or token comparison.",
+    "measurements": [
+      5.616417000000183,
+      24.764458999999988,
+      5.243667000000187,
+      29.555667000000085,
+      5.113749999999982,
+      26.197625000000244,
+      5.558332999999948,
+      27.59141600000021,
+      4.4962500000001455,
+      33.924125000000004
+    ],
+    "samples": 5
+  },
+  "profile": "normal",
+  "samples": 5,
+  "tokenEstimates": {
+    "catalogueCharacters": 371342,
+    "catalogueTokens": 92836,
+    "lastWorkflowTokens": null,
+    "method": "ceil(serialized JSON characters / 4), an estimate rather than measured model tokenizer usage; catalogue is counted separately once."
+  },
+  "transport": "MCP SDK in-memory transport \u2192 authenticated client WebSocket \u2192 broker \u2192 authenticated provider WebSocket \u2192 MV3 chrome.debugger; artifact reads use authenticated HTTP.",
+  "baselineProvenance": {
+    "gitCommit": "811909f17b83fda8ca198acd0cb96573cf205ab1",
+    "sourceMatchesHead": true,
+    "component": "MCP; current extension transport in fixture",
+    "notes": "The preserved built MCP source map exactly matched this revision. Current public extension, broker, SDK, and transport harness were used. Warmup failed, so no successful native latency distribution exists."
+  }
+}

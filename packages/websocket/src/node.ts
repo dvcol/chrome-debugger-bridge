@@ -1572,7 +1572,10 @@ export async function createNodeChromeDebuggerBridgeClient(options: CreateNodeCh
       if (!response.ok) throw new Error(`Artifact read failed with HTTP ${response.status}.`);
       return new Uint8Array(await response.arrayBuffer());
     },
-    async releaseArtifact(): Promise<void> {},
+    async releaseArtifact(input: ArtifactAccessRequest): Promise<void> {
+      const response = await globalThis.fetch(new URL(encodeURIComponent(input.artifactId), artifactEndpoint), { method: 'DELETE', headers: { authorization: options.authorization } });
+      if (!response.ok && response.status !== 404) throw new Error(`Artifact release failed with HTTP ${response.status}.`);
+    },
     async releaseLease(input: ReleaseLeaseRequest): Promise<void> {
       const response = await request({ kind: 'request', method: 'leases.release', parameters: input, protocolVersion: 1, requestId: randomUUID() });
       if (response.method !== 'leases.release') throw new Error('Received an unexpected lease response.');
@@ -1779,6 +1782,13 @@ export async function createStandaloneChromeDebuggerBridgeHost(
         artifactGrants.delete(artifactId);
         return undefined;
       }
+    },
+    async releaseArtifact(artifactId, principal) {
+      const grant = artifactGrants.get(artifactId);
+      if (grant === undefined || grant.principalId !== principal.id) return false;
+      broker.releaseArtifact(grant.access, { connectionId: `artifact:${principal.id}`, principalId: principal.id });
+      artifactGrants.delete(artifactId);
+      return true;
     },
     server,
   });

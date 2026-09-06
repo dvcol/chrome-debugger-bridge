@@ -47,6 +47,8 @@ export interface SelectedTabPublisherOptions {
   /** Can make a published target's command authorization stricter, but never relax the bridge kernel. */
   readonly commandAuthorizationPolicy?: CommandAuthorizationPolicy;
   readonly isExposureAllowed?: (tab: Omit<SelectedTab, 'tabId'>) => boolean;
+  /** Bounds debugger replies before an embedding transport serializes them. Defaults to 16 MiB. */
+  readonly maximumResultBytes?: number;
   readonly metadataPolicy?: (tab: Omit<SelectedTab, 'tabId'>) => Pick<PublishedTarget, 'title' | 'url'>;
   /** Receives sanitized pointer events only after Chrome accepts their debugger command. */
   readonly publishPresentationEvent?: (event: AgentControlPresentationEvent) => void;
@@ -105,12 +107,16 @@ function isSupportedPage(url: string | undefined): boolean {
 
 /** Keeps Chrome's tab identifier in this closure and publishes only a lifecycle-bound opaque target. */
 export function createSelectedTabPublisher(options: SelectedTabPublisherOptions): SelectedTabPublisher {
+  const maximumResultBytes = options.maximumResultBytes ?? 16_777_216;
+  if (!Number.isSafeInteger(maximumResultBytes) || maximumResultBytes < 1) throw new TypeError('maximumResultBytes must be a positive safe integer.');
   const childSessionRouter = createChildSessionRouter();
   const activeRootSubscriptionDomains = new Set<string>();
   const activeRootSubscriptionDemands = new Set<string>();
   const activeChildSubscriptionDemands = new Map<string, Set<string>>();
   let selectedTabId: number | undefined;
   let publishedTarget: PublishedTarget | undefined;
+  let publicationReady = false;
+  const pendingEvents: { readonly method: string; readonly parameters: JsonObject; readonly sessionId?: string }[] = [];
 
   function getRedactedMetadata(tab: Omit<SelectedTab, 'tabId'>): Pick<PublishedTarget, 'title' | 'url'> {
     return options.metadataPolicy?.(tab) ?? {};
@@ -209,15 +215,20 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     const tabIdToDetach = selectedTabId;
     publishedTarget = undefined;
     selectedTabId = undefined;
+    publicationReady = false;
+    pendingEvents.length = 0;
     childSessionRouter.revoke();
     activeRootSubscriptionDomains.clear();
     activeRootSubscriptionDemands.clear();
     activeChildSubscriptionDemands.clear();
-    await options.revokeTarget(targetToRevoke, reason);
     try {
-      await options.chromeDebugger.detach({ tabId: tabIdToDetach });
-    } catch {
-      /** Chrome can report a detach event before this cleanup call reaches it. */
+      await options.revokeTarget(targetToRevoke, reason);
+    } finally {
+      try {
+        await options.chromeDebugger.detach({ tabId: tabIdToDetach });
+      } catch {
+        /** Chrome can report a detach event before this cleanup call reaches it. */
+      }
     }
   }
 
@@ -266,6 +277,8 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       if (abortSignal.aborted) {
         throw new Error('The requested command was cancelled.');
       }
+      if (new TextEncoder().encode(JSON.stringify(value)).byteLength > maximumResultBytes)
+        throw new Error(`CDB_RESULT_TOO_LARGE: debugger discovery is incomplete because its result exceeded ${maximumResultBytes} bytes. Narrow the query or scope.`);
       for (const event of translateAgentControlInputCommand(command))
         options.publishPresentationEvent?.(event);
       return value;
@@ -276,7 +289,16 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
 
   function publishEvent(method: string, parameters: JsonObject, sessionId?: string): void {
     if (publishedTarget === undefined || !isCdpNameAllowed(publishedTarget.capabilities, method, 'event')) return;
+    if (!publicationReady) {
+      pendingEvents.push({ method, parameters, ...(sessionId === undefined ? {} : { sessionId }) });
+      return;
+    }
     options.publishEvent?.(publishedTarget, method, parameters, sessionId);
+  }
+
+  function finishPublication(): void {
+    publicationReady = true;
+    for (const event of pendingEvents.splice(0)) publishEvent(event.method, event.parameters, event.sessionId);
   }
 
   function isEventDemanded(method: string, sessionId?: string): boolean {
@@ -337,11 +359,15 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     activeRootSubscriptionDemands.clear();
     activeChildSubscriptionDemands.clear();
     publishedTarget = renewedTarget;
+    publicationReady = false;
+    pendingEvents.length = 0;
     try {
       await options.revokeTarget(priorTarget, 'explicit');
       await options.publishTarget(renewedTarget);
+      finishPublication();
     } catch (error) {
       publishedTarget = priorTarget;
+      pendingEvents.length = 0;
       throw error;
     }
     options.registerTargetExecutor?.(renewedTarget, { execute: executeCommand, setSubscriptionDemand });
@@ -413,10 +439,13 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       try {
         await configureFlatSessions();
         await options.publishTarget(target);
+        finishPublication();
       } catch (error) {
         childSessionRouter.revoke();
         publishedTarget = undefined;
         selectedTabId = undefined;
+        publicationReady = false;
+        pendingEvents.length = 0;
         await options.chromeDebugger.detach({ tabId: tab.tabId });
         throw error;
       }

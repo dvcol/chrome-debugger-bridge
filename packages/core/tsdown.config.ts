@@ -16,6 +16,7 @@ export default defineConfig({
     'src/cdp-catalogue.ts',
     'src/client.ts',
     'src/embedded.ts',
+    'src/grant-request.ts',
     'src/protocol.ts',
     'src/protocol-json-schema.ts',
     'src/session.ts',

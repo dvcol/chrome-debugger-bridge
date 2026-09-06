@@ -1,3 +1,6 @@
+import type { PublishedTarget } from '@dvcol/cdb';
+import type { McpChromeDebuggerBridgeClient } from '@dvcol/cdb-mcp';
+
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 
@@ -6,7 +9,7 @@ import { createPlaywrightAutomationProvider } from '@dvcol/cdb-automation-playwr
 import { createCdbToolSession, mountMcpStdio, mountMcpStreamableHttp, supportedMcpProtocolVersions, supportedMcpSdkVersion } from '@dvcol/cdb-mcp';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
-const target = {
+const target: PublishedTarget = {
   availability: 'available',
   capabilities: { level: 'unsafe' },
   generation: 1,
@@ -15,16 +18,24 @@ const target = {
   type: 'page',
 };
 
-async function main() {
+function requireRecord(value: unknown): Record<string, unknown> {
+  assert.ok(typeof value === 'object' && value !== null && !Array.isArray(value));
+  return value as Record<string, unknown>;
+}
+
+function parseTextResult(result: Awaited<ReturnType<Client['callTool']>>): unknown {
+  const content = result.content[0];
+  assert.ok(content?.type === 'text');
+  return JSON.parse(content.text) as unknown;
+}
+
+async function main(): Promise<void> {
   const bridge = createEmbeddedChromeDebuggerBridge();
   const playwrightAutomationProvider = createPlaywrightAutomationProvider();
   const httpServer = createServer();
   let stdioClosed = false;
   let stdioStarted = false;
-  let startCancellation;
-  const cancellationStarted = new Promise((resolve) => {
-    startCancellation = resolve;
-  });
+  const { promise: cancellationStarted, resolve: startCancellation } = Promise.withResolvers<void>();
 
   bridge.broker.publishTarget(target);
   bridge.registerTargetExecutor(target, {
@@ -44,7 +55,7 @@ async function main() {
     },
   });
 
-  const bridgeClient = {
+  const bridgeClient: McpChromeDebuggerBridgeClient = {
     ...bridge.client,
     async cancelCommand({ operationId }) {
       bridge.broker.cancelCommand(operationId);
@@ -58,6 +69,7 @@ async function main() {
   toolSession.dispose();
   const mountedHttp = mountMcpStreamableHttp({
     client: bridgeClient,
+    enableRawCdp: true,
     path: '/mcp',
     server: httpServer,
   });
@@ -76,7 +88,7 @@ async function main() {
     },
   });
 
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     httpServer.listen(0, '127.0.0.1', resolve);
     httpServer.once('error', reject);
   });
@@ -92,86 +104,43 @@ async function main() {
     assert.deepEqual(supportedMcpProtocolVersions, ['2026-07-28']);
     assert.equal(
       tools.tools.some(tool => tool.name === 'browser.raw_cdp'),
-      false,
+      true,
     );
-    const semanticTargets = JSON.parse((await client.callTool({ arguments: {}, name: 'browser.list_targets' })).content[0].text);
+    const semanticTargets = parseTextResult(await client.callTool({ arguments: {}, name: 'browser.list_targets' }));
+    assert.ok(Array.isArray(semanticTargets));
     assert.equal(semanticTargets.length, 1);
-    assert.equal(semanticTargets[0].targetRef, 't1');
-    assert.equal('generation' in semanticTargets[0], false);
-    const targetRef = semanticTargets[0].targetRef;
-    assert.equal(
-      JSON.parse(
-        (
-          await client.callTool({
-            arguments: {
-              expression: 'document.title',
-              targetRef,
-            },
-            name: 'browser.evaluate',
-          })
-        ).content[0].text,
-      ).value.method,
-      'Runtime.evaluate',
-    );
-
-    const navigation = JSON.parse(
-      (
-        await client.callTool({
-          arguments: {
-            targetRef,
-            url: 'https://example.test/',
-          },
-          name: 'browser.navigate',
-        })
-      ).content[0].text,
-    );
-    assert.equal(
-      navigation.command.method,
-      'Page.navigate',
-    );
-    const screenshot = JSON.parse(
-      (
-        await client.callTool({
-          arguments: {
-            targetRef,
-          },
-          name: 'browser.screenshot',
-        })
-      ).content[0].text,
-    );
-    assert.equal(typeof screenshot.artifact.id, 'string');
-    const artifact = JSON.parse(
-      (
-        await client.callTool({
-          arguments: {
-            artifactId: screenshot.artifact.id,
-            leaseId: screenshot.lease.id,
-            maximumBytes: 8,
-            targetGeneration: target.generation,
-            targetId: target.id,
-          },
-          name: 'browser.read_artifact',
-        })
-      ).content[0].text,
-    );
+    const semanticTarget = requireRecord(semanticTargets[0]);
+    assert.equal(semanticTarget.targetRef, 't1');
+    assert.equal('generation' in semanticTarget, false);
+    const targetRef = semanticTarget.targetRef;
+    assert.ok(typeof targetRef === 'string');
+    const evaluation = requireRecord(parseTextResult(await client.callTool({
+      arguments: { expression: 'document.title', targetRef },
+      name: 'browser.evaluate',
+    })));
+    assert.equal(requireRecord(evaluation.value).method, 'Runtime.evaluate');
+    const navigation = requireRecord(parseTextResult(await client.callTool({
+      arguments: { targetRef, url: 'https://example.test/' },
+      name: 'browser.navigate',
+    })));
+    assert.equal(requireRecord(navigation.command).method, 'Page.navigate');
+    const screenshot = requireRecord(parseTextResult(await client.callTool({
+      arguments: { targetRef },
+      name: 'browser.screenshot',
+    })));
+    const artifactId = requireRecord(screenshot.artifact).id;
+    const leaseId = requireRecord(screenshot.lease).id;
+    assert.ok(typeof artifactId === 'string');
+    assert.ok(typeof leaseId === 'string');
+    const access = { artifactId, leaseId, targetGeneration: target.generation, targetId: target.id };
+    const artifact = requireRecord(parseTextResult(await client.callTool({
+      arguments: { ...access, maximumBytes: 8 },
+      name: 'browser.read_artifact',
+    })));
+    assert.ok(typeof artifact.bytes === 'string');
     assert.equal(artifact.bytes.length, 12);
-    await client.callTool({
-      arguments: {
-        artifactId: screenshot.artifact.id,
-        leaseId: screenshot.lease.id,
-        targetGeneration: target.generation,
-        targetId: target.id,
-      },
-      name: 'browser.release_artifact',
-    });
-    await client.callTool({
-      arguments: {
-        leaseId: screenshot.lease.id,
-        targetGeneration: target.generation,
-        targetId: target.id,
-      },
-      name: 'browser.release',
-    });
+    await client.callTool({ arguments: access, name: 'browser.release_artifact' });
+    await client.callTool({ arguments: { leaseId, targetGeneration: target.generation, targetId: target.id }, name: 'browser.release' });
 
     const cancellation = new AbortController();
     const cancelledInspection = client.callTool(
@@ -193,7 +162,7 @@ async function main() {
     await mountedHttp.close();
     await mountedStdio.close();
     await playwrightAutomationProvider.dispose();
-    await new Promise((resolve, reject) => httpServer.close(error => (error === undefined ? resolve() : reject(error))));
+    await new Promise<void>((resolve, reject) => httpServer.close(error => (error === undefined ? resolve() : reject(error))));
     bridge.dispose();
   }
 

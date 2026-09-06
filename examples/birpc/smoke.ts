@@ -1,10 +1,14 @@
+import type { PublishedTarget } from '@dvcol/cdb';
+import type { BirpcRpcChannel } from '@dvcol/cdb-birpc/client';
+
 import { createServer } from 'node:http';
 
+import { artifactDescriptorSchema } from '@dvcol/cdb';
 import { createBirpcBridgeClient } from '@dvcol/cdb-birpc/client';
 import { mountBirpcChromeDebuggerBridge } from '@dvcol/cdb-birpc/node';
 import { createMemoryAgentAuthenticationAdapter, createStaticClientAuthenticationAdapter } from '@dvcol/cdb-websocket/testing';
 
-const target = {
+const target: PublishedTarget = {
   availability: 'available',
   capabilities: { level: 'unsafe' },
   generation: 1,
@@ -13,10 +17,10 @@ const target = {
   type: 'page',
 };
 
-function createChannelPair() {
-  const leftListeners = new Set();
-  const rightListeners = new Set();
-  const createChannel = (listeners, remoteListeners) => ({
+function createChannelPair(): [BirpcRpcChannel, BirpcRpcChannel] {
+  const leftListeners = new Set<(message: unknown) => void>();
+  const rightListeners = new Set<(message: unknown) => void>();
+  const createChannel = (listeners: Set<(message: unknown) => void>, remoteListeners: Set<(message: unknown) => void>): BirpcRpcChannel => ({
     off(listener) {
       listeners.delete(listener);
     },
@@ -32,7 +36,7 @@ function createChannelPair() {
   return [createChannel(leftListeners, rightListeners), createChannel(rightListeners, leftListeners)];
 }
 
-async function runSmoke() {
+async function runSmoke(): Promise<void> {
   const server = createServer();
   const [hostChannel, clientChannel] = createChannelPair();
   const bridge = mountBirpcChromeDebuggerBridge({
@@ -78,10 +82,13 @@ async function runSmoke() {
     const subscription = await client.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });
     bridge.broker.publishEvent(target, 'Runtime.consoleAPICalled', { type: 'log' });
     const event = await subscription[Symbol.asyncIterator]().next();
-    if (event.value?.method !== 'Runtime.consoleAPICalled') throw new Error('Expected the Birpc event stream.');
+    if (event.done || event.value.method !== 'Runtime.consoleAPICalled') throw new Error('Expected the Birpc event stream.');
     const command = await client.executeCommand({ leaseId: lease.id, method: 'Runtime.evaluate', operationId: '2f2d0d0e-fc67-4a55-80ce-c03d708f610f', parameters: { expression: 'document.title' }, targetGeneration: target.generation, targetId: target.id });
     if (command.value === undefined || !('artifact' in command.value)) throw new Error('Expected a bounded artifact result.');
-    const artifact = await client.readArtifact({ artifactId: command.value.artifact.id, leaseId: lease.id, targetGeneration: target.generation, targetId: target.id });
+    const validation = await artifactDescriptorSchema['~standard'].validate(command.value.artifact);
+    if (validation.issues !== undefined) throw new Error('Expected a valid artifact descriptor.');
+    const descriptor = validation.value;
+    const artifact = await client.readArtifact({ artifactId: descriptor.id, leaseId: lease.id, targetGeneration: target.generation, targetId: target.id });
     if (!(artifact instanceof Uint8Array)) throw new Error('Expected authorized artifact bytes.');
     subscription.close();
     await client.releaseLease({ leaseId: lease.id, targetGeneration: target.generation, targetId: target.id });

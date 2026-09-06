@@ -31,6 +31,7 @@ export default defineTypescriptConfig(
       'scripts/**/*.ts',
       'tests/browser/**/*.ts',
       'tests/e2e/**/*.ts',
+      'tests/fixtures/**/*.ts',
       'vitest.config.ts',
     ],
     languageOptions: {

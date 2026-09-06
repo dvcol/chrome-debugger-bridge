@@ -4,7 +4,8 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "smoke": "node --input-type=module --eval \"await import('@dvcol/cdb-websocket/node')\"",
+    "approval": "node grant-flow.ts",
+    "smoke": "node smoke.ts",
     "start": "node --experimental-strip-types index.ts"
   },
   "dependencies": {

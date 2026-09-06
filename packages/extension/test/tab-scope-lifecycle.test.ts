@@ -2,6 +2,7 @@ import type { SelectedTab, SelectedTabPublisher } from '../src/selected-tab-publ
 
 import { expect, it, vi } from 'vitest';
 
+import { createSelectedTabPublisher } from '../src/selected-tab-publisher.js';
 import { createTabScopeLifecycle } from '../src/tab-scope-lifecycle.js';
 
 function createChromeEvent<Listener>(): { readonly addListener: (listener: Listener) => void; readonly listeners: Listener[]; readonly removeListener: (listener: Listener) => void } {
@@ -67,6 +68,7 @@ it('keeps the active tab selector as a snapshot through focus churn', async () =
   expect(activePublisher.revoke).not.toHaveBeenCalled();
   expect(newActivePublisher.publish).not.toHaveBeenCalled();
   lifecycle.stop();
+  await flush();
   expect(activePublisher.revoke).toHaveBeenCalledOnce();
 });
 
@@ -108,4 +110,56 @@ it('reconciles current and future window members without broadening a tab publis
   lifecycle.stop();
   expect(onCreated.listeners).toHaveLength(0);
   expect(onWindowRemoved.listeners).toHaveLength(0);
+});
+
+it('ignores an old active-tab query after a stop and restart', async () => {
+  expect.assertions(2);
+  const originalQuery = Promise.withResolvers<SelectedTab[]>();
+  const attachedTabs = new Set<number>();
+  let queryCount = 0;
+  const lifecycle = createTabScopeLifecycle({
+    chrome: {
+      tabs: {
+        onCreated: createChromeEvent<(tab: SelectedTab) => void>(),
+        onRemoved: createChromeEvent<(tabId: number) => void>(),
+        onUpdated: createChromeEvent<(tabId: number, changeInfo: unknown, tab: SelectedTab) => void>(),
+        async query() {
+          queryCount += 1;
+          if (queryCount === 1) return originalQuery.promise;
+          return [{ active: true, incognito: false, tabId: 2, url: 'https://example.com/' }];
+        },
+      },
+    },
+    createPublisher() {
+      return createSelectedTabPublisher({
+        capabilities: { level: 'inspect' },
+        chromeDebugger: {
+          attach({ tabId }) {
+            attachedTabs.add(tabId);
+          },
+          detach({ tabId }) {
+            attachedTabs.delete(tabId);
+          },
+          async sendCommand() {
+            return {};
+          },
+        },
+        publishTarget() {},
+        revokeTarget() {},
+        scopeId: '40000000-0000-4000-8000-000000000001',
+        updateTarget() {},
+      });
+    },
+    selector: { kind: 'active-tab' },
+  });
+  lifecycle.start();
+  await flush();
+  lifecycle.stop();
+  lifecycle.start();
+  originalQuery.resolve([{ active: true, incognito: false, tabId: 1, url: 'https://example.com/' }]);
+  await flush();
+  expect(attachedTabs).toEqual(new Set([2]));
+  lifecycle.stop();
+  await flush();
+  expect(attachedTabs.size).toBe(0);
 });

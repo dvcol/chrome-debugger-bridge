@@ -352,7 +352,7 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   });
   const applicationMcpServer = new McpServer({ name: 'real-chrome-host', version: '0.0.0' });
   applicationMcpServer.registerTool('application.health', { description: 'Return host health.' }, async () => ({ content: [{ text: 'healthy', type: 'text' }] }));
-  registerCdbTools(applicationMcpServer, { client: nodeFacade });
+  registerCdbTools(applicationMcpServer, { client: nodeFacade, enableRawCdp: true });
   const [mcpClientTransport, mcpServerTransport] = InMemoryTransport.createLinkedPair();
   const mcpClient = new Client({ name: 'real-chrome-mcp-client', version: '0.0.0' });
   await applicationMcpServer.connect(mcpServerTransport);
@@ -418,7 +418,7 @@ it('arbitrates authenticated clients and routes shared real-Chrome events throug
   expect(JSON.stringify(mcpTargetList)).toContain(mcpTargetRef);
   expect(mcpHealth).toEqual({ content: [{ text: 'healthy', type: 'text' }] });
   expect(JSON.stringify(mcpInspection)).toContain('Broker command target');
-  expect(mcpTools.tools.map(tool => tool.name)).not.toContain('browser.raw_cdp');
+  expect(mcpTools.tools.map(tool => tool.name)).toContain('browser.raw_cdp');
   expect(firstReaderTargets).toMatchObject({ kind: 'response', method: 'targets.list', result: { targets: [{ id: target.id }] } });
   expect(secondReaderTargets).toMatchObject({ kind: 'response', method: 'targets.list', result: { targets: [{ id: target.id }] } });
   expect(unexposedTarget).toMatchObject({ kind: 'error', method: 'leases.acquire', error: { code: 'TARGET_NOT_FOUND' } });

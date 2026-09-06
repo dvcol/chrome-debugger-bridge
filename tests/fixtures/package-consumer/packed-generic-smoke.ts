@@ -1,6 +1,10 @@
+import type { BrokerToClientMessage, ClientToBrokerMessage, PublishedTarget } from '@dvcol/cdb';
+import type { AuthenticatedConnection } from '@dvcol/cdb-websocket/node';
+
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 
+import { brokerToClientMessageSchema } from '@dvcol/cdb';
 import { createBrowserChromeDebuggerBridgeClient } from '@dvcol/cdb-websocket/browser';
 import {
   createNodeChromeDebuggerBridgeClient,
@@ -15,11 +19,17 @@ import protocolJsonSchema from '@dvcol/cdb/protocol.schema.json' with { type: 'j
 
 const disconnectedErrorPattern = /disconnected/u;
 
-async function main() {
+async function nextValue<Value>(iterator: AsyncIterator<Value>): Promise<Value> {
+  const result = await iterator.next();
+  assert.ok(!result.done);
+  return result.value;
+}
+
+async function main(): Promise<void> {
   assert.equal(protocolJsonSchema.$id, 'urn:dvcol:chrome-debugger-bridge:protocol:1');
   assert.equal(protocolJsonSchema.$schema, 'https://json-schema.org/draft/2020-12/schema');
   const authorization = 'Bearer packed-example-client';
-  const target = {
+  const target: PublishedTarget = {
     availability: 'available',
     capabilities: { allow: ['Runtime.evaluate', 'Runtime.consoleAPICalled'] },
     generation: 1,
@@ -30,8 +40,10 @@ async function main() {
   const artifactId = crypto.randomUUID();
   const artifactBytes = new TextEncoder().encode('packed generic artifact');
 
-  function response(connection, message, method, result) {
-    return connection.send({ kind: 'response', method, protocolVersion: 1, requestId: message.requestId, result });
+  async function response(connection: AuthenticatedConnection<ClientToBrokerMessage, BrokerToClientMessage>, message: { requestId: string }, method: string, result: unknown): Promise<void> {
+    const validation = await brokerToClientMessageSchema['~standard'].validate({ kind: 'response', method, protocolVersion: 1, requestId: message.requestId, result });
+    if (validation.issues !== undefined) throw new Error('The smoke responder produced an invalid protocol response.');
+    return connection.send(validation.value);
   }
 
   const brokerId = crypto.randomUUID();
@@ -102,48 +114,51 @@ async function main() {
     server: artifactServer,
   });
 
-  await new Promise((resolve, reject) => artifactServer.listen(0, '127.0.0.1', error => error === undefined ? resolve() : reject(error)));
+  await new Promise<void>((resolve, reject) => {
+    artifactServer.once('error', reject);
+    artifactServer.listen(0, '127.0.0.1', resolve);
+  });
   const artifactAddress = artifactServer.address();
   if (artifactAddress === null || typeof artifactAddress === 'string') throw new Error('Artifact server did not expose a TCP port.');
   const clientEndpoint = `ws://${bridge.host}:${bridge.port}/cdb/client`;
   const artifactEndpoint = `http://127.0.0.1:${artifactAddress.port}/cdb/artifacts/`;
 
   try {
-    const browserClient = await createBrowserChromeDebuggerBridgeClient({ artifactEndpoint, authorization, endpoint: clientEndpoint, reconnect: { initialDelayMilliseconds: 1, maximumDelayMilliseconds: 5 } });
+    const browserClient = await createBrowserChromeDebuggerBridgeClient({ artifactEndpoint, authorization, endpoint: clientEndpoint });
     const [publishedTarget] = await browserClient.listTargets();
     assert.equal(publishedTarget?.id, target.id);
     const lease = await browserClient.acquireLease({ durationMilliseconds: 30_000, requestedMethods: ['Runtime.evaluate', 'Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
     const subscription = await browserClient.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: lease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });
-    assert.equal((await subscription[Symbol.asyncIterator]().next()).value.method, 'Runtime.consoleAPICalled');
+    assert.equal((await nextValue(subscription[Symbol.asyncIterator]())).method, 'Runtime.consoleAPICalled');
     assert.deepEqual(await browserClient.readArtifact({ artifactId, leaseId: lease.id, targetGeneration: target.generation, targetId: target.id }), artifactBytes);
     await browserClient.cancelCommand({ operationId: crypto.randomUUID(), targetGeneration: target.generation, targetId: target.id });
     await assert.rejects(browserClient.executeCommand({ leaseId: lease.id, method: 'Runtime.evaluate', operationId: crypto.randomUUID(), parameters: { expression: 'disconnect' }, targetGeneration: target.generation, targetId: target.id }), disconnectedErrorPattern);
     assert.equal((await browserClient.listTargets())[0]?.id, target.id);
-    assert.equal((await subscription[Symbol.asyncIterator]().next()).value.method, 'Runtime.consoleAPICalled');
+    assert.equal((await nextValue(subscription[Symbol.asyncIterator]())).method, 'Runtime.consoleAPICalled');
     browserClient.close();
     await browserClient.closed;
 
-    const nodeClient = await createNodeChromeDebuggerBridgeClient({ artifactEndpoint, authorization, endpoint: clientEndpoint, reconnect: { initialDelayMilliseconds: 1, maximumDelayMilliseconds: 5 } });
+    const nodeClient = await createNodeChromeDebuggerBridgeClient({ artifactEndpoint, authorization, endpoint: clientEndpoint });
     const nodeTarget = (await nodeClient.listTargets())[0];
     assert.equal(nodeTarget?.id, target.id);
     const nodeWatch = nodeClient.watchTargets()[Symbol.asyncIterator]();
-    assert.equal((await nodeWatch.next()).value.kind, 'snapshot');
+    assert.equal((await nextValue(nodeWatch)).kind, 'snapshot');
     const nodeLease = await nodeClient.acquireLease({ durationMilliseconds: 30_000, requestedMethods: ['Runtime.evaluate', 'Runtime.consoleAPICalled'], targetGeneration: target.generation, targetId: target.id });
     const nodeSubscription = await nodeClient.subscribe({ buffer: { capacity: 1, overflowStrategy: 'drop-oldest' }, leaseId: nodeLease.id, match: { method: 'Runtime.consoleAPICalled' }, targetGeneration: target.generation, targetId: target.id });
-    assert.equal((await nodeSubscription[Symbol.asyncIterator]().next()).value.method, 'Runtime.consoleAPICalled');
+    assert.equal((await nextValue(nodeSubscription[Symbol.asyncIterator]())).method, 'Runtime.consoleAPICalled');
     assert.deepEqual(await nodeClient.readArtifact({ artifactId, leaseId: nodeLease.id, targetGeneration: target.generation, targetId: target.id }), artifactBytes);
     await nodeClient.cancelCommand({ operationId: crypto.randomUUID(), targetGeneration: target.generation, targetId: target.id });
     await assert.rejects(nodeClient.executeCommand({ leaseId: nodeLease.id, method: 'Runtime.evaluate', operationId: crypto.randomUUID(), parameters: { expression: 'disconnect' }, targetGeneration: target.generation, targetId: target.id }), disconnectedErrorPattern);
     assert.equal((await nodeClient.listTargets())[0]?.id, target.id);
-    assert.equal((await nodeWatch.next()).value.kind, 'snapshot');
-    assert.equal((await nodeSubscription[Symbol.asyncIterator]().next()).value.method, 'Runtime.consoleAPICalled');
+    assert.equal((await nextValue(nodeWatch)).kind, 'snapshot');
+    assert.equal((await nextValue(nodeSubscription[Symbol.asyncIterator]())).method, 'Runtime.consoleAPICalled');
     nodeClient.dispose();
     await nodeClient.closed;
   } finally {
     mountedArtifacts.close();
     await Promise.all([
       bridge.close(),
-      new Promise((resolve, reject) => artifactServer.close(error => error === undefined ? resolve() : reject(error))),
+      new Promise<void>((resolve, reject) => artifactServer.close(error => error === undefined ? resolve() : reject(error))),
     ]);
   }
 }

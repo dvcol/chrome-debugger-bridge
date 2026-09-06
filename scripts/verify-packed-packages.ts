@@ -378,10 +378,10 @@ for (const importSpecifier of runtimeImportSpecifiers) {
     await executeFile('pnpm', ['run', 'smoke'], { cwd: packageDirectory });
   }
   await copyFile(
-    join(workspaceRoot, 'tests', 'fixtures', 'package-consumer', 'packed-generic-smoke.mjs'),
-    join(packedExampleRoot, 'examples', 'browser-client', 'packed-generic-smoke.mjs'),
+    join(workspaceRoot, 'tests', 'fixtures', 'package-consumer', 'packed-generic-smoke.ts'),
+    join(packedExampleRoot, 'examples', 'browser-client', 'packed-generic-smoke.ts'),
   );
-  await executeFile(process.execPath, ['packed-generic-smoke.mjs'], { cwd: join(packedExampleRoot, 'examples', 'browser-client') });
+  await executeFile(process.execPath, ['packed-generic-smoke.ts'], { cwd: join(packedExampleRoot, 'examples', 'browser-client') });
   console.info(styleText('green', '✅ [examples]'), 'ran private example smoke commands against packed tarballs without workspace aliases');
 } finally {
   await rm(temporaryConsumerRoot, { force: true, recursive: true });

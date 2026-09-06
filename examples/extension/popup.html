@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>CDB browser access</title>
+    <style>
+      body {
+        font:
+          14px system-ui,
+          sans-serif;
+        margin: 18px;
+        width: 340px;
+        color: #172033;
+      }
+      h1 {
+        font-size: 18px;
+        margin-top: 0;
+      }
+      select,
+      button {
+        font: inherit;
+        padding: 8px;
+        margin: 5px 5px 5px 0;
+      }
+      section {
+        border-top: 1px solid #ccd1d9;
+        padding: 12px 0;
+      }
+      #status {
+        overflow-wrap: anywhere;
+      }
+      .details {
+        color: #566171;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Review browser access</h1>
+    <p id="selected-tab" class="details"></p>
+    <label for="scope">Allow control of</label>
+    <select id="scope">
+      <option value="tab">This tab</option>
+      <option value="group">Its live tab group</option>
+      <option value="window">Its live window</option>
+    </select>
+    <p class="details">Approved tabs remain controlled across HTTP(S) navigation. Live scopes include tabs that join later.</p>
+    <p id="status" role="status">Connecting to the host…</p>
+    <div id="requests"></div>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

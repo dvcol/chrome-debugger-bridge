@@ -955,8 +955,10 @@ export async function createBrowserChromeDebuggerBridgeClient(
       if (!response.ok) throw new Error(`Artifact read failed with HTTP ${response.status}.`);
       return new Uint8Array(await response.arrayBuffer());
     },
-    async releaseArtifact(): Promise<void> {
-      /** HTTP artifact access is one-shot; the backing store releases each successful read. */
+    async releaseArtifact(requestInput: ArtifactAccessRequest): Promise<void> {
+      const endpoint = new URL(encodeURIComponent(requestInput.artifactId), options.artifactEndpoint);
+      const response = await globalThis.fetch(endpoint, { method: 'DELETE', headers: { authorization: options.authorization } });
+      if (!response.ok && response.status !== 404) throw new Error(`Artifact release failed with HTTP ${response.status}.`);
     },
     async renewLease(requestInput: RenewLeaseRequest): Promise<Lease> {
       const response = await request({ kind: 'request', method: 'leases.renew', parameters: requestInput, protocolVersion: 1, requestId: crypto.randomUUID() });

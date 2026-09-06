@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "smoke": "node smoke.mjs"
+    "smoke": "node smoke.ts"
   },
   "dependencies": {
     "@dvcol/cdb": "workspace:*",

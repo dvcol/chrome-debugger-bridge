@@ -1,3 +1,5 @@
+import type { PublishedTarget } from '@dvcol/cdb';
+
 import assert from 'node:assert/strict';
 import { createServer as createHttpServer } from 'node:http';
 
@@ -6,10 +8,10 @@ import { createPluginFromDevframe } from '@vitejs/devtools-kit/node';
 import { viteDevBridge } from 'devframe/helpers/vite';
 import { createServer } from 'vite';
 
-import { createDevframeDefinition } from './devframe.mjs';
+import { createDevframeDefinition } from './devframe.ts';
 
 const targetSummaryPattern = /Available targets: 1/u;
-const target = {
+const target: PublishedTarget = {
   availability: 'available',
   capabilities: { level: 'inspect' },
   generation: 1,
@@ -18,14 +20,19 @@ const target = {
   type: 'page',
 };
 
-async function postMcp(endpoint, request, sessionId) {
+function requireRecord(value: unknown): Record<string, unknown> {
+  assert.ok(typeof value === 'object' && value !== null && !Array.isArray(value));
+  return value as Record<string, unknown>;
+}
+
+async function postMcp(endpoint: string, request: Record<string, unknown>, sessionId?: string | null): Promise<{ body: Record<string, unknown>; sessionId: string | null }> {
   const response = await fetch(endpoint, {
     body: JSON.stringify(request),
     headers: {
       'Accept': 'application/json, text/event-stream',
       'Content-Type': 'application/json',
       'Origin': 'http://127.0.0.1',
-      ...(sessionId === undefined ? {} : { 'Mcp-Session-Id': sessionId }),
+      ...(sessionId == null ? {} : { 'Mcp-Session-Id': sessionId }),
     },
     method: 'POST',
   });
@@ -33,23 +40,23 @@ async function postMcp(endpoint, request, sessionId) {
   const responseText = await response.text();
   const data = responseText.split('\n').find(line => line.startsWith('data: '));
   if (data === undefined) throw new Error(`Expected an MCP JSON response, received ${responseText}.`);
-  const body = JSON.parse(data.slice('data: '.length));
+  const body = requireRecord(JSON.parse(data.slice('data: '.length)) as unknown);
   return { body, sessionId: response.headers.get('Mcp-Session-Id') };
 }
 
-async function reserveLoopbackPort() {
+async function reserveLoopbackPort(): Promise<number> {
   const server = createHttpServer();
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     server.listen(0, '127.0.0.1', resolve);
     server.once('error', reject);
   });
   const address = server.address();
   if (address === null || typeof address === 'string') throw new Error('Expected reserved TCP address.');
-  await new Promise((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error)));
+  await new Promise<void>((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error)));
   return address.port;
 }
 
-async function main() {
+async function main(): Promise<void> {
   const bridge = createEmbeddedChromeDebuggerBridge();
   bridge.broker.publishTarget(target);
   const devframe = createDevframeDefinition(bridge);
@@ -74,11 +81,12 @@ async function main() {
     if (viteAddress === null || viteAddress === undefined || typeof viteAddress === 'string') throw new Error('Expected Vite TCP address.');
     const connectionResponse = await fetch(`http://127.0.0.1:${viteAddress.port}/__cdb-devframe/__connection.json`);
     assert.equal(connectionResponse.ok, true);
-    const connection = await connectionResponse.json();
-    assert.equal(typeof connection.mcp?.port, 'number');
-    assert.equal(typeof connection.mcp?.path, 'string');
+    const connection = requireRecord(await connectionResponse.json() as unknown);
+    const mcp = requireRecord(connection.mcp);
+    assert.ok(typeof mcp.port === 'number');
+    assert.ok(typeof mcp.path === 'string');
 
-    const endpoint = `http://127.0.0.1:${connection.mcp.port}${connection.mcp.path}`;
+    const endpoint = `http://127.0.0.1:${mcp.port}${mcp.path}`;
     let initialized;
     try {
       initialized = await postMcp(endpoint, {
@@ -96,11 +104,19 @@ async function main() {
     }
     assert.equal(typeof initialized.sessionId, 'string');
     const tools = await postMcp(endpoint, { id: 2, jsonrpc: '2.0', method: 'tools/list', params: {} }, initialized.sessionId);
-    const summaryTool = tools.body.result.tools.find(tool => tool.name.includes('target-summary'));
-    assert.equal(summaryTool.annotations.readOnlyHint, true);
-    assert.equal(tools.body.result.tools.some(tool => tool.name.includes('cdp') || tool.name.includes('pair')), false);
+    const toolValues = requireRecord(tools.body.result).tools;
+    assert.ok(Array.isArray(toolValues));
+    const availableTools = toolValues.map((value: unknown) => requireRecord(value));
+    const summaryTool = availableTools.find(tool => typeof tool.name === 'string' && tool.name.includes('target-summary'));
+    assert.ok(summaryTool);
+    assert.equal(requireRecord(summaryTool.annotations).readOnlyHint, true);
+    assert.equal(availableTools.some(tool => typeof tool.name === 'string' && (tool.name.includes('cdp') || tool.name.includes('pair'))), false);
     const summary = await postMcp(endpoint, { id: 3, jsonrpc: '2.0', method: 'tools/call', params: { arguments: {}, name: summaryTool.name } }, initialized.sessionId);
-    assert.match(summary.body.result.content[0].text, targetSummaryPattern);
+    const content = requireRecord(summary.body.result).content;
+    assert.ok(Array.isArray(content));
+    const text = requireRecord(content[0]).text;
+    assert.equal(typeof text, 'string');
+    assert.match(String(text), targetSummaryPattern);
   } finally {
     await viteServer.close();
     bridge.dispose();
