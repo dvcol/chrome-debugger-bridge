@@ -29,7 +29,7 @@ Default screenshots return MCP image content and release temporary artifacts int
 }
 ```
 
-Each step calls the same implementation as its individual tool. Success returns `completed` entries with zero-based indices and action names. `observe` adds a final compact snapshot. A failed step returns `failedStep` and a structured `error`; `uncertain:true` means input may have occurred. Cancellation, target authority replacement, or document replacement stops subsequent steps. Completed actions are not rolled back or replayed. If final observation fails, completed actions remain recorded.
+Each step calls the same implementation as its individual tool. Success returns `completed` entries with zero-based indices and action names. `observe` adds a final compact snapshot. Failures use the standard `code`, `message`, `retryable` and `details` error envelope. `details.completed` records successful steps, `details.failedStep` identifies the failed step, and `details.uncertain:true` means input may have occurred. A final observation failure uses `details.phase: "observation"`. Cancellation, target authority replacement, or document replacement stops subsequent steps. Completed actions are not rolled back or replayed. If final observation fails, completed actions remain recorded.
 
 ## Browser behavior and limits
 

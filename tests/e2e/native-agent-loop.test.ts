@@ -96,9 +96,9 @@ it('stops an active native batch when its target is revoked', async () => {
   await harness.page.getByRole('button', { name: 'Save replacement', exact: true }).waitFor({ state: 'attached' });
   await harness.revoke();
   const result = await batch;
-  const output = JSON.parse(toolText(result)) as { readonly completed: readonly { readonly index: number }[] };
+  const output = JSON.parse(toolText(result)) as { readonly details: { readonly completed: readonly { readonly index: number }[] } };
   expect(result.isError).toBe(true);
-  expect(output.completed.every(step => step.index < 1)).toBe(true);
+  expect(output.details.completed.every(step => step.index < 1)).toBe(true);
   expect(await harness.page.locator('#parent-overlay').count()).toBe(0);
 }, 90_000);
 
@@ -114,9 +114,9 @@ it('stops a native batch when a click replaces the root document', async () => {
     timeoutMilliseconds: 5_000,
   }, name: 'browser.batch' });
   await harness.page.waitForURL(url => url.searchParams.get('revision') === '1');
-  const output = JSON.parse(toolText(result)) as { readonly completed: readonly { readonly index: number }[] };
+  const output = JSON.parse(toolText(result)) as { readonly details: { readonly completed: readonly { readonly index: number }[] } };
   expect(result.isError).toBe(true);
-  expect(output.completed.every(step => step.index < 1)).toBe(true);
+  expect(output.details.completed.every(step => step.index < 1)).toBe(true);
   expect(await harness.page.getByRole('button', { name: 'Save replacement', exact: true }).count()).toBe(0);
 }, 90_000);
 

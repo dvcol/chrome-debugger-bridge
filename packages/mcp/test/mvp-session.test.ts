@@ -253,8 +253,33 @@ it('applies CSS selectors inside each shadow root without matching selector text
   expect((JSON.parse(result.text) as unknown[])[0]).toMatchObject({ name: 'Save', role: 'button' });
 });
 
+it('preserves the failure cause when fill verification becomes unavailable without replaying input', async () => {
+  expect.assertions(3);
+  let insertions = 0;
+  const harness = toolHarness(async (command) => {
+    if (command.method === 'Accessibility.getFullAXTree') return { value: { nodes: [{ backendDOMNodeId: 1, nodeId: 'field', name: { value: 'Name' }, role: { value: 'textbox' } }] } };
+    if (command.method === 'Accessibility.getPartialAXTree') {
+      if (insertions > 0) throw Object.assign(new Error('Node unavailable after editing'), { code: 'CDP_COMMAND_FAILED' });
+      return { value: { nodes: [{ role: { value: 'textbox' } }] } };
+    }
+    if (command.method === 'DOM.describeNode') return { value: { node: { backendNodeId: 1 } } };
+    if (command.method === 'DOM.getContentQuads') return { value: { quads: [[0, 0, 100, 0, 100, 50, 0, 50]] } };
+    if (command.method === 'DOM.getNodeForLocation') return { value: { backendNodeId: 1 } };
+    if (command.method === 'Input.insertText') insertions += 1;
+    return { value: { sessions: [] } };
+  });
+  await harness.invoke('browser.snapshot');
+
+  const result = await harness.invoke('browser.fill', { ref: 'e1', text: 'Example' });
+  const outcome = JSON.parse(result.text) as Record<string, unknown>;
+
+  expect(outcome.code).toBe('MCP_ACTION_OUTCOME_UNKNOWN');
+  expect(outcome.details).toMatchObject({ cause: { code: 'CDP_COMMAND_FAILED', message: 'Node unavailable after editing' } });
+  expect(insertions).toBe(1);
+});
+
 it('executes ordered element actions in one batch lease and stops after an uncertain dispatch', async () => {
-  expect.assertions(5);
+  expect.assertions(7);
   let inputCount = 0;
   const harness = toolHarness(async (command) => {
     if (command.method === 'Accessibility.getFullAXTree') return { value: { nodes: [{ backendDOMNodeId: 1, nodeId: 'save', name: { value: 'Save' }, role: { value: 'button' } }] } };
@@ -274,9 +299,11 @@ it('executes ordered element actions in one batch lease and stops after an uncer
   const outcome = JSON.parse(result.text) as Record<string, unknown>;
 
   expect(harness.leases - leasesBefore).toBe(1);
-  expect(outcome.completed).toEqual([{ index: 0, action: 'click' }]);
-  expect(outcome.failedStep).toBe(1);
-  expect(outcome.uncertain).toBe(true);
+  expect(outcome.code).toBe('MCP_ACTION_OUTCOME_UNKNOWN');
+  expect(outcome.retryable).toBe(false);
+  expect(outcome.details).toMatchObject({ completed: [{ index: 0, action: 'click' }] });
+  expect(outcome.details).toMatchObject({ failedStep: 1 });
+  expect(outcome.details).toMatchObject({ uncertain: true });
   expect(inputCount).toBe(4);
 });
 

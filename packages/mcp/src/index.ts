@@ -2517,7 +2517,12 @@ async function executeElementClick(
       } catch (error) {
         if (error instanceof McpToolError && error.code === 'MCP_ACTION_VERIFICATION_FAILED') throw error;
         if (inputDispatched)
-          throw new McpToolError('MCP_ACTION_OUTCOME_UNKNOWN', 'Input may have been dispatched before the action failed. The action was not replayed.');
+          throw new McpToolError('MCP_ACTION_OUTCOME_UNKNOWN', 'Input may have been dispatched before the action failed. The action was not replayed.', {
+            cause: {
+              code: stringValue(property(error, 'code')) ?? 'MCP_TOOL_FAILED',
+              message: error instanceof Error ? error.message : 'The browser command failed.',
+            },
+          });
         throw error;
       } finally {
         if (buttonPressed) {
@@ -2799,7 +2804,12 @@ async function executeElementInteraction(
       } catch (error) {
         if (error instanceof McpToolError && error.code === 'MCP_ACTION_VERIFICATION_FAILED') throw error;
         if (inputDispatched)
-          throw new McpToolError('MCP_ACTION_OUTCOME_UNKNOWN', 'Input may have been dispatched before the action failed. The action was not replayed.');
+          throw new McpToolError('MCP_ACTION_OUTCOME_UNKNOWN', 'Input may have been dispatched before the action failed. The action was not replayed.', {
+            cause: {
+              code: stringValue(property(error, 'code')) ?? 'MCP_TOOL_FAILED',
+              message: error instanceof Error ? error.message : 'The browser command failed.',
+            },
+          });
         throw error;
       }
     },
@@ -4506,6 +4516,22 @@ function createCdbToolDefinitionsForSession(
     },
     async (input, context) => {
       const completed: { index: number; action: string }[] = [];
+      const batchFailure = (failure: CallToolResult, failedStep?: number): CallToolResult => {
+        const content = failure.content.find(item => item.type === 'text');
+        const error = objectValue(content?.type === 'text' ? JSON.parse(content.text) : undefined);
+        return {
+          ...jsonContent({
+            ...error,
+            details: {
+              ...objectValue(error.details),
+              completed,
+              ...(failedStep === undefined ? { phase: 'observation' } : { failedStep }),
+              ...(error.code === 'MCP_ACTION_OUTCOME_UNKNOWN' ? { uncertain: true } : {}),
+            },
+          }),
+          isError: true,
+        };
+      };
       const cancellation = new AbortController();
       const signal = AbortSignal.any([context.mcpReq.signal, cancellation.signal]);
       const timeout = setTimeout(() => cancellation.abort(new McpToolError('MCP_BATCH_TIMEOUT', 'The batch exceeded its total deadline.')), input.timeoutMilliseconds);
@@ -4541,27 +4567,21 @@ function createCdbToolDefinitionsForSession(
             const currentTarget = await resolveSemanticTarget(client, sessionState, input.targetRef);
             if (currentTarget.generation !== target.generation) throw new McpToolError('MCP_BATCH_AUTHORITY_REPLACED', 'Target authority changed during the batch.');
             const result = await step.definition.invoke({ ...step.parameters, timeoutMilliseconds: Math.max(1, deadline - Date.now()) }, { signal });
-            if (result.isError) {
-              const content = result.content.find(item => item.type === 'text');
-              const error = content?.type === 'text' ? JSON.parse(content.text) as Record<string, unknown> : { code: 'MCP_TOOL_FAILED' };
-              return { ...jsonContent({ completed, failedStep: index, error, ...(error.code === 'MCP_ACTION_OUTCOME_UNKNOWN' ? { uncertain: true } : {}), ...(signal.aborted ? { stopped: property(signal.reason, 'code') ?? 'MCP_WAIT_CANCELLED' } : {}) }), isError: true };
-            }
+            if (result.isError) return batchFailure(result, index);
             completed.push({ index, action: step.action });
           }
           if (signal.aborted) throw signal.reason;
           if (input.observe) {
             const snapshot = definitions.find(definition => definition.name === 'browser.snapshot');
             const observation = await snapshot?.invoke({ targetRef: input.targetRef }, { signal });
-            if (observation?.isError) return { ...jsonContent({ completed, observation }), isError: true };
+            if (observation?.isError) return batchFailure(observation);
             const content = observation?.content.find(item => item.type === 'text');
             return jsonContent({ completed, observation: content?.type === 'text' ? content.text : undefined });
           }
           return jsonContent({ completed });
         });
       } catch (error) {
-        const failure = toolError(signal.aborted ? signal.reason : error);
-        const content = failure.content.find(item => item.type === 'text');
-        return { ...jsonContent({ completed, failedStep: completed.length, error: content?.type === 'text' ? JSON.parse(content.text) as unknown : undefined }), isError: true };
+        return batchFailure(toolError(signal.aborted ? signal.reason : error), completed.length);
       } finally {
         clearTimeout(timeout);
         for (const subscription of subscriptions) subscription.close();
