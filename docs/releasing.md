@@ -22,8 +22,6 @@ Turbo owns the validation dependency graph, including package builds required by
 
 The root `check`, `typecheck`, `verify`, and `verify:pack` wrappers each invoke one dependency-only `//#…:all` target in `turbo.json`. These targets have no shell command. Their names differ from the wrappers to avoid invoking Turbo recursively. Package tasks declare their own dependencies: `pack` waits for `build`, and consumer verification waits for all package archives. The two TypeScript verification scripts perform checks; Turbo handles their scheduling.
 
-Extension E2E runs after the other checks so its browser deadlines do not compete with type checking, unit tests, or consumer installations.
-
 ## Repository setup checkpoint
 
 Before running a release, create two protected GitHub environments in [the repository settings](https://github.com/dvcol/chrome-debugger-bridge/settings/environments):
