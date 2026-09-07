@@ -180,8 +180,8 @@ pnpm build
 pnpm verify
 ```
 
-`pnpm verify` includes workspace and generated-catalog checks, lint, typecheck, unit and integration
-tests, builds, Chromium tests, extension E2E, browser runtime-boundary checks, publint, tarball
+`pnpm verify` includes Turbo package boundaries, generated-catalog checks, lint (including browser
+import restrictions), typecheck, unit and integration tests, builds, Chromium tests, extension E2E, publint, tarball
 construction, package consumers, and packed example smoke commands. Loopback permission is required
 because the HTTP and WebSocket suites bind `127.0.0.1`.
 

@@ -1,4 +1,15 @@
+import { builtinModules } from 'node:module';
+
 import { defineTypescriptConfig } from '@dvcol/eslint-config';
+
+const browserRestrictedImports = [
+  ...builtinModules,
+  'node:*',
+  '@dvcol/cdb-mcp',
+  '@dvcol/cdb-automation-playwright',
+  '@dvcol/cdb-websocket/node',
+  '@dvcol/cdb-birpc/node',
+];
 
 export default defineTypescriptConfig(
   {
@@ -41,6 +52,20 @@ export default defineTypescriptConfig(
         projectService: false,
         tsconfigRootDir: import.meta.dirname,
       },
+    },
+  },
+  {
+    files: ['packages/core/src/**/*.ts', 'packages/extension/src/**/*.ts', 'packages/websocket/src/**/*.ts', 'packages/birpc/src/client.ts'],
+    ignores: ['packages/websocket/src/node.ts', 'packages/websocket/src/artifact-http.ts', 'packages/websocket/src/file-artifact-store.ts'],
+    rules: {
+      'node/no-restricted-import': ['error', browserRestrictedImports],
+      'node/no-restricted-require': ['error', browserRestrictedImports],
+      'ts/no-restricted-imports': ['error', {
+        patterns: [{
+          group: ['**/node.*', '**/artifact-http.*', '**/file-artifact-store.*'],
+          allowTypeImports: true,
+        }],
+      }],
     },
   },
   {

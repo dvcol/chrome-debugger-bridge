@@ -156,7 +156,7 @@ Use a pnpm 11 workspace with Turbo as the only task graph. Use tsdown for publis
 │   ├── mcp/
 │   └── websocket/
 ├── scripts/
-│   ├── check-workspace-dependencies.ts
+│   ├── verify-release-state.ts
 │   └── verify-packed-packages.ts
 ├── tests/
 │   ├── contract/
@@ -980,7 +980,7 @@ export default defineTypescriptConfig(
 
 Retain the inherited catalog validation, workspace-settings, duplicate-catalog, and unused-catalog rules. Enable the no-anonymous-catalog rule if all dependencies are assigned to named catalogs.
 
-`scripts/check-workspace-dependencies.ts` performs only the policy ESLint cannot infer: whether a dependency name is an internal workspace package and therefore must use the correct `workspace:^` or `workspace:*` form.
+ESLint enforces catalogue usage and browser import restrictions. `turbo boundaries` checks declared dependencies and isolation of the public packages. The current task graph and release tooling are documented in [the release guide](docs/releasing.md).
 
 ## 20. Turbo task graph
 
@@ -1017,7 +1017,7 @@ Root commands invoke Turbo; packages expose small local commands.
       "cache": false,
       "outputs": ["test-results/**"]
     },
-    "check:workspace": {
+    "//#check:boundaries": {
       "outputs": []
     },
     "pack": {

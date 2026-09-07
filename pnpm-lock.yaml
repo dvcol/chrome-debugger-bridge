@@ -178,9 +178,6 @@ importers:
       changelogithub:
         specifier: catalog:release
         version: 15.0.5
-      devtools-protocol:
-        specifier: catalog:protocol
-        version: 0.0.1672245
       eslint:
         specifier: catalog:build
         version: 10.8.0(jiti@2.7.0)(supports-color@7.2.0)
@@ -205,9 +202,6 @@ importers:
       publint:
         specifier: catalog:build
         version: 0.3.22
-      tsdown:
-        specifier: catalog:build
-        version: 0.22.14(oxc-resolver@11.24.2)(publint@0.3.22)(typescript@5.9.3)
       turbo:
         specifier: catalog:build
         version: 2.10.8
@@ -326,6 +320,13 @@ importers:
       playwright-core:
         specifier: catalog:automation
         version: 1.62.1
+    devDependencies:
+      tsdown:
+        specifier: catalog:build
+        version: 0.22.14(oxc-resolver@11.24.2)(publint@0.3.22)(typescript@5.9.3)
+      vitest:
+        specifier: catalog:testing
+        version: 4.1.10(@types/node@26.1.2)(@vitest/browser-playwright@4.1.10)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.2.0(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0))
 
   packages/birpc:
     dependencies:
@@ -338,6 +339,13 @@ importers:
       birpc:
         specifier: 'catalog:'
         version: 4.0.0
+    devDependencies:
+      tsdown:
+        specifier: catalog:build
+        version: 0.22.14(oxc-resolver@11.24.2)(publint@0.3.22)(typescript@5.9.3)
+      vitest:
+        specifier: catalog:testing
+        version: 4.1.10(@types/node@26.1.2)(@vitest/browser-playwright@4.1.10)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.2.0(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0))
 
   packages/core:
     dependencies:
@@ -354,12 +362,28 @@ importers:
       ajv-formats:
         specifier: catalog:testing
         version: 3.0.1(ajv@8.20.0)
+      devtools-protocol:
+        specifier: catalog:protocol
+        version: 0.0.1672245
+      tsdown:
+        specifier: catalog:build
+        version: 0.22.14(oxc-resolver@11.24.2)(publint@0.3.22)(typescript@5.9.3)
+      vitest:
+        specifier: catalog:testing
+        version: 4.1.10(@types/node@26.1.2)(@vitest/browser-playwright@4.1.10)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.2.0(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0))
 
   packages/extension:
     dependencies:
       '@dvcol/cdb':
         specifier: workspace:^
         version: link:../core
+    devDependencies:
+      tsdown:
+        specifier: catalog:build
+        version: 0.22.14(oxc-resolver@11.24.2)(publint@0.3.22)(typescript@5.9.3)
+      vitest:
+        specifier: catalog:testing
+        version: 4.1.10(@types/node@26.1.2)(@vitest/browser-playwright@4.1.10)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.2.0(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0))
 
   packages/mcp:
     dependencies:
@@ -382,6 +406,12 @@ importers:
       '@modelcontextprotocol/client':
         specifier: 'catalog:'
         version: 2.0.0
+      tsdown:
+        specifier: catalog:build
+        version: 0.22.14(oxc-resolver@11.24.2)(publint@0.3.22)(typescript@5.9.3)
+      vitest:
+        specifier: catalog:testing
+        version: 4.1.10(@types/node@26.1.2)(@vitest/browser-playwright@4.1.10)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.2.0(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0))
 
   packages/websocket:
     dependencies:
@@ -395,6 +425,12 @@ importers:
       '@types/ws':
         specifier: catalog:types
         version: 8.18.1
+      tsdown:
+        specifier: catalog:build
+        version: 0.22.14(oxc-resolver@11.24.2)(publint@0.3.22)(typescript@5.9.3)
+      vitest:
+        specifier: catalog:testing
+        version: 4.1.10(@types/node@26.1.2)(@vitest/browser-playwright@4.1.10)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.2.0(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0))
 
   tests/fixtures/package-consumer:
     dependencies:

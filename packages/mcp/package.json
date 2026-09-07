@@ -52,7 +52,9 @@
     "zod": "catalog:protocol"
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "catalog:"
+    "@modelcontextprotocol/client": "catalog:",
+    "tsdown": "catalog:build",
+    "vitest": "catalog:testing"
   },
   "publishConfig": {
     "access": "public"

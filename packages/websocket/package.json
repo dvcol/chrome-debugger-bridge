@@ -54,7 +54,9 @@
     "ws": "catalog:transport"
   },
   "devDependencies": {
-    "@types/ws": "catalog:types"
+    "@types/ws": "catalog:types",
+    "tsdown": "catalog:build",
+    "vitest": "catalog:testing"
   },
   "publishConfig": {
     "access": "public"

@@ -96,7 +96,10 @@
   },
   "devDependencies": {
     "ajv": "catalog:testing",
-    "ajv-formats": "catalog:testing"
+    "ajv-formats": "catalog:testing",
+    "devtools-protocol": "catalog:protocol",
+    "tsdown": "catalog:build",
+    "vitest": "catalog:testing"
   },
   "publishConfig": {
     "access": "public"
