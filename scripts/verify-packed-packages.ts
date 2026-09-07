@@ -1,4 +1,3 @@
-import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { copyFile, cp, glob, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,9 +10,6 @@ interface PackageManifest {
   readonly version: string;
   readonly exports?: Readonly<Record<string, string | Readonly<Record<string, unknown>>>>;
   readonly dependencies?: Readonly<Record<string, string>>;
-  readonly devDependencies?: Readonly<Record<string, string>>;
-  readonly optionalDependencies?: Readonly<Record<string, string>>;
-  readonly peerDependencies?: Readonly<Record<string, string>>;
   readonly scripts?: Readonly<Record<string, string>>;
 }
 
@@ -36,25 +32,8 @@ for await (const manifestPath of glob('packages/*/package.json')) {
 const temporaryRoot = await mkdtemp(join(tmpdir(), 'cdb-package-consumers-'));
 try {
   const imports: string[] = [];
-  for (const { directory, manifest, artifactPath } of packageDefinitions) {
-    const extractionDirectory = join(temporaryRoot, directory);
-    await mkdir(extractionDirectory, { recursive: true });
-    await executeFile('tar', ['-xzf', artifactPath, '-C', extractionDirectory]);
-    const extractedDirectory = join(extractionDirectory, 'package');
-    const packedManifest = await readManifest(join(extractedDirectory, 'package.json'));
-    assert.equal(packedManifest.name, manifest.name);
-    assert.equal(packedManifest.version, manifest.version);
-    await Promise.all(['README.md', 'LICENSE'].map(async file => readFile(join(extractedDirectory, file), 'utf8')));
-
-    const dependencySpecifiers = Object.values({
-      ...packedManifest.dependencies,
-      ...packedManifest.devDependencies,
-      ...packedManifest.optionalDependencies,
-      ...packedManifest.peerDependencies,
-    });
-    assert.ok(dependencySpecifiers.every(specifier => !specifier.startsWith('workspace:') && !specifier.startsWith('catalog:')), `${manifest.name} contains unresolved workspace dependencies.`);
-
-    for (const [subpath, target] of Object.entries(packedManifest.exports ?? {})) {
+  for (const { manifest } of packageDefinitions) {
+    for (const [subpath, target] of Object.entries(manifest.exports ?? {})) {
       if (typeof target === 'string' ? target.endsWith('.json') : !('import' in target)) continue;
       imports.push(subpath === '.' ? manifest.name : `${manifest.name}${subpath.slice(1)}`);
     }

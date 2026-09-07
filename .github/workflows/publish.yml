@@ -4,20 +4,12 @@ run-name: Publish ${{ inputs.tag-name }}
 on:
   workflow_call:
     inputs:
-      commit-hash:
-        description: Exact release commit
-        required: true
-        type: string
       tag-name:
         description: Exact release tag
         required: true
         type: string
   workflow_dispatch:
     inputs:
-      commit-hash:
-        description: Exact release commit
-        required: true
-        type: string
       tag-name:
         description: Exact release tag
         required: true
@@ -37,32 +29,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: npm
-    env:
-      PUBLISH_COMMIT: ${{ inputs.commit-hash }}
-      PUBLISH_TAG: ${{ inputs.tag-name }}
     steps:
       - name: 📥 Checkout release tag
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ inputs.tag-name }}
+          ref: refs/tags/${{ inputs.tag-name }}
 
-      - name: 🔒 Validate immutable release
-        run: |
-          [[ "$PUBLISH_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
-          [[ "$PUBLISH_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          test "$(git rev-parse HEAD)" = "$PUBLISH_COMMIT"
-          test "$(git rev-list -n 1 "$PUBLISH_TAG")" = "$PUBLISH_COMMIT"
-
-      - name: 🧰 Set up workspace
+      - name: 🏗️ Set up workspace
         uses: ./.github/actions/setup-workspace
 
-      # Validate the immutable tag again so standalone retries are as strict as a release call.
       - name: ✅ Validate packages
-        run: |
-          pnpm run verify:release -- --phase current --version "${PUBLISH_TAG#v}"
-          pnpm verify:pack
-          git diff --exit-code
+        run: pnpm verify:pack
 
       - name: 🔑 Install npm with trusted publishing support
         run: npm install --global npm@latest

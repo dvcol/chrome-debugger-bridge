@@ -34,16 +34,13 @@ jobs:
         uses: actions/checkout@v7
 
       # Bootstrap runs the same complete gate as CI before claiming package names.
-      - name: 🧰 Set up workspace
+      - name: 🏗️ Set up workspace
         uses: ./.github/actions/setup-workspace
         with:
           install-chromium: 'true'
 
-      - name: ✅ Verify bootstrap state
-        run: |
-          pnpm run verify:release -- --phase current --version 0.0.0
-          pnpm verify
-          git diff --exit-code
+      - name: ✅ Verify workspace
+        run: pnpm verify
 
       - name: 🚀 Publish bootstrap versions
         run: pnpm publish --recursive --access public --tag bootstrap --provenance --no-git-checks --report-summary

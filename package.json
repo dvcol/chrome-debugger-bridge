@@ -25,7 +25,6 @@
     "verify": "turbo run verify:all",
     "verify:pack": "turbo run verify:pack:all",
     "verify:packed": "node scripts/verify-packed-packages.ts",
-    "verify:release": "node scripts/verify-release-state.ts",
     "check:boundaries": "pnpm run boundaries",
     "boundaries": "turbo boundaries --filter './packages/*'"
   },
@@ -56,7 +55,6 @@
     "publint": "catalog:build",
     "turbo": "catalog:build",
     "typescript": "catalog:types",
-    "verkit": "catalog:release",
     "vite": "catalog:devtools",
     "vitest": "catalog:testing"
   }

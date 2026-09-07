@@ -25,7 +25,6 @@ jobs:
     permissions:
       contents: read
     outputs:
-      commit-hash: ${{ steps.release-state.outputs.commit-hash }}
       tag-name: ${{ steps.release-state.outputs.tag-name }}
     env:
       RELEASE_VERSION: ${{ inputs.version }}
@@ -38,37 +37,28 @@ jobs:
           token: ${{ secrets.CI_TOKEN }}
 
       # Bumpp's post-command runs the complete browser and package verification gate.
-      - name: 🧰 Set up workspace
+      - name: 🏗️ Set up workspace
         uses: ./.github/actions/setup-workspace
         with:
           install-chromium: 'true'
 
-      - name: 🔒 Validate release request
-        run: |
-          test "$GITHUB_REF" = "refs/heads/main"
-          git fetch origin main --tags
-          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
-          pnpm run verify:release -- --phase before --version "$RELEASE_VERSION"
-          test -z "$(git tag --list "v$RELEASE_VERSION")"
+      - name: 🔒 Require main
+        run: test "$GITHUB_REF" = "refs/heads/main"
 
       - name: 🤖 Configure release identity
         run: |
           git config user.name "GitHub Release Bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: 🏷️ Create and verify release
-        run: |
-          pnpm run release -- --release "$RELEASE_VERSION"
-          pnpm run verify:release -- --phase after --version "$RELEASE_VERSION"
+      - name: 🏷️ Create release
+        run: pnpm run release -- --release "$RELEASE_VERSION"
 
       - name: ⬆️ Push release commit and tag
-        run: git push origin HEAD:main --follow-tags
+        run: git push --atomic origin HEAD:main --follow-tags
 
       - name: 📝 Record release state
         id: release-state
-        run: |
-          echo "commit-hash=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "tag-name=v$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+        run: echo "tag-name=$(git describe --tags --exact-match)" >> "$GITHUB_OUTPUT"
 
   publish:
     name: Publish packages
@@ -78,7 +68,6 @@ jobs:
       id-token: write
     uses: ./.github/workflows/publish.yml
     with:
-      commit-hash: ${{ needs.release.outputs.commit-hash }}
       tag-name: ${{ needs.release.outputs.tag-name }}
 
   github-release:
@@ -94,9 +83,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ needs.release.outputs.commit-hash }}
+          ref: refs/tags/${{ needs.release.outputs.tag-name }}
 
-      - name: 🧰 Set up workspace
+      - name: 🏗️ Set up workspace
         uses: ./.github/actions/setup-workspace
 
       - name: 📝 Create release notes

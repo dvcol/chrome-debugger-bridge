@@ -4,9 +4,9 @@ CDB publishes its six public packages on one synchronized version. A manually di
 
 ## Responsibilities
 
-- `release.yml` validates the requested version, runs Bumpp, verifies the complete repository, pushes the generated commit and annotated tag, calls `publish.yml`, and creates the GitHub Release only after publication succeeds.
+- `release.yml` runs Bumpp, verifies the complete repository, pushes the generated commit and annotated tag, calls `publish.yml`, and creates the GitHub Release only after publication succeeds.
 - `publish.yml` is both reusable and manually dispatchable. It checks out the exact tag and publishes every public package with npm trusted publishing and provenance.
-- pnpm transforms `workspace:` and `catalog:` dependency specifiers in packed and published manifests. The packed-consumer verification rejects either protocol if it escapes.
+- pnpm transforms `workspace:` and `catalog:` dependency specifiers in packed and published manifests.
 
 Turbo owns the validation dependency graph, including package builds required by root browser and packaging checks. `pnpm run pack` asks Turbo to build and pack each public package. Each package runs `pnpm pack --out artifacts/package.tgz` against its `tsdown` output in `dist/`. The fixed, ignored tarball path avoids a cleanup script and lets Turbo restore each package's archive from cache.
 
@@ -18,10 +18,9 @@ Turbo owns the validation dependency graph, including package builds required by
 | `pnpm check:boundaries` | Runs `turbo boundaries` on `packages/*` to check declared imports and package isolation. |
 | `pnpm verify` | Everything in `check`, browser tests, extension E2E, and package verification. |
 | `pnpm verify:pack` | Builds, publint, packing, and consumer verification without the full browser and extension suites. Used by publication retries. |
-| `pnpm verify:packed` | Runs `scripts/verify-packed-packages.ts` against existing tarballs. Checks package names and versions, README and license inclusion, and dependency protocols; installs the tarballs outside the workspace; compiles consumers, imports public entries, and runs example smoke commands. |
-| `pnpm verify:release -- --phase before\|after\|current --version X.Y.Z` | Runs `scripts/verify-release-state.ts`. Checks synchronized versions and, depending on the phase, an increasing version or the expected release commit, changed manifest paths, tag target, and clean checkout. It is a CI release guard. |
+| `pnpm verify:packed` | Runs `scripts/verify-packed-packages.ts` against existing tarballs. Installs the tarballs outside the workspace; compiles consumers, imports public entries, and runs example smoke commands. |
 
-The root `check`, `typecheck`, `verify`, and `verify:pack` wrappers each invoke one dependency-only `//#…:all` target in `turbo.json`. These targets have no shell command. Their names differ from the wrappers to avoid invoking Turbo recursively. Package tasks declare their own dependencies: `pack` waits for `build`, and consumer verification waits for all package archives. The two TypeScript verification scripts perform checks; Turbo handles their scheduling.
+The root `check`, `typecheck`, `verify`, and `verify:pack` wrappers each invoke one dependency-only `//#…:all` target in `turbo.json`. These targets have no shell command. Their names differ from the wrappers to avoid invoking Turbo recursively. Package tasks declare their own dependencies: `pack` waits for `build`, and consumer verification waits for all package archives. The remaining TypeScript script exercises installed packages and examples outside the workspace; Turbo handles its scheduling. Package metadata and exports are checked by publint.
 
 ESLint owns catalogue rules and rejects Node imports in browser code, including dynamic imports and imports of CDB's Node adapters. Turbo checks isolation of the public packages. Runnable examples may compose each other's source; the package-boundary command is scoped to `packages/*`.
 
@@ -37,6 +36,6 @@ Before running a release, create two protected GitHub environments in [the repos
 
 ## Normal release
 
-Manually run `release.yml` from `main` and enter an explicit semantic version. The first release is `0.1.0`. The workflow rejects stale `main`, non-increasing versions, conflicting tags, unexpected release-commit changes, and incomplete validation.
+Manually run `release.yml` from `main` and enter an explicit semantic version. The first release is `0.1.0`. Bumpp updates the configured manifests, runs `pnpm verify`, and creates the commit and tag. Git rejects existing tags and an outdated push to `main`; the commit and tag are pushed atomically. Maintainers choose the next version.
 
-If npm publication fails after the release commit and tag were pushed, rerun `publish.yml` with the exact tag and commit. Recursive pnpm publication skips package versions already present and continues the incomplete release. GitHub Release creation occurs only after publication succeeds.
+If npm publication fails after the release commit and tag were pushed, use GitHub Actions **Re-run failed jobs** on the release run. Recursive pnpm publication skips package versions already present and continues the incomplete release. The dependent GitHub Release job runs only after publication succeeds. For standalone npm recovery, run `publish.yml` with the existing release tag; that workflow only publishes npm packages.
