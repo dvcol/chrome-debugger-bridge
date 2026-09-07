@@ -1,0 +1,48 @@
+name: Bootstrap npm packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type "publish @dvcol/cdb 0.0.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: bootstrap-publish
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: Publish initial package names
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: npm
+    steps:
+      - name: 🔒 Require main and explicit confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$CONFIRMATION" = "publish @dvcol/cdb 0.0.0"
+
+      - name: 📥 Checkout
+        uses: actions/checkout@v7
+
+      # Bootstrap runs the same complete gate as CI before claiming package names.
+      - name: 🏗️ Set up workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          install-chromium: 'true'
+
+      - name: ✅ Verify workspace
+        run: pnpm verify
+
+      - name: 🚀 Publish bootstrap versions
+        run: pnpm publish --recursive --access public --tag bootstrap --provenance --no-git-checks --report-summary
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}

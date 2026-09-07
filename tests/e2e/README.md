@@ -9,7 +9,7 @@ pnpm exec vitest run --project extension-e2e tests/e2e/native-agent-loop.test.ts
 
 `deep-dom-page.ts` creates three nested frames with nonzero offsets and borders. Cross-origin mode forces OOPIFs with synthetic `*.test` hosts; same-origin mode exercises in-process frame documents. The normal payload contains approximately 10,000 DOM nodes, 200 DOM layers, and 20 shadow roots; the stress payload uses 100,000 nodes and 1,000 layers. Small page scaffolding is additional to the payload. Shadow roots can be closed, open, or alternating open/closed.
 
-The regressions cover snapshot references, strict CSS frame-chain locators, fill/click/Enter, parent overlay occlusion, replacement during scrolling, bounded batch observation, batch revocation and navigation, and an explicit stress-size failure that leaves the target usable.
+The regressions cover snapshot references, strict CSS frame-chain locators, fill/click/Enter, parent overlay occlusion, replacement during scrolling, bounded batch observation, batch revocation and navigation, and an explicit stress-size failure that leaves the target usable. The fill/click regression uses the public batch deadline; latency gates run separately with the recorded measurements below.
 
 The approval tests build the public `examples/extension` and `examples/standalone-host/grant-flow.ts` composition. A page-origin approval must fail. Only input in the actual Chrome toolbar popup grants the selected tab; a second tab stays invisible, native snapshot and screenshot tools work, and popup revocation removes authority. Chromium does not expose toolbar popups through Playwright's page list, so `extension-popup.ts` attaches their actual CDP target and sends mouse input. It does not replace the popup with an extension tab.
 

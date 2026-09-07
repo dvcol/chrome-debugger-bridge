@@ -10,7 +10,6 @@ export default defineConfig({
   entry: ['src/index.ts'],
   format: 'esm',
   platform: 'node',
-  publint: true,
   sourcemap: true,
   target: 'node24',
 });

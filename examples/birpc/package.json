@@ -9,7 +9,6 @@
   "dependencies": {
     "@dvcol/cdb": "workspace:*",
     "@dvcol/cdb-birpc": "workspace:*",
-    "@dvcol/cdb-extension": "workspace:*",
     "@dvcol/cdb-websocket": "workspace:*"
   }
 }

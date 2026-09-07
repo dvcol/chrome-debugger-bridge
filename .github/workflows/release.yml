@@ -1,0 +1,94 @@
+name: Release
+run-name: Release v${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact semantic version, without the v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Create release commit and tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: github
+    permissions:
+      contents: read
+    outputs:
+      tag-name: ${{ steps.release-state.outputs.tag-name }}
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - name: 📥 Checkout latest main
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: main
+          token: ${{ secrets.CI_TOKEN }}
+
+      # Bumpp's post-command runs the complete browser and package verification gate.
+      - name: 🏗️ Set up workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          install-chromium: 'true'
+
+      - name: 🔒 Require main
+        run: test "$GITHUB_REF" = "refs/heads/main"
+
+      - name: 🤖 Configure release identity
+        run: |
+          git config user.name "GitHub Release Bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: 🏷️ Create release
+        run: pnpm run release -- --release "$RELEASE_VERSION"
+
+      - name: ⬆️ Push release commit and tag
+        run: git push --atomic origin HEAD:main --follow-tags
+
+      - name: 📝 Record release state
+        id: release-state
+        run: echo "tag-name=$(git describe --tags --exact-match)" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish packages
+    needs: release
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish.yml
+    with:
+      tag-name: ${{ needs.release.outputs.tag-name }}
+
+  github-release:
+    name: Create GitHub release
+    needs: [release, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: github
+    permissions:
+      contents: write
+    steps:
+      - name: 📥 Checkout release
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ needs.release.outputs.tag-name }}
+
+      - name: 🏗️ Set up workspace
+        uses: ./.github/actions/setup-workspace
+
+      - name: 📝 Create release notes
+        run: pnpm exec changelogithub
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,7 +1,9 @@
-import { defineConfig } from 'vitest/config';
+import { defineProject } from 'vitest/config';
 
-export default defineConfig({
+export default defineProject({
   test: {
     environment: 'node',
+    include: ['test/**/*.test.ts'],
+    name: 'unit-node:automation-playwright',
   },
 });

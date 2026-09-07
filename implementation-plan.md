@@ -155,9 +155,6 @@ Use a pnpm 11 workspace with Turbo as the only task graph. Use tsdown for publis
 │   ├── extension/
 │   ├── mcp/
 │   └── websocket/
-├── scripts/
-│   ├── check-workspace-dependencies.ts
-│   └── verify-packed-packages.ts
 ├── tests/
 │   ├── contract/
 │   ├── e2e/
@@ -980,7 +977,7 @@ export default defineTypescriptConfig(
 
 Retain the inherited catalog validation, workspace-settings, duplicate-catalog, and unused-catalog rules. Enable the no-anonymous-catalog rule if all dependencies are assigned to named catalogs.
 
-`scripts/check-workspace-dependencies.ts` performs only the policy ESLint cannot infer: whether a dependency name is an internal workspace package and therefore must use the correct `workspace:^` or `workspace:*` form.
+ESLint enforces catalogue usage and browser import restrictions. `turbo boundaries` checks declared dependencies and isolation of the public packages. The current task graph and release tooling are documented in [the release guide](docs/releasing.md).
 
 ## 20. Turbo task graph
 
@@ -1017,15 +1014,15 @@ Root commands invoke Turbo; packages expose small local commands.
       "cache": false,
       "outputs": ["test-results/**"]
     },
-    "check:workspace": {
+    "//#check:boundaries": {
       "outputs": []
     },
     "pack": {
       "dependsOn": ["build"],
       "outputs": ["artifacts/packages/**"]
     },
-    "verify:pack": {
-      "dependsOn": ["pack"],
+    "check:package": {
+      "dependsOn": ["build"],
       "outputs": []
     }
   }
@@ -1046,7 +1043,6 @@ Use the latest stable Vitest across the repository with named projects and expli
 | `unit-jsdom` | Vitest `jsdom` | Fast DOM-facing client/bootstrap units that need `window`, `document`, events, or `postMessage` semantics but not a real browser engine. |
 | `browser-chromium` | Vitest Browser Mode with `@vitest/browser-playwright` | Native browser WebSocket, Web Crypto, streams, DOM events, injected bootstrap behavior, browser client, and interactive example UI. |
 | `extension-e2e` | Vitest Node project orchestrating Playwright's Chromium persistent context | Built MV3 extension, service worker, `chrome.debugger`, side-loaded extension lifecycle, and end-to-end host/client topology. |
-| `package-consumers` | Vitest `node` plus spawned clean fixtures | Packed tarballs, export maps, type consumers, and local-registry publication. |
 
 Keep Vitest, `@vitest/browser-playwright`, and coverage packages version-aligned in the testing catalog. Configure Browser Mode with one Chromium instance, real Playwright actions, CI headless mode, and traces retained on failure.
 
@@ -1105,13 +1101,11 @@ Playwright is a test harness only and is never a product runtime dependency.
 
 ### 21.5 Interoperability tests
 
-- Install packed packages into clean consumers.
 - Compile a TypeScript consumer against each public subpath.
 - Run a browser client without workspace source aliases.
 - Exercise the application-owned `birpc` integration.
 - Exercise the MCP adapter with the official SDK test client/inspector.
 - Exercise JSON-RPC from a non-TypeScript fixture using generated JSON Schema.
-- Build and smoke-test every private example against packed packages rather than workspace source aliases in at least one CI job.
 
 ### 21.6 Package tests
 
@@ -1188,7 +1182,6 @@ This catalogue is intentionally unprioritized. Each group can be refined into it
 - Vite 8 playgrounds.
 - strict export maps, declarations, source maps, `publint`.
 - Lerna-Lite fixed release train and trusted publishing.
-- packed-package and clean-consumer verification.
 
 ### Protocol and compatibility
 
@@ -1290,7 +1283,7 @@ These are architectural slices, not priority order or release assignments.
 | Artifacts | descriptors, stores, streaming, HTTP | Store contract, quota/expiry policy, binary framing, authorization. |
 | Application-owned birpc integration | HTTP host, `birpc`, page bootstrap | Host lifecycle, RPC facade, offer injection, cleanup, playground. |
 | MCP integration | tools, Streamable HTTP, stdio compatibility | Tool schemas, lease behavior, cancellation, artifact mapping, SDK compatibility. |
-| Examples | every public adapter, client, and host composition | Runnable private workspaces, coverage manifest, concise READMEs, smoke tests against packed packages. |
+| Examples | every public adapter, client, and host composition | Runnable private workspaces, coverage manifest, concise READMEs, workspace smoke commands. |
 | End-to-end verification | real extension/Chrome and clean consumers | Test topology, fixtures, browser matrix, security and recovery scenarios. |
 | Publication | Lerna-Lite version/publish, trusted publishing, tarball validation | Fixed-mode config, force-publish invariant, release workflow, local registry proof, rollback procedure. |
 

@@ -36,6 +36,8 @@ import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod/v4';
 
+import packageManifest from '../package.json' with { type: 'json' };
+
 export const supportedMcpProtocolVersions = ['2026-07-28'] as const;
 export const supportedMcpSdkVersion = '2.0.0';
 const cdpMethodPattern = /^[A-Za-z]+\.[A-Za-z]+$/u;
@@ -4564,11 +4566,12 @@ function createCdbToolDefinitionsForSession(
           isError: true,
         };
       };
-      const timeout = setTimeout(() => cancellation.abort(new McpToolError('MCP_BATCH_TIMEOUT', 'The batch exceeded its total deadline.')), input.timeoutMilliseconds);
+      const deadline = Date.now() + input.timeoutMilliseconds;
+      const timeoutError = new McpToolError('MCP_BATCH_TIMEOUT', 'The batch exceeded its total deadline.');
+      const timeout = setTimeout(() => cancellation.abort(timeoutError), input.timeoutMilliseconds);
       timeout.unref?.();
       const subscriptions: CdpSubscription[] = [];
       let acquiredLease: Lease | undefined;
-      const deadline = Date.now() + input.timeoutMilliseconds;
       try {
         if (useRegisteredAutomation) throw new McpToolError('MCP_BATCH_PROVIDER_UNSUPPORTED', 'Batches currently require the native engine.');
         const steps = await Promise.all(input.actions.map(async ({ action, ...parameters }) => {
@@ -4596,8 +4599,11 @@ function createCdbToolDefinitionsForSession(
             if (signal.aborted) throw signal.reason;
             const currentTarget = await resolveSemanticTarget(client, sessionState, input.targetRef);
             if (currentTarget.generation !== target.generation) throw new McpToolError('MCP_BATCH_AUTHORITY_REPLACED', 'Target authority changed during the batch.');
-            const result = await step.definition.invoke({ ...step.parameters, timeoutMilliseconds: Math.max(1, deadline - Date.now()) }, { signal });
-            if (result.isError) return batchFailure(result, index);
+            const result = await step.definition.invoke({ ...step.parameters, timeoutMilliseconds: input.timeoutMilliseconds }, { signal });
+            if (result.isError) {
+              if (!signal.aborted && Date.now() >= deadline) cancellation.abort(timeoutError);
+              return batchFailure(result, index);
+            }
             completed.push({ index, action: step.action });
           }
           if (signal.aborted) throw signal.reason;
@@ -4976,7 +4982,7 @@ function createMcpServer(
 ): McpServer {
   const server = new McpServer({
     name: 'chrome-debugger-bridge',
-    version: '0.0.0',
+    version: packageManifest.version,
   });
   registerCdbToolDefinitions(server, definitions);
   return server;

@@ -1,0 +1,49 @@
+name: Publish
+run-name: Publish ${{ inputs.tag-name }}
+
+on:
+  workflow_call:
+    inputs:
+      tag-name:
+        description: Exact release tag
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag-name:
+        description: Exact release tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-${{ inputs.tag-name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish npm packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: npm
+    steps:
+      - name: 📥 Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ inputs.tag-name }}
+
+      - name: 🏗️ Set up workspace
+        uses: ./.github/actions/setup-workspace
+
+      - name: ✅ Validate packages
+        run: pnpm check:package
+
+      - name: 🔑 Install npm with trusted publishing support
+        run: npm install --global npm@latest
+
+      - name: 🚀 Publish packages
+        run: pnpm publish --recursive --access public --provenance --no-git-checks --report-summary

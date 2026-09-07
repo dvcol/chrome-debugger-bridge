@@ -1,0 +1,38 @@
+name: Set up CDB workspace
+description: Install the pinned Node.js and pnpm toolchain, workspace dependencies, and optional Chromium runtime.
+
+inputs:
+  install-chromium:
+    description: Install the Playwright Chromium runtime and operating-system dependencies.
+    default: 'false'
+    required: false
+
+runs:
+  using: composite
+  steps:
+    # This public repository follows stable major action tags so maintained fixes arrive automatically.
+    - name: 📦 Set up pnpm
+      uses: pnpm/action-setup@v6
+
+    - name: 🟢 Set up Node.js 24
+      uses: actions/setup-node@v7
+      with:
+        cache: pnpm
+        node-version: 24
+        registry-url: https://registry.npmjs.org
+
+    - name: 📥 Install frozen dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    - name: 💾 Cache Chromium
+      if: inputs.install-chromium == 'true'
+      uses: actions/cache@v6
+      with:
+        key: playwright-chromium-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+        path: ~/.cache/ms-playwright
+
+    - name: 🌐 Install Chromium
+      if: inputs.install-chromium == 'true'
+      shell: bash
+      run: pnpm exec playwright install --with-deps chromium

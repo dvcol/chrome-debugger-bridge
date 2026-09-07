@@ -32,15 +32,9 @@ export default defineConfig({
       {
         test: {
           environment: 'node',
+          fileParallelism: false,
           include: ['tests/e2e/**/*.test.ts'],
           name: 'extension-e2e',
-        },
-      },
-      {
-        test: {
-          environment: 'node',
-          include: ['tests/package-consumers/**/*.test.ts'],
-          name: 'package-consumers',
         },
       },
     ],

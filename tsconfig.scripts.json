@@ -9,6 +9,7 @@
     "declarationMap": false
   },
   "include": [
+    "bump.config.ts",
     "eslint.config.ts",
     "examples/**/*.ts",
     "packages/*/scripts/**/*.ts",
@@ -16,7 +17,6 @@
     "packages/*/test/**/*.ts",
     "packages/*/tsdown.config.ts",
     "packages/*/vitest.config.ts",
-    "scripts/**/*.ts",
     "tests/browser/**/*.ts",
     "tests/e2e/**/*.ts",
     "tests/fixtures/**/*.ts",

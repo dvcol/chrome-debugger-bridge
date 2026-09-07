@@ -3,12 +3,25 @@
   "type": "module",
   "version": "0.0.0",
   "description": "CDB (Chrome Debugger Bridge) Model Context Protocol adapter.",
+  "author": "dvcol",
   "license": "MIT",
+  "homepage": "https://github.com/dvcol/chrome-debugger-bridge#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dvcol/chrome-debugger-bridge.git",
     "directory": "packages/mcp"
   },
+  "bugs": {
+    "url": "https://github.com/dvcol/chrome-debugger-bridge/issues"
+  },
+  "keywords": [
+    "chrome",
+    "chrome-debugger",
+    "cdp",
+    "browser-automation",
+    "mcp",
+    "agent"
+  ],
   "sideEffects": false,
   "exports": {
     ".": {
@@ -17,6 +30,8 @@
     }
   },
   "files": [
+    "LICENSE",
+    "README.md",
     "dist"
   ],
   "engines": {
@@ -24,22 +39,24 @@
   },
   "scripts": {
     "build": "tsdown",
-    "lint": "eslint src test tsdown.config.ts vitest.config.ts --cache",
-    "pack": "pnpm pack --pack-destination artifacts",
+    "check:package": "publint",
+    "pack": "pnpm pack --out artifacts/package.tgz",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit --project tsconfig.json",
-    "verify:pack": "publint"
+    "typecheck": "tsc --noEmit --project tsconfig.json"
   },
   "dependencies": {
     "@dvcol/cdb": "workspace:^",
     "@modelcontextprotocol/node": "catalog:",
     "@modelcontextprotocol/server": "catalog:",
+    "hono": "catalog:",
     "zod": "catalog:protocol"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "catalog:",
+    "tsdown": "catalog:build",
+    "vitest": "catalog:testing"
   },
   "publishConfig": {
     "access": "public"
-  },
-  "devDependencies": {
-    "@modelcontextprotocol/client": "catalog:"
   }
 }

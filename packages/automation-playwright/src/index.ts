@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AutomationProviderError, validateTimeoutMilliseconds } from '@dvcol/cdb';
 import { iso, server } from 'playwright-core/lib/coreBundle';
+import playwrightPackageManifest from 'playwright-core/package.json' with { type: 'json' };
 
 const locatorRegularExpressionFlagsPattern = /^[dgimsuvy]*$/u;
 const playwrightReferencePattern = /\b(?:f\d+)?e\d+\b/gu;
@@ -482,7 +483,7 @@ class PlaywrightAutomationProvider implements AutomationProvider {
       snapshotModes: ['accessibility', 'dom', 'interactive'],
     },
     id: 'playwright',
-    version: '1.62.1',
+    version: playwrightPackageManifest.version,
   } as const;
 
   readonly #actionTimeoutMilliseconds: TimeoutMilliseconds;

@@ -1,41 +1,63 @@
 {
   "$schema": "https://turborepo.com/schema.json",
-  "globalDependencies": ["eslint.config.ts", "pnpm-lock.yaml", "tsconfig.base.json"],
+  "cacheDir": ".turbo/cache",
+  "globalDependencies": ["pnpm-lock.yaml", "tsconfig.base.json"],
   "tasks": {
+    "//#check:all": {
+      "dependsOn": ["//#check:boundaries", "//#check:catalogue", "//#lint", "//#knip", "//#typecheck:all", "^test"]
+    },
+    "//#check:catalogue": {
+      "outputs": []
+    },
+    "//#check:boundaries": {
+      "outputs": []
+    },
+    "//#knip": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "//#lint": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "//#test:browser": {
+      "cache": false,
+      "dependsOn": ["^build"],
+      "outputs": ["__traces__/**", "test-results/**"]
+    },
+    "//#test:e2e": {
+      "cache": false,
+      "dependsOn": ["^build"],
+      "outputs": ["__traces__/**", "test-results/**"]
+    },
+    "//#typecheck:all": {
+      "dependsOn": ["^typecheck", "//#typecheck:root"]
+    },
+    "//#typecheck:root": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "//#verify:all": {
+      "dependsOn": ["//#check:all", "//#test:browser", "//#test:e2e", "^check:package"]
+    },
     "build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },
-    "dev": {
-      "cache": false,
-      "persistent": true
-    },
-    "lint": {
-      "outputs": [".eslintcache"]
+    "pack": {
+      "dependsOn": ["build"],
+      "outputs": ["artifacts/package.tgz"]
     },
     "typecheck": {
-      "dependsOn": ["^typecheck"],
+      "dependsOn": ["^build", "^typecheck"],
       "outputs": []
     },
     "test": {
-      "dependsOn": ["build"],
+      "dependsOn": ["^build"],
       "outputs": []
     },
-    "test:browser": {
+    "check:package": {
       "dependsOn": ["build"],
-      "outputs": ["__traces__/**", "coverage/browser/**"]
-    },
-    "test:e2e": {
-      "dependsOn": ["build"],
-      "cache": false,
-      "outputs": ["test-results/**"]
-    },
-    "pack": {
-      "dependsOn": ["build"],
-      "outputs": ["artifacts/*.tgz"]
-    },
-    "verify:pack": {
-      "dependsOn": ["pack"],
       "outputs": []
     }
   }

@@ -3,12 +3,25 @@
   "type": "module",
   "version": "0.0.0",
   "description": "CDB (Chrome Debugger Bridge) Manifest V3 debugger agent primitives.",
+  "author": "dvcol",
   "license": "MIT",
+  "homepage": "https://github.com/dvcol/chrome-debugger-bridge#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dvcol/chrome-debugger-bridge.git",
     "directory": "packages/extension"
   },
+  "bugs": {
+    "url": "https://github.com/dvcol/chrome-debugger-bridge/issues"
+  },
+  "keywords": [
+    "chrome",
+    "chrome-debugger",
+    "cdp",
+    "browser-automation",
+    "mcp",
+    "agent"
+  ],
   "sideEffects": false,
   "exports": {
     ".": {
@@ -28,19 +41,26 @@
       "import": "./dist/testing.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "dist"
+  ],
   "scripts": {
     "build": "tsdown",
-    "lint": "eslint src test tsdown.config.ts vitest.config.ts --cache",
-    "pack": "pnpm pack --pack-destination artifacts",
+    "check:package": "publint",
+    "pack": "pnpm pack --out artifacts/package.tgz",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit --project tsconfig.json",
-    "verify:pack": "publint"
+    "typecheck": "tsc --noEmit --project tsconfig.json"
   },
   "dependencies": {
     "@dvcol/cdb": "workspace:^"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "tsdown": "catalog:build",
+    "vitest": "catalog:testing"
   }
 }
