@@ -1,7 +1,7 @@
 {
   "name": "@dvcol/cdb-mcp",
   "type": "module",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "CDB (Chrome Debugger Bridge) Model Context Protocol adapter.",
   "author": "dvcol",
   "license": "MIT",

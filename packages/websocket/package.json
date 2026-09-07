@@ -1,7 +1,7 @@
 {
   "name": "@dvcol/cdb-websocket",
   "type": "module",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "CDB (Chrome Debugger Bridge) browser and Node WebSocket adapters.",
   "author": "dvcol",
   "license": "MIT",

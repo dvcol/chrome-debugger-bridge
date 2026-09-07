@@ -1,7 +1,7 @@
 {
   "name": "@dvcol/cdb-automation-playwright",
   "type": "module",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Experimental Playwright automation provider for CDB embedding brokers.",
   "author": "dvcol",
   "license": "MIT",

@@ -1,7 +1,7 @@
 {
   "name": "@dvcol/cdb-extension",
   "type": "module",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "CDB (Chrome Debugger Bridge) Manifest V3 debugger agent primitives.",
   "author": "dvcol",
   "license": "MIT",
