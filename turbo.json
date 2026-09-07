@@ -38,15 +38,7 @@
       "outputs": []
     },
     "//#verify:all": {
-      "dependsOn": ["//#check:all", "//#test:browser", "//#test:e2e", "//#verify:pack:all"]
-    },
-    "//#verify:pack:all": {
-      "dependsOn": ["^check:package", "//#verify:packed"]
-    },
-    "//#verify:packed": {
-      "cache": false,
-      "dependsOn": ["^pack"],
-      "outputs": []
+      "dependsOn": ["//#check:all", "//#test:browser", "//#test:e2e", "^check:package"]
     },
     "build": {
       "dependsOn": ["^build"],

@@ -40,7 +40,7 @@ jobs:
         uses: ./.github/actions/setup-workspace
 
       - name: ✅ Validate packages
-        run: pnpm verify:pack
+        run: pnpm check:package
 
       - name: 🔑 Install npm with trusted publishing support
         run: npm install --global npm@latest

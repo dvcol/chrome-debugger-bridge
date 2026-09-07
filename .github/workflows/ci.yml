@@ -31,16 +31,3 @@ jobs:
 
       - name: ✅ Verify workspace
         run: pnpm verify
-
-      - name: 📎 Upload failure artifacts
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          if-no-files-found: ignore
-          name: cdb-verification-${{ github.run_id }}
-          path: |
-            __traces__/
-            coverage/
-            playwright-report/
-            test-results/
-          retention-days: 7

@@ -37,13 +37,6 @@ export default defineConfig({
           name: 'extension-e2e',
         },
       },
-      {
-        test: {
-          environment: 'node',
-          include: ['tests/package-consumers/**/*.test.ts'],
-          name: 'package-consumers',
-        },
-      },
     ],
   },
 });

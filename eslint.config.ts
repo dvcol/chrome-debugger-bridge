@@ -40,7 +40,6 @@ export default defineTypescriptConfig(
       'packages/*/test/**/*.ts',
       'packages/*/tsdown.config.ts',
       'packages/*/vitest.config.ts',
-      'scripts/**/*.ts',
       'tests/browser/**/*.ts',
       'tests/e2e/**/*.ts',
       'tests/fixtures/**/*.ts',

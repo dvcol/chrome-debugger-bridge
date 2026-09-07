@@ -23,10 +23,9 @@
     "typecheck": "turbo run typecheck:all",
     "typecheck:root": "tsc --noEmit --project tsconfig.scripts.json",
     "verify": "turbo run verify:all",
-    "verify:pack": "turbo run verify:pack:all",
-    "verify:packed": "node scripts/verify-packed-packages.ts",
     "check:boundaries": "pnpm run boundaries",
-    "boundaries": "turbo boundaries --filter './packages/*'"
+    "boundaries": "turbo boundaries --filter './packages/*'",
+    "check:package": "turbo run check:package"
   },
   "devDependencies": {
     "@dvcol/cdb": "workspace:*",

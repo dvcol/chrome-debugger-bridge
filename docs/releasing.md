@@ -16,11 +16,10 @@ Turbo owns the validation dependency graph, including package builds required by
 | --- | --- |
 | `pnpm check` | Public package boundaries, generated CDP catalogue freshness, lint, Knip, type checks, and unit tests. |
 | `pnpm check:boundaries` | Runs `turbo boundaries` on `packages/*` to check declared imports and package isolation. |
-| `pnpm verify` | Everything in `check`, browser tests, extension E2E, and package verification. |
-| `pnpm verify:pack` | Builds, publint, packing, and consumer verification without the full browser and extension suites. Used by publication retries. |
-| `pnpm verify:packed` | Runs `scripts/verify-packed-packages.ts` against existing tarballs. Installs the tarballs outside the workspace; compiles consumers, imports public entries, and runs example smoke commands. |
+| `pnpm verify` | Everything in `check`, browser tests, extension E2E, and publint. |
+| `pnpm check:package` | Builds packages and checks their metadata and exports with publint. Used before publication. |
 
-The root `check`, `typecheck`, `verify`, and `verify:pack` wrappers each invoke one dependency-only `//#…:all` target in `turbo.json`. These targets have no shell command. Their names differ from the wrappers to avoid invoking Turbo recursively. Package tasks declare their own dependencies: `pack` waits for `build`, and consumer verification waits for all package archives. The remaining TypeScript script exercises installed packages and examples outside the workspace; Turbo handles its scheduling. Package metadata and exports are checked by publint.
+The root `check`, `typecheck`, and `verify` wrappers each invoke one dependency-only `//#…:all` target in `turbo.json`. These targets have no shell command. Their names differ from the wrappers to avoid invoking Turbo recursively. Package tasks declare their own dependencies: `pack` and `check:package` wait for `build`. pnpm owns packing and publishing; publint checks CDB package metadata and exports.
 
 ESLint owns catalogue rules and rejects Node imports in browser code, including dynamic imports and imports of CDB's Node adapters. Turbo checks isolation of the public packages. Runnable examples may compose each other's source; the package-boundary command is scoped to `packages/*`.
 

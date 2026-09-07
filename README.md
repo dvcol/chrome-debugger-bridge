@@ -181,8 +181,7 @@ pnpm verify
 ```
 
 `pnpm verify` includes Turbo package boundaries, generated-catalog checks, lint (including browser
-import restrictions), typecheck, unit and integration tests, builds, Chromium tests, extension E2E, publint, tarball
-construction, package consumers, and packed example smoke commands. Loopback permission is required
+import restrictions), typecheck, unit and integration tests, builds, Chromium tests, extension E2E, and publint. Loopback permission is required
 because the HTTP and WebSocket suites bind `127.0.0.1`.
 
 Maintainers publish all public packages on one version through the manual workflow documented in
