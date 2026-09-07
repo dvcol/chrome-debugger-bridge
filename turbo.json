@@ -31,7 +31,7 @@
     },
     "//#test:e2e": {
       "cache": false,
-      "dependsOn": ["^build"],
+      "dependsOn": ["//#check:all", "//#check:runtime", "//#test:browser", "//#verify:pack:all"],
       "outputs": ["__traces__/**", "test-results/**"]
     },
     "//#typecheck:all": {
