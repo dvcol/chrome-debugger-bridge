@@ -15,7 +15,6 @@ export default defineConfig({
   ],
   format: 'esm',
   platform: 'browser',
-  publint: true,
   sourcemap: true,
   target: 'chrome125',
 });

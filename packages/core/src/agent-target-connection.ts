@@ -2,6 +2,7 @@ import type { AgentAuthority, TargetBroker } from './broker.js';
 import type { AgentToBrokerMessage, BrokerToAgentMessage, CdpCommand, ConnectionLimits, HeartbeatParameters, JsonObject, Lease, PublishedTarget } from './protocol.js';
 import type { TimeoutMilliseconds } from './timing.js';
 
+import packageManifest from '../package.json' with { type: 'json' };
 import { scheduleTimeout, validateTimeoutMilliseconds } from './timing.js';
 
 export interface AgentTargetConnection {
@@ -68,7 +69,7 @@ export function connectAgentTargetBroker(
     instanceId: globalThis.crypto.randomUUID(),
     name: 'chrome-debugger-bridge',
     role: 'broker' as const,
-    version: '0.0.0',
+    version: packageManifest.version,
   };
   validateTimeoutMilliseconds(handshakeTimeoutMilliseconds, 'handshakeTimeoutMilliseconds');
   if (!Number.isSafeInteger(heartbeat.intervalMilliseconds) || heartbeat.intervalMilliseconds < 1) {

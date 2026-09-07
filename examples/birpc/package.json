@@ -1,7 +1,6 @@
 {
   "name": "@chrome-debugger-bridge-example/birpc",
   "type": "module",
-  "version": "0.0.0",
   "private": true,
   "scripts": {
     "smoke": "node smoke.ts"
@@ -9,7 +8,6 @@
   "dependencies": {
     "@dvcol/cdb": "workspace:*",
     "@dvcol/cdb-birpc": "workspace:*",
-    "@dvcol/cdb-extension": "workspace:*",
     "@dvcol/cdb-websocket": "workspace:*"
   }
 }

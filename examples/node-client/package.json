@@ -1,13 +1,11 @@
 {
   "name": "@chrome-debugger-bridge-example/node-client",
   "type": "module",
-  "version": "0.0.0",
   "private": true,
   "scripts": {
     "smoke": "node --input-type=module --eval \"await import('@dvcol/cdb-websocket/node')\""
   },
   "dependencies": {
-    "@dvcol/cdb": "workspace:*",
     "@dvcol/cdb-mcp": "workspace:*",
     "@dvcol/cdb-websocket": "workspace:*"
   }

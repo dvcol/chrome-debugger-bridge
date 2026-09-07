@@ -11,7 +11,6 @@ const sharedConfiguration = {
   },
   format: 'esm' as const,
   outDir: 'dist',
-  publint: true,
   sourcemap: true,
 } satisfies UserConfig;
 

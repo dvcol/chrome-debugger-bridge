@@ -9,3 +9,4 @@ coverage/
 test-results/
 __traces__/
 playwright-report/
+pnpm-publish-summary.json

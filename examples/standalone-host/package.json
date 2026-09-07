@@ -1,7 +1,6 @@
 {
   "name": "@chrome-debugger-bridge-example/standalone-host",
   "type": "module",
-  "version": "0.0.0",
   "private": true,
   "scripts": {
     "approval": "node grant-flow.ts",

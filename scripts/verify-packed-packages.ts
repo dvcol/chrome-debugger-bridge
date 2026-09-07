@@ -5,7 +5,6 @@ import { dirname, join } from 'node:path';
 import { promisify, styleText } from 'node:util';
 
 const executeFile = promisify(execFile);
-const publicPackageDirectories = ['automation-playwright', 'birpc', 'core', 'extension', 'mcp', 'websocket'];
 const dependencyFieldNames = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const;
 const corePackageName = '@dvcol/cdb';
 const protocolJsonSchemaIdentifier = 'urn:dvcol:chrome-debugger-bridge:protocol:1';
@@ -14,7 +13,12 @@ const protocolJsonSchemaExportTarget = './dist/protocol.schema.json';
 const workspaceRoot = process.cwd();
 
 interface PackedPackageManifest {
+  readonly author?: unknown;
+  readonly bugs?: unknown;
   readonly name: string;
+  readonly homepage?: unknown;
+  readonly keywords?: unknown;
+  readonly license?: unknown;
   readonly private?: boolean;
   readonly dependencies?: Readonly<Record<string, string>>;
   readonly devDependencies?: Readonly<Record<string, string>>;
@@ -23,6 +27,12 @@ interface PackedPackageManifest {
   readonly peerDependencies?: Readonly<Record<string, string>>;
   readonly scripts?: Readonly<Record<string, string>>;
   readonly sideEffects?: boolean;
+  readonly version?: unknown;
+}
+
+interface WorkspacePackageDefinition {
+  readonly directoryName: string;
+  readonly manifest: PackedPackageManifest;
 }
 
 interface JsonSchemaDocument {
@@ -54,6 +64,24 @@ interface ExampleCoverageManifest {
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function discoverWorkspacePackages(
+  parentDirectoryName: string,
+  includeManifest: (manifest: PackedPackageManifest) => boolean,
+): Promise<readonly WorkspacePackageDefinition[]> {
+  const parentDirectory = join(workspaceRoot, parentDirectoryName);
+  const directoryEntries = await readdir(parentDirectory, { withFileTypes: true });
+  const workspacePackages: WorkspacePackageDefinition[] = [];
+  for (const directoryEntry of directoryEntries) {
+    if (!directoryEntry.isDirectory()) continue;
+    const manifestPath = join(parentDirectory, directoryEntry.name, 'package.json');
+    const manifestContents = await readFile(manifestPath, 'utf8').catch(() => undefined);
+    if (manifestContents === undefined) continue;
+    const manifest = JSON.parse(manifestContents) as PackedPackageManifest;
+    if (includeManifest(manifest)) workspacePackages.push({ directoryName: directoryEntry.name, manifest });
+  }
+  return workspacePackages.toSorted((left, right) => left.directoryName.localeCompare(right.directoryName));
 }
 
 function parseExampleCoverageManifest(value: unknown): ExampleCoverageManifest {
@@ -102,23 +130,22 @@ function createPackageImportSpecifier(packageName: string, exportName: string): 
   return `${packageName}/${exportName.slice(2)}`;
 }
 
+const publicWorkspacePackages = await discoverWorkspacePackages('packages', manifest => manifest.private !== true);
+const publicPackageNames = new Set(publicWorkspacePackages.map(({ manifest }) => manifest.name));
+const publicPackageVersions = new Map(publicWorkspacePackages.map(({ manifest }) => [manifest.name, manifest.version]));
+const exampleDirectories = (await discoverWorkspacePackages('examples', manifest => manifest.private === true))
+  .map(({ directoryName }) => directoryName);
 const packedPackages: PackedPackage[] = [];
-const exampleDirectories = ['birpc', 'browser-client', 'devframe', 'embedded', 'extension', 'mcp', 'node-client', 'standalone-host'];
 const exampleCoverageManifest = parseExampleCoverageManifest(JSON.parse(
   await readFile(join(workspaceRoot, 'examples', 'coverage.json'), 'utf8'),
 ));
+const artifactDirectory = join(workspaceRoot, 'artifacts');
+const artifactNames = (await readdir(artifactDirectory)).filter(artifactName => artifactName.endsWith('.tgz')).toSorted();
+if (artifactNames.length !== publicWorkspacePackages.length) {
+  throw new Error(`Expected ${publicWorkspacePackages.length} packed archives in ${artifactDirectory}, received ${artifactNames.length}`);
+}
 
-for (const publicPackageDirectory of publicPackageDirectories) {
-  const artifactDirectory = join(workspaceRoot, 'packages', publicPackageDirectory, 'artifacts');
-  const artifactNames = (await readdir(artifactDirectory)).filter(artifactName => artifactName.endsWith('.tgz'));
-  if (artifactNames.length !== 1) {
-    throw new Error(`Expected one packed archive in ${artifactDirectory}, received ${artifactNames.length}`);
-  }
-
-  const artifactName = artifactNames[0];
-  if (artifactName === undefined) {
-    throw new Error(`Packed archive disappeared from ${artifactDirectory}`);
-  }
+for (const artifactName of artifactNames) {
   const artifactPath = join(artifactDirectory, artifactName);
   const extractionDirectory = await mkdtemp(join(tmpdir(), 'chrome-debugger-bridge-package-'));
 
@@ -126,6 +153,33 @@ for (const publicPackageDirectory of publicPackageDirectories) {
     await executeFile('tar', ['-xzf', artifactPath, '-C', extractionDirectory]);
     const extractedPackageDirectory = join(extractionDirectory, 'package');
     const manifest = JSON.parse(await readFile(join(extractedPackageDirectory, 'package.json'), 'utf8')) as PackedPackageManifest;
+
+    if (!publicPackageNames.has(manifest.name)) {
+      throw new Error(`Packed unexpected public package ${manifest.name}`);
+    }
+    if (manifest.version !== publicPackageVersions.get(manifest.name)) {
+      throw new Error(`${manifest.name} packed a version that differs from its workspace manifest.`);
+    }
+    if (packedPackages.some(packedPackage => packedPackage.manifest.name === manifest.name)) {
+      throw new Error(`Packed ${manifest.name} more than once`);
+    }
+    if (manifest.author !== 'dvcol'
+      || manifest.homepage !== 'https://github.com/dvcol/chrome-debugger-bridge#readme'
+      || !isRecord(manifest.bugs)
+      || manifest.bugs.url !== 'https://github.com/dvcol/chrome-debugger-bridge/issues'
+      || manifest.license !== 'MIT'
+      || !Array.isArray(manifest.keywords)
+      || manifest.keywords.length === 0
+      || typeof manifest.version !== 'string') {
+      throw new Error(`${manifest.name} must publish complete package metadata.`);
+    }
+    const [readme, license] = await Promise.all([
+      readFile(join(extractedPackageDirectory, 'README.md'), 'utf8'),
+      readFile(join(extractedPackageDirectory, 'LICENSE'), 'utf8'),
+    ]);
+    if (readme.trim().length === 0 || license.trim().length === 0) {
+      throw new Error(`${manifest.name} must publish a non-empty README and license.`);
+    }
 
     if (manifest.sideEffects !== false) {
       throw new Error(`${manifest.name} must declare sideEffects: false for import-only public entries.`);
@@ -183,6 +237,10 @@ for (const publicPackageDirectory of publicPackageDirectories) {
   } finally {
     await rm(extractionDirectory, { force: true, recursive: true });
   }
+}
+
+if (packedPackages.length !== publicPackageNames.size) {
+  throw new Error('Packed package names do not match the public workspace package manifests.');
 }
 
 const packedPackagesByName = new Map(packedPackages.map(packedPackage => [packedPackage.manifest.name, packedPackage]));

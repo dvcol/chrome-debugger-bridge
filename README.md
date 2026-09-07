@@ -185,6 +185,9 @@ tests, builds, Chromium tests, extension E2E, browser runtime-boundary checks, p
 construction, package consumers, and packed example smoke commands. Loopback permission is required
 because the HTTP and WebSocket suites bind `127.0.0.1`.
 
+Maintainers publish all public packages on one version through the manual workflow documented in
+[the release guide](./docs/releasing.md).
+
 Consumer applications own their policy, UI, and platform-specific end-to-end checks. CDB's own
 validation proves the public packages, authenticated transports, extension helpers, and example
 compositions without importing a consumer application.

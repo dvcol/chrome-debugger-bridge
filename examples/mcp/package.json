@@ -1,7 +1,6 @@
 {
   "name": "@chrome-debugger-bridge-example/mcp",
   "type": "module",
-  "version": "0.0.0",
   "private": true,
   "scripts": {
     "smoke": "node smoke.ts"

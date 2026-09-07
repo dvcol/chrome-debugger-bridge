@@ -3,12 +3,25 @@
   "type": "module",
   "version": "0.0.0",
   "description": "CDB (Chrome Debugger Bridge) runtime-neutral broker, protocol, and client primitives.",
+  "author": "dvcol",
   "license": "MIT",
+  "homepage": "https://github.com/dvcol/chrome-debugger-bridge#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dvcol/chrome-debugger-bridge.git",
     "directory": "packages/core"
   },
+  "bugs": {
+    "url": "https://github.com/dvcol/chrome-debugger-bridge/issues"
+  },
+  "keywords": [
+    "chrome",
+    "chrome-debugger",
+    "cdp",
+    "browser-automation",
+    "mcp",
+    "agent"
+  ],
   "sideEffects": false,
   "exports": {
     ".": {
@@ -65,14 +78,16 @@
       "import": "./dist/timing.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "dist"
+  ],
   "scripts": {
-    "build": "tsdown && node scripts/generate-protocol-json-schema.ts && publint",
-    "lint": "eslint scripts src test tsdown.config.ts vitest.config.ts --cache",
-    "pack": "pnpm pack --pack-destination artifacts",
+    "build": "tsdown && node scripts/generate-protocol-json-schema.ts",
+    "check:package": "publint",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit --project tsconfig.json",
-    "verify:pack": "publint"
+    "typecheck": "tsc --noEmit --project tsconfig.json"
   },
   "dependencies": {
     "@standard-schema/spec": "catalog:protocol",

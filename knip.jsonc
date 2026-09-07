@@ -1,0 +1,38 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema-jsonc.json",
+  "workspaces": {
+    ".": {
+      "entry": [
+        "scripts/**/*.ts",
+        "tests/**/*.ts"
+      ],
+      "project": ["*.ts", "scripts/**/*.ts", "tests/**/*.ts"]
+    },
+    "packages/*": {
+      "entry": ["src/**/*.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts", "*.config.ts"]
+    },
+    "packages/core": {
+      "entry": ["src/**/*.ts", "test/client-facade-adapter-contract.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts", "*.config.ts"]
+    },
+    "examples/*": {
+      "entry": ["*.ts"],
+      "project": ["**/*.ts"]
+    },
+    "tests/fixtures/*": {
+      "entry": ["*.ts"],
+      "project": ["**/*.ts"]
+    },
+    "examples/browser-client": {
+      "entry": [],
+      "ignoreDependencies": ["@dvcol/cdb", "@dvcol/cdb-websocket"],
+      "project": []
+    },
+    "examples/embedded": {
+      "entry": [],
+      "ignoreDependencies": ["@dvcol/cdb"],
+      "project": []
+    }
+  }
+}

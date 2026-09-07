@@ -36,6 +36,8 @@ import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod/v4';
 
+import packageManifest from '../package.json' with { type: 'json' };
+
 export const supportedMcpProtocolVersions = ['2026-07-28'] as const;
 export const supportedMcpSdkVersion = '2.0.0';
 const cdpMethodPattern = /^[A-Za-z]+\.[A-Za-z]+$/u;
@@ -4976,7 +4978,7 @@ function createMcpServer(
 ): McpServer {
   const server = new McpServer({
     name: 'chrome-debugger-bridge',
-    version: '0.0.0',
+    version: packageManifest.version,
   });
   registerCdbToolDefinitions(server, definitions);
   return server;

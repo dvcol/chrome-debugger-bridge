@@ -22,6 +22,7 @@ export default defineTypescriptConfig(
   },
   {
     files: [
+      'bump.config.ts',
       'eslint.config.ts',
       'examples/**/*.ts',
       'packages/*/scripts/**/*.ts',
