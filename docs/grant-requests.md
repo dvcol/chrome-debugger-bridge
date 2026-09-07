@@ -67,6 +67,15 @@ Only the extension's private configuration contains the provider-control credent
 has no web-accessible resources. The page cannot read pending request state or install authority.
 The host derives the provider identity from the live paired WebSocket connection.
 
+When approval shares a runtime message bus with other features, unrelated listeners must decline
+the message without acknowledging it. Return the approval result only after the channel's handler
+settles. A generic delivery acknowledgement is not proof that the request was claimed or granted;
+drive the UI from the coordinator state and expose failures instead of leaving an indefinite wait.
+
+Hosts that replace a disconnected client must stop its reconnect loop before discarding it. Otherwise
+a retired client can reconnect and replay registration beside its replacement. Keep reconnection and
+registration ownership within one live client lifecycle.
+
 ## Live scopes
 
 `createTabScopeManager` owns selected-tab publisher membership for explicit tabs, a live tab group,
