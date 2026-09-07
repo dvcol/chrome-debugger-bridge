@@ -13,8 +13,8 @@ CDB publishes its six public packages on one synchronized version. A manually di
 
 Before running a release, create two protected GitHub environments in [the repository settings](https://github.com/dvcol/chrome-debugger-bridge/settings/environments):
 
-1. Create a short-lived fine-grained GitHub personal access token owned by `dvcol`, restricted to `chrome-debugger-bridge`, with `Contents: Read and write`.
-2. Create the `github` environment, restrict it to `main`, and save that token as `CI_TOKEN`.
+1. Create a short-lived fine-grained GitHub personal access token owned by `dvcol`, restricted to `chrome-debugger-bridge`, with `Contents: Read and write`, and save it as the repository Actions secret `CI_TOKEN`.
+2. Create the `github` environment and restrict it to `main` so release commit and GitHub Release jobs remain protected.
 3. Create the `npm` environment, restrict it to `main`, and add reviewers if required. This environment has no permanent npm token.
 
 `CI_TOKEN` only pushes the release commit and tag. npm publication authenticates independently through GitHub OIDC.
