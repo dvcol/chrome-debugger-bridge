@@ -5,7 +5,7 @@ CDB publishes its six public packages on one synchronized version. A manually di
 ## Responsibilities
 
 - `release.yml` runs Bumpp, verifies the complete repository, pushes the generated commit and annotated tag, calls `publish.yml`, and creates the GitHub Release only after publication succeeds.
-- `publish.yml` is both reusable and manually dispatchable. It checks out the exact tag and publishes every public package with npm trusted publishing and provenance.
+- `publish.yml` is called by `release.yml`. It checks out the exact tag and publishes every public package with npm trusted publishing and provenance.
 - pnpm transforms `workspace:` and `catalog:` dependency specifiers in packed and published manifests.
 
 Turbo owns the validation dependency graph, including package builds required by root browser and packaging checks. `pnpm run pack` asks Turbo to build and pack each public package. Each package runs `pnpm pack --out artifacts/package.tgz` against its `tsdown` output in `dist/`. The fixed, ignored tarball path avoids a cleanup script and lets Turbo restore each package's archive from cache.
@@ -31,10 +31,10 @@ Before running a release, create two protected GitHub environments in [the repos
 2. Create the `github` environment and restrict it to `main` so release commit and GitHub Release jobs remain protected.
 3. Create the `npm` environment, restrict it to `main`, and add reviewers if required. This environment has no permanent npm token.
 
-`CI_TOKEN` only pushes the release commit and tag. npm publication authenticates independently through GitHub OIDC.
+`CI_TOKEN` only pushes the release commit and tag. npm publication authenticates independently through GitHub OIDC. Each npm package trusts `release.yml` in `dvcol/chrome-debugger-bridge`, restricted to the `npm` environment. npm matches the calling workflow when it invokes a reusable publishing workflow.
 
 ## Normal release
 
 Manually run `release.yml` from `main` and enter an explicit semantic version. The first release is `0.1.0`. Bumpp updates the configured manifests, runs `pnpm verify`, and creates the commit and tag. Git rejects existing tags and an outdated push to `main`; the commit and tag are pushed atomically. Maintainers choose the next version.
 
-If npm publication fails after the release commit and tag were pushed, use GitHub Actions **Re-run failed jobs** on the release run. Recursive pnpm publication skips package versions already present and continues the incomplete release. The dependent GitHub Release job runs only after publication succeeds. For standalone npm recovery, run `publish.yml` with the existing release tag; that workflow only publishes npm packages.
+If npm publication fails after the release commit and tag were pushed, use GitHub Actions **Re-run failed jobs** on the release run. Recursive pnpm publication skips package versions already present and continues the incomplete release. The dependent GitHub Release job runs only after publication succeeds.

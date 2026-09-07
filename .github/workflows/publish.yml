@@ -8,12 +8,6 @@ on:
         description: Exact release tag
         required: true
         type: string
-  workflow_dispatch:
-    inputs:
-      tag-name:
-        description: Exact release tag
-        required: true
-        type: string
 
 permissions:
   contents: read

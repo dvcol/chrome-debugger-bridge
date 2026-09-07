@@ -51,14 +51,16 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: 🏷️ Create release
-        run: pnpm run release -- --release "$RELEASE_VERSION"
-
-      - name: ⬆️ Push release commit and tag
-        run: git push --atomic origin HEAD:main --follow-tags
+        run: pnpm run release --release "$RELEASE_VERSION"
 
       - name: 📝 Record release state
         id: release-state
-        run: echo "tag-name=$(git describe --tags --exact-match)" >> "$GITHUB_OUTPUT"
+        run: |
+          release_tag=$(git describe --tags --exact-match)
+          echo "tag-name=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: ⬆️ Push release commit and tag
+        run: git push --atomic origin HEAD:main --follow-tags
 
   publish:
     name: Publish packages
