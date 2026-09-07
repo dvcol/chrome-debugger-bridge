@@ -8,6 +8,8 @@ Keep one `createCdbToolSession` per authenticated principal. Its `tN` references
 
 Use an interactive snapshot, then reference-based actions for the shortest arguments and fastest iteration. Use locators when the application rerenders. `browser.find` resolves its complete candidate set before deciding uniqueness. When the result display limit is reached, it returns `{matches, totalMatches, truncated:true}` instead of silently shortening the list. A discovery limit returns `MCP_SEARCH_INCOMPLETE`.
 
+Unscoped locators search the root document and nested frame contexts. An explicit `frameChain` narrows that search. Accessibility discovery forwards cancellation so a stalled command cannot keep a batch running past its deadline. Fill verification accepts Chrome's omitted empty accessibility value only when the control node is still present.
+
 Interactive snapshots include names, values and control states. The default text budget is 6,000 characters, approximately 1,500 tokens using a characters-divided-by-four estimate. This is a character limit, not a model tokenizer guarantee. `maximumCharacters` and `maximumNodes` control display; structural DOM depth does not truncate interactive discovery. Truncation preserves complete reference annotations and adds an explicit notice. Expand a subtree with `root: {ref: "e1"}` or `root: {locator: {...}}`.
 
 Debug evaluation, raw leases, artifact tools, and network/console diagnostics require `enableRawCdp: true`. The default catalogue shares repeated JSON schemas using `$defs`; runtime argument validation remains complete.

@@ -360,7 +360,9 @@ async function executeArtifactCommand(
   },
   method: string,
   parameters: JsonObject,
+  signal: AbortSignal,
 ): Promise<RetainedArtifactResult | unknown> {
+  signal.throwIfAborted();
   const lease = await client.acquireLease({
     durationMilliseconds: 30_000,
     mode: 'shared-read',
@@ -369,11 +371,21 @@ async function executeArtifactCommand(
     targetId: input.targetId,
   });
   let retainLease = false;
+  const operationId = randomUUID();
+  const abort = (): void => {
+    void client.cancelCommand({
+      operationId,
+      targetGeneration: input.targetGeneration,
+      targetId: input.targetId,
+    }).catch(() => {});
+  };
+  signal.addEventListener('abort', abort, { once: true });
   try {
+    signal.throwIfAborted();
     const result = await client.executeCommand({
       leaseId: lease.id,
       method,
-      operationId: randomUUID(),
+      operationId,
       parameters,
       ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
       targetGeneration: input.targetGeneration,
@@ -386,7 +398,10 @@ async function executeArtifactCommand(
         : result;
     retainLease = true;
     return { artifact, lease };
+  } catch (error) {
+    throw signal.aborted ? signal.reason : error;
   } finally {
+    signal.removeEventListener('abort', abort);
     if (!retainLease) {
       try {
         await client.releaseLease({
@@ -1752,6 +1767,7 @@ async function collectAccessibilityCandidates(
               backendNodeId,
               ...(locator.role === undefined ? {} : { role: locator.role }),
             },
+            signal,
           );
         })()
       : await executeArtifactCommand(
@@ -1759,6 +1775,7 @@ async function collectAccessibilityCandidates(
           sessionAuthority,
           'Accessibility.getFullAXTree',
           context.frameId === undefined ? {} : { frameId: context.frameId },
+          signal,
         );
     const contextCandidates = accessibilityCandidates(await readableCommandValue(
       client,
@@ -2055,15 +2072,16 @@ async function resolveLocatorCandidates(
   const containmentDocuments: ContainmentDocumentCache = new Map();
   const resolveStrategy = async (
     strategy: SemanticLocatorStrategy,
-    contexts: readonly LocatorContext[],
+    contexts: readonly LocatorContext[] | undefined,
   ): Promise<AccessibilityCandidate[]> => {
     const candidates = locatorDomQuery(strategy) === undefined
       ? await collectAccessibilityCandidates(client, target, signal, strategy, contexts, containmentDocuments)
       : await collectDomSearchCandidates(client, target, strategy, signal, contexts, containmentDocuments);
     return candidates.filter(candidate => matchesAccessibilityLocator(candidate, strategy));
   };
-  let contexts: LocatorContext[] = [{}];
+  let contexts: LocatorContext[] | undefined;
   if ((locator.frameChain?.length ?? 0) > 0) {
+    contexts = [{}];
     const authority = { targetGeneration: target.generation, targetId: target.id };
     const listedSessions = await executeSemanticCommand(
       client,
@@ -2769,8 +2787,9 @@ async function executeElementInteraction(
             keyPressed = false;
             await execute('Input.insertText', { text: interaction.text });
             const verification = commandResultValue(await execute('Accessibility.getPartialAXTree', { backendNodeId: element.backendNodeId, fetchRelatives: false }));
-            const value = accessibilityValue(property(arrayValue(property(verification, 'nodes'))[0], 'value'));
-            if (value !== interaction.text)
+            const verifiedNode = arrayValue(property(verification, 'nodes'))[0];
+            const value = accessibilityValue(property(verifiedNode, 'value')) ?? '';
+            if (verifiedNode === undefined || value !== interaction.text)
               throw new McpToolError('MCP_ACTION_VERIFICATION_FAILED', 'The filled value did not match the requested value. Inspect the control before taking another action.');
             return { filled: true };
           } finally {
@@ -3583,6 +3602,7 @@ function createCdbToolDefinitionsForSession(
               { ...targetAuthority, ...(sessionId === undefined ? {} : { sessionId }) },
               root === undefined ? 'Accessibility.getFullAXTree' : 'Accessibility.queryAXTree',
               root === undefined ? (frameId === undefined ? {} : { frameId }) : { backendNodeId: root.backendNodeId },
+              context.mcpReq.signal,
             );
             return formatAccessibilityTree(await readableCommandValue(
               client,
@@ -3625,6 +3645,7 @@ function createCdbToolDefinitionsForSession(
               includeDOMRects: false,
               includePaintOrder: false,
             },
+            context.mcpReq.signal,
           );
           return formatDomSnapshot(
             await readableCommandValue(
@@ -3683,7 +3704,7 @@ function createCdbToolDefinitionsForSession(
       try {
         const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
         const authority = { targetGeneration: target.generation, targetId: target.id };
-        const result = await executeArtifactCommand(client, authority, 'Page.captureScreenshot', { format: input.format });
+        const result = await executeArtifactCommand(client, authority, 'Page.captureScreenshot', { format: input.format }, context.mcpReq.signal);
         if (enableRawCdp) return jsonContent(result);
         const retained = retainedArtifactResult(result);
         const value = retained === undefined ? result : await readRetainedArtifact(client, authority, retained, context.mcpReq.signal);
@@ -3705,7 +3726,7 @@ function createCdbToolDefinitionsForSession(
         targetRef: z.string().regex(targetReferencePattern),
       }),
     },
-    async (input) => {
+    async (input, context) => {
       try {
         const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
         return jsonContent(
@@ -3714,6 +3735,7 @@ function createCdbToolDefinitionsForSession(
             { targetGeneration: target.generation, targetId: target.id },
             'Network.getResponseBody',
             { requestId: input.requestId },
+            context.mcpReq.signal,
           ),
         );
       } catch (error) {

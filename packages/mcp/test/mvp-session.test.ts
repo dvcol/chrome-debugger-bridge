@@ -307,6 +307,43 @@ it('executes ordered element actions in one batch lease and stops after an uncer
   expect(inputCount).toBe(4);
 });
 
+it('cancels stalled accessibility discovery at the batch deadline without dispatching input', async () => {
+  expect.assertions(4);
+  const pendingDiscovery = Promise.withResolvers<unknown>();
+  const discoveryStarted = Promise.withResolvers<void>();
+  let cancellationCount = 0;
+  let inputCount = 0;
+  const harness = toolHarness(async (command) => {
+    if (command.method === 'Page.getFrameTree') return { value: { frameTree: { frame: { id: 'root-frame' } } } };
+    if (command.method === 'Accessibility.getFullAXTree') {
+      discoveryStarted.resolve();
+      return pendingDiscovery.promise;
+    }
+    if (command.method.startsWith('Input.')) inputCount += 1;
+    return { value: { sessions: [] } };
+  });
+  harness.client.cancelCommand = async () => {
+    cancellationCount += 1;
+    pendingDiscovery.reject(new Error('Command cancelled'));
+  };
+  const batch = harness.invoke('browser.batch', {
+    actions: [{ action: 'fill', locator: { role: 'textbox', name: { match: 'exact', value: 'Search' } }, text: 'value' }],
+    timeoutMilliseconds: 100,
+  });
+  await discoveryStarted.promise;
+  await new Promise(resolve => setTimeout(resolve, 150));
+  try {
+    expect(cancellationCount).toBe(1);
+  } finally {
+    pendingDiscovery.reject(new Error('Test cleanup'));
+  }
+  const result = await batch;
+  const outcome = JSON.parse(result.text) as { readonly code: string; readonly details: unknown };
+  expect(outcome.code).toBe('MCP_BATCH_TIMEOUT');
+  expect(outcome.details).toMatchObject({ completed: [], failedStep: 0 });
+  expect(inputCount).toBe(0);
+});
+
 it('keeps raw authority and debug execution out of the default compact catalogue', () => {
   expect.assertions(3);
   const session = createCdbToolSession({ client: {} as McpChromeDebuggerBridgeClient });

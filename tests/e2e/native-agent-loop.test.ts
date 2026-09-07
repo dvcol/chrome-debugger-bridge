@@ -62,17 +62,44 @@ it.each([
   expect(await harness.page.getByRole('status').textContent()).toBe('Saved: native closed shadow');
 }, 90_000);
 
-it('batches native fill and click with one final bounded observation', async () => {
+it.each(['verified', ''])('batches an accessible-name fill with $0 below closed shadow roots in the root document', async (text) => {
+  expect.assertions(2);
+  harness = await createNativeMcpHarness();
+  await harness.page.evaluate(() => {
+    let parent: HTMLElement | ShadowRoot = document.body;
+    for (let depth = 0; depth < 20; depth += 1) {
+      const host = document.createElement('div');
+      parent.append(host);
+      parent = host.attachShadow({ mode: 'closed' });
+    }
+    const input = document.createElement('input');
+    input.value = 'Initial value';
+    input.setAttribute('aria-label', 'Public search');
+    input.style.cssText = 'position:fixed;top:10px;left:10px;z-index:9999';
+    input.addEventListener('input', () => document.body.setAttribute('data-search-value', input.value));
+    parent.append(input);
+  });
+  const result = await harness.mcpClient.callTool({ name: 'browser.batch', arguments: {
+    targetRef: harness.targetRef,
+    actions: [{ action: 'fill', locator: { role: 'textbox', name: { match: 'exact', value: 'Public search' } }, text }],
+    timeoutMilliseconds: 3_000,
+  } });
+  expect(result.isError, toolText(result)).toBeUndefined();
+  expect(await harness.page.locator('body').getAttribute('data-search-value')).toBe(text);
+}, 90_000);
+
+it.each(['css', 'accessible-name'] as const)('batches native $0 fill and click with one final bounded observation', async (strategy) => {
   expect.assertions(4);
   harness = await createNativeMcpHarness();
   const frameChain = [1, 2, 3].map(index => ({ css: `iframe[title="Frame ${index}"]` }));
   const result = await harness.mcpClient.callTool({ arguments: {
     actions: [
-      { action: 'fill', locator: { css: 'input#deep-value', frameChain }, text: 'batched public workflow' },
-      { action: 'click', locator: { css: 'button#deep-save', frameChain } },
+      { action: 'fill', locator: strategy === 'css' ? { css: 'input#deep-value', frameChain } : { role: 'textbox', name: { match: 'exact', value: 'Deep value' } }, text: 'batched public workflow' },
+      { action: 'click', locator: strategy === 'css' ? { css: 'button#deep-save', frameChain } : { role: 'button', name: { match: 'exact', value: 'Save deep value' } } },
     ],
     observe: true,
     targetRef: harness.targetRef,
+    timeoutMilliseconds: 5_000,
   }, name: 'browser.batch' });
   expect(result.isError, toolText(result)).toBeUndefined();
   const output = JSON.parse(toolText(result)) as { readonly completed: readonly { readonly action: string; readonly index: number }[]; readonly observation: string };
