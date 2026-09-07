@@ -430,7 +430,7 @@ export function createTargetBroker(
   >();
   const cancellationsByOperationId = new Map<
     string,
-    { readonly abortController: AbortController; readonly connectionId: string }
+    { readonly abortController: AbortController; readonly connectionId: string; readonly leaseId: string }
   >();
   const commandOperationIdsByTargetKey = new Map<string, Set<string>>();
   const domainDemandCountsByKey = new Map<string, number>();
@@ -1216,6 +1216,7 @@ export function createTargetBroker(
       cancellationsByOperationId.set(command.operationId, {
         abortController,
         connectionId: authority.connectionId,
+        leaseId: lease.id,
       });
       const targetKey = getTargetKey(target.id, target.generation);
       const operationIds
@@ -1347,6 +1348,7 @@ export function createTargetBroker(
       cancellationsByOperationId.set(request.operationId, {
         abortController,
         connectionId: authority.connectionId,
+        leaseId: lease.id,
       });
       const targetKey = getTargetKey(target.id, target.generation);
       const operationIds
@@ -1652,9 +1654,6 @@ export function createTargetBroker(
     },
     refreshClientAuthority(authority) {
       if (disposed) return;
-      for (const cancellation of cancellationsByOperationId.values()) {
-        if (cancellation.connectionId === authority.connectionId) cancellation.abortController.abort();
-      }
       for (const [leaseId, principalId] of leasePrincipalIdsById) {
         if (principalId !== authority.principalId) continue;
         const lease = leasesById.get(leaseId);
@@ -1684,6 +1683,10 @@ export function createTargetBroker(
           deleteLease(leaseId);
           closeSubscriptionsUsingLease(leaseId);
         }
+      }
+      for (const cancellation of cancellationsByOperationId.values()) {
+        if (cancellation.connectionId === authority.connectionId && !leasesById.has(cancellation.leaseId))
+          cancellation.abortController.abort();
       }
       publishTargetChange({ kind: 'snapshot', targets: [...targetsById.values()] });
     },
