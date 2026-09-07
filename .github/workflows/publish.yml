@@ -1,8 +1,8 @@
 name: Publish
-run-name: Publish ${{ inputs.tag-name }} (${{ inputs.request-id }})
+run-name: Publish ${{ inputs.tag-name }}
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       commit-hash:
         description: Exact release commit
@@ -12,10 +12,15 @@ on:
         description: Exact release tag
         required: true
         type: string
-      request-id:
-        description: Unique caller identifier used to find the dispatched run
-        required: false
-        default: manual
+  workflow_dispatch:
+    inputs:
+      commit-hash:
+        description: Exact release commit
+        required: true
+        type: string
+      tag-name:
+        description: Exact release tag
+        required: true
         type: string
 
 permissions:
@@ -36,39 +41,31 @@ jobs:
       PUBLISH_COMMIT: ${{ inputs.commit-hash }}
       PUBLISH_TAG: ${{ inputs.tag-name }}
     steps:
-      - name: Checkout release tag
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Checkout release tag
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ inputs.tag-name }}
 
-      - name: Validate immutable release
+      - name: 🔒 Validate immutable release
         run: |
           [[ "$PUBLISH_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
           [[ "$PUBLISH_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$PUBLISH_COMMIT"
           test "$(git rev-list -n 1 "$PUBLISH_TAG")" = "$PUBLISH_COMMIT"
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - name: 🧰 Set up workspace
+        uses: ./.github/actions/setup-workspace
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          cache: pnpm
-          node-version: 24
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Validate packages
+      # Validate the immutable tag again so standalone retries are as strict as a release call.
+      - name: ✅ Validate packages
         run: |
           pnpm run verify:release -- --phase current --version "${PUBLISH_TAG#v}"
           pnpm verify:pack
           git diff --exit-code
 
-      - name: Install npm with trusted publishing support
+      - name: 🔑 Install npm with trusted publishing support
         run: npm install --global npm@latest
 
-      - name: Publish packages
+      - name: 🚀 Publish packages
         run: pnpm publish --recursive --access public --provenance --no-git-checks --report-summary

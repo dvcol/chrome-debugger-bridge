@@ -32,6 +32,7 @@ export default defineConfig({
       {
         test: {
           environment: 'node',
+          fileParallelism: false,
           include: ['tests/e2e/**/*.test.ts'],
           name: 'extension-e2e',
         },

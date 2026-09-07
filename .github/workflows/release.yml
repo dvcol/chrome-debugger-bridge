@@ -30,35 +30,20 @@ jobs:
     env:
       RELEASE_VERSION: ${{ inputs.version }}
     steps:
-      - name: Checkout latest main
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Checkout latest main
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: main
           token: ${{ secrets.CI_TOKEN }}
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # Bumpp's post-command runs the complete browser and package verification gate.
+      - name: 🧰 Set up workspace
+        uses: ./.github/actions/setup-workspace
         with:
-          cache: pnpm
-          node-version: 24
+          install-chromium: 'true'
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Cache Chromium
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          path: ~/.cache/ms-playwright
-
-      - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
-
-      - name: Validate release request
+      - name: 🔒 Validate release request
         run: |
           test "$GITHUB_REF" = "refs/heads/main"
           git fetch origin main --tags
@@ -66,20 +51,20 @@ jobs:
           pnpm run verify:release -- --phase before --version "$RELEASE_VERSION"
           test -z "$(git tag --list "v$RELEASE_VERSION")"
 
-      - name: Configure release identity
+      - name: 🤖 Configure release identity
         run: |
           git config user.name "GitHub Release Bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Create and verify release
+      - name: 🏷️ Create and verify release
         run: |
           pnpm run release -- --release "$RELEASE_VERSION"
           pnpm run verify:release -- --phase after --version "$RELEASE_VERSION"
 
-      - name: Push release commit and tag
+      - name: ⬆️ Push release commit and tag
         run: git push origin HEAD:main --follow-tags
 
-      - name: Record release state
+      - name: 📝 Record release state
         id: release-state
         run: |
           echo "commit-hash=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -88,54 +73,13 @@ jobs:
   publish:
     name: Publish packages
     needs: release
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
     permissions:
-      actions: write
       contents: read
-    env:
-      PUBLISH_COMMIT: ${{ needs.release.outputs.commit-hash }}
-      PUBLISH_TAG: ${{ needs.release.outputs.tag-name }}
-    steps:
-      - name: Dispatch immutable publication
-        id: dispatch
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          REQUEST_ID="release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          PUBLISH_RUN_TITLE="Publish $PUBLISH_TAG ($REQUEST_ID)"
-          gh workflow run publish.yml \
-            --ref main \
-            --field commit-hash="$PUBLISH_COMMIT" \
-            --field tag-name="$PUBLISH_TAG" \
-            --field request-id="$REQUEST_ID"
-
-          PUBLISH_RUN_ID=""
-          for _ in {1..30}; do
-            PUBLISH_RUN_ID="$(
-              gh run list \
-                --workflow publish.yml \
-                --event workflow_dispatch \
-                --branch main \
-                --limit 20 \
-                --json databaseId,displayTitle \
-              | jq --arg title "$PUBLISH_RUN_TITLE" -r \
-                '.[] | select(.displayTitle == $title) | .databaseId' \
-              | head -n 1
-            )"
-            if test -n "$PUBLISH_RUN_ID"; then
-              break
-            fi
-            sleep 2
-          done
-          test -n "$PUBLISH_RUN_ID"
-          echo "publish-run-id=$PUBLISH_RUN_ID" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for npm publication
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PUBLISH_RUN_ID: ${{ steps.dispatch.outputs.publish-run-id }}
-        run: gh run watch "$PUBLISH_RUN_ID" --exit-status
+      id-token: write
+    uses: ./.github/workflows/publish.yml
+    with:
+      commit-hash: ${{ needs.release.outputs.commit-hash }}
+      tag-name: ${{ needs.release.outputs.tag-name }}
 
   github-release:
     name: Create GitHub release
@@ -146,25 +90,16 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout release
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Checkout release
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ needs.release.outputs.commit-hash }}
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - name: 🧰 Set up workspace
+        uses: ./.github/actions/setup-workspace
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          cache: pnpm
-          node-version: 24
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Create release notes
+      - name: 📝 Create release notes
         run: pnpm exec changelogithub
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

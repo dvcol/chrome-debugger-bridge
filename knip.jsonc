@@ -6,6 +6,15 @@
         "scripts/**/*.ts",
         "tests/**/*.ts"
       ],
+      // Root integration tests consume these workspaces and make their builds explicit Turbo dependencies.
+      "ignoreDependencies": [
+        "@dvcol/cdb",
+        "@dvcol/cdb-automation-playwright",
+        "@dvcol/cdb-birpc",
+        "@dvcol/cdb-extension",
+        "@dvcol/cdb-mcp",
+        "@dvcol/cdb-websocket"
+      ],
       "project": ["*.ts", "scripts/**/*.ts", "tests/**/*.ts"]
     },
     "packages/*": {

@@ -4,10 +4,11 @@ CDB publishes its six public packages on one synchronized version. A manually di
 
 ## Responsibilities
 
-- `release.yml` validates the requested version, runs Bumpp, verifies the complete repository, pushes the generated commit and annotated tag, dispatches `publish.yml`, and waits for it before creating the GitHub Release.
-- `publish.yml` runs as a standalone workflow, checks out that exact tag, and publishes every public package with npm trusted publishing and provenance. Keeping it standalone ensures npm validates `publish.yml` as the trusted workflow identity.
-- `bootstrap-publish.yml` exists only to create the initially unpublished package names. Remove it after trusted publishing is configured.
+- `release.yml` validates the requested version, runs Bumpp, verifies the complete repository, pushes the generated commit and annotated tag, calls `publish.yml`, and creates the GitHub Release only after publication succeeds.
+- `publish.yml` is both reusable and manually dispatchable. It checks out the exact tag and publishes every public package with npm trusted publishing and provenance.
 - pnpm transforms `workspace:` and `catalog:` dependency specifiers in packed and published manifests. The packed-consumer verification rejects either protocol if it escapes.
+
+Turbo owns the validation dependency graph, including package builds required by root browser and packaging checks. `tsdown` produces each package's `dist/` output. `pnpm pack` then verifies the separate npm artifact boundary: exports, included files, rewritten dependency protocols, licenses, READMEs, and installation by fresh consumers.
 
 ## Repository setup checkpoint
 
@@ -18,20 +19,6 @@ Before running a release, create two protected GitHub environments in [the repos
 3. Create the `npm` environment, restrict it to `main`, and add reviewers if required. This environment has no permanent npm token.
 
 `CI_TOKEN` only pushes the release commit and tag. npm publication authenticates independently through GitHub OIDC.
-
-## Initial npm bootstrap
-
-[npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) can only be configured after a package exists. For the initial `0.0.0` publication:
-
-1. Create a granular npm token restricted to the `@dvcol` scope, with read/write package access, CI-compatible 2FA bypass, and approximately one-day expiry.
-2. Save it temporarily as `NPM_BOOTSTRAP_TOKEN` in the GitHub `npm` environment.
-3. Manually run `bootstrap-publish.yml` from `main` with the confirmation value requested by the workflow. It verifies the repository and publishes all six packages under the `bootstrap` dist-tag with provenance.
-4. For each package, open **Package Settings → Trusted Publisher**, select **GitHub Actions**, and configure:
-   - Organization or user: `dvcol`
-   - Repository: `chrome-debugger-bridge`
-   - Workflow filename: `publish.yml`
-   - Environment: `npm`
-5. Revoke the npm bootstrap token, delete `NPM_BOOTSTRAP_TOKEN`, and remove `bootstrap-publish.yml` in a follow-up commit.
 
 ## Normal release
 

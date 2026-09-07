@@ -2,6 +2,48 @@
   "$schema": "https://turborepo.com/schema.json",
   "globalDependencies": ["pnpm-lock.yaml", "tsconfig.base.json"],
   "tasks": {
+    "//#check:catalogue": {
+      "outputs": []
+    },
+    "//#check:runtime": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "//#check:workspace": {
+      "outputs": []
+    },
+    "//#knip": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "//#lint": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "//#pack": {
+      "cache": false,
+      "dependsOn": ["^build"],
+      "outputs": ["artifacts/**"]
+    },
+    "//#test:browser": {
+      "cache": false,
+      "dependsOn": ["^build"],
+      "outputs": ["__traces__/**", "test-results/**"]
+    },
+    "//#test:e2e": {
+      "cache": false,
+      "dependsOn": ["^build"],
+      "outputs": ["__traces__/**", "test-results/**"]
+    },
+    "//#typecheck:root": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "//#verify:packed": {
+      "cache": false,
+      "dependsOn": ["//#pack"],
+      "outputs": []
+    },
     "build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
