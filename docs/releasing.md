@@ -8,7 +8,19 @@ CDB publishes its six public packages on one synchronized version. A manually di
 - `publish.yml` is both reusable and manually dispatchable. It checks out the exact tag and publishes every public package with npm trusted publishing and provenance.
 - pnpm transforms `workspace:` and `catalog:` dependency specifiers in packed and published manifests. The packed-consumer verification rejects either protocol if it escapes.
 
-Turbo owns the validation dependency graph, including package builds required by root browser and packaging checks. `tsdown` produces each package's `dist/` output. `pnpm pack` then verifies the separate npm artifact boundary: exports, included files, rewritten dependency protocols, licenses, READMEs, and installation by fresh consumers.
+Turbo owns the validation dependency graph, including package builds required by root browser and packaging checks. `pnpm run pack` asks Turbo to build and pack each public package. Each package runs `pnpm pack --out artifacts/package.tgz` against its `tsdown` output in `dist/`. The fixed, ignored tarball path avoids a cleanup script and lets Turbo restore each package's archive from cache.
+
+## Validation commands
+
+| Command | Purpose |
+| --- | --- |
+| `pnpm check` | Workspace dependency rules, generated CDP catalogue freshness, lint, Knip, type checks, and unit tests. |
+| `pnpm verify` | Everything in `check`, browser tests, extension E2E, runtime boundary checks, and package verification. |
+| `pnpm verify:pack` | Builds, publint, packing, and consumer verification without the full browser and extension suites. Used by publication retries. |
+| `pnpm verify:packed` | Runs `scripts/verify-packed-packages.ts` against existing tarballs. Checks package names and versions, README and license inclusion, and dependency protocols; installs the tarballs outside the workspace; compiles consumers, imports public entries, and runs example smoke commands. |
+| `pnpm verify:release -- --phase before\|after\|current --version X.Y.Z` | Runs `scripts/verify-release-state.ts`. Checks synchronized versions and, depending on the phase, an increasing version or the expected release commit, changed manifest paths, tag target, and clean checkout. It is a CI release guard. |
+
+The root `check`, `typecheck`, `verify`, and `verify:pack` wrappers each invoke one dependency-only `//#…:all` target in `turbo.json`. These targets have no shell command. Their names differ from the wrappers to avoid invoking Turbo recursively. Package tasks declare their own dependencies: `pack` waits for `build`, and consumer verification waits for all package archives. The two TypeScript verification scripts perform checks; Turbo handles their scheduling.
 
 ## Repository setup checkpoint
 

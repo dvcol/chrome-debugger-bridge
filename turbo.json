@@ -1,7 +1,11 @@
 {
   "$schema": "https://turborepo.com/schema.json",
+  "cacheDir": ".turbo/cache",
   "globalDependencies": ["pnpm-lock.yaml", "tsconfig.base.json"],
   "tasks": {
+    "//#check:all": {
+      "dependsOn": ["//#check:workspace", "//#check:catalogue", "//#lint", "//#knip", "//#typecheck:all", "^test"]
+    },
     "//#check:catalogue": {
       "outputs": []
     },
@@ -20,11 +24,6 @@
       "dependsOn": ["^build"],
       "outputs": []
     },
-    "//#pack": {
-      "cache": false,
-      "dependsOn": ["^build"],
-      "outputs": ["artifacts/**"]
-    },
     "//#test:browser": {
       "cache": false,
       "dependsOn": ["^build"],
@@ -35,18 +34,31 @@
       "dependsOn": ["^build"],
       "outputs": ["__traces__/**", "test-results/**"]
     },
+    "//#typecheck:all": {
+      "dependsOn": ["^typecheck", "//#typecheck:root"]
+    },
     "//#typecheck:root": {
       "dependsOn": ["^build"],
       "outputs": []
     },
+    "//#verify:all": {
+      "dependsOn": ["//#check:all", "//#check:runtime", "//#test:browser", "//#test:e2e", "//#verify:pack:all"]
+    },
+    "//#verify:pack:all": {
+      "dependsOn": ["^check:package", "//#verify:packed"]
+    },
     "//#verify:packed": {
       "cache": false,
-      "dependsOn": ["//#pack"],
+      "dependsOn": ["^pack"],
       "outputs": []
     },
     "build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
+    },
+    "pack": {
+      "dependsOn": ["build"],
+      "outputs": ["artifacts/package.tgz"]
     },
     "typecheck": {
       "dependsOn": ["^build", "^typecheck"],

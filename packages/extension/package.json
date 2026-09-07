@@ -49,6 +49,7 @@
   "scripts": {
     "build": "tsdown",
     "check:package": "publint",
+    "pack": "pnpm pack --out artifacts/package.tgz",
     "test": "vitest run",
     "typecheck": "tsc --noEmit --project tsconfig.json"
   },

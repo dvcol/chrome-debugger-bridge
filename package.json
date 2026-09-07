@@ -9,23 +9,23 @@
     "pnpm": ">=11.20.0"
   },
   "scripts": {
-    "build": "turbo run build --cache-dir=.turbo/cache",
+    "build": "turbo run build",
     "catalogue:generate": "node packages/core/scripts/generate-cdp-catalogue.ts",
-    "check": "turbo run check:workspace check:catalogue lint knip typecheck typecheck:root test --cache-dir=.turbo/cache",
+    "check": "turbo run //#check:all",
     "check:catalogue": "node packages/core/scripts/generate-cdp-catalogue.ts --check",
     "check:runtime": "node scripts/check-runtime-boundaries.ts",
     "check:workspace": "node scripts/check-workspace-dependencies.ts",
     "knip": "knip",
     "lint": "eslint . --cache",
-    "pack": "node scripts/prepare-pack-artifacts.ts && pnpm pack -r --filter './packages/*' --out 'artifacts/%s-%v.tgz'",
+    "pack": "turbo run pack",
     "release": "bumpp --yes --no-push",
-    "test": "turbo run test --cache-dir=.turbo/cache",
+    "test": "turbo run test",
     "test:browser": "vitest run --project browser-chromium --passWithNoTests",
     "test:e2e": "vitest run --project extension-e2e --passWithNoTests",
-    "typecheck": "turbo run typecheck typecheck:root --cache-dir=.turbo/cache",
+    "typecheck": "turbo run //#typecheck:all",
     "typecheck:root": "tsc --noEmit --project tsconfig.scripts.json",
-    "verify": "turbo run check:workspace check:catalogue lint knip typecheck typecheck:root test build test:browser test:e2e check:runtime check:package pack verify:packed --cache-dir=.turbo/cache",
-    "verify:pack": "turbo run check:package pack verify:packed --cache-dir=.turbo/cache",
+    "verify": "turbo run //#verify:all",
+    "verify:pack": "turbo run //#verify:pack:all",
     "verify:packed": "node scripts/verify-packed-packages.ts",
     "verify:release": "node scripts/verify-release-state.ts"
   },
@@ -58,6 +58,7 @@
     "tsdown": "catalog:build",
     "turbo": "catalog:build",
     "typescript": "catalog:types",
+    "verkit": "catalog:release",
     "vite": "catalog:devtools",
     "vitest": "catalog:testing"
   }

@@ -83,6 +83,9 @@ catalogs:
     changelogithub:
       specifier: 15.0.5
       version: 15.0.5
+    verkit:
+      specifier: 0.4.0
+      version: 0.4.0
   testing:
     '@vitest/browser-playwright':
       specifier: 4.1.10
@@ -211,6 +214,9 @@ importers:
       typescript:
         specifier: catalog:types
         version: 5.9.3
+      verkit:
+        specifier: catalog:release
+        version: 0.4.0
       vite:
         specifier: catalog:devtools
         version: 8.2.0(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0)

@@ -44,6 +44,7 @@ catalogs:
   release:
     bumpp: 12.3.0
     changelogithub: 15.0.5
+    verkit: 0.4.0
   testing:
     '@vitest/browser-playwright': 4.1.10
     '@vitest/coverage-v8': 4.1.10

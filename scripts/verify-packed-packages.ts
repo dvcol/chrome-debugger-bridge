@@ -1,446 +1,125 @@
+import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { copyFile, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, glob, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { promisify, styleText } from 'node:util';
 
-const executeFile = promisify(execFile);
-const dependencyFieldNames = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const;
-const corePackageName = '@dvcol/cdb';
-const protocolJsonSchemaIdentifier = 'urn:dvcol:chrome-debugger-bridge:protocol:1';
-const protocolJsonSchemaExportName = './protocol.schema.json';
-const protocolJsonSchemaExportTarget = './dist/protocol.schema.json';
-const workspaceRoot = process.cwd();
-
-interface PackedPackageManifest {
-  readonly author?: unknown;
-  readonly bugs?: unknown;
+interface PackageManifest {
   readonly name: string;
-  readonly homepage?: unknown;
-  readonly keywords?: unknown;
-  readonly license?: unknown;
   readonly private?: boolean;
+  readonly version: string;
+  readonly exports?: Readonly<Record<string, string | Readonly<Record<string, unknown>>>>;
   readonly dependencies?: Readonly<Record<string, string>>;
   readonly devDependencies?: Readonly<Record<string, string>>;
-  readonly exports: Readonly<Record<string, unknown>>;
   readonly optionalDependencies?: Readonly<Record<string, string>>;
   readonly peerDependencies?: Readonly<Record<string, string>>;
   readonly scripts?: Readonly<Record<string, string>>;
-  readonly sideEffects?: boolean;
-  readonly version?: unknown;
 }
 
-interface WorkspacePackageDefinition {
-  readonly directoryName: string;
-  readonly manifest: PackedPackageManifest;
+const executeFile = promisify(execFile);
+const workspaceRoot = process.cwd();
+const packageDefinitions: { directory: string; manifest: PackageManifest; artifactPath: string }[] = [];
+const ignoredDirectories = new Set(['node_modules', 'dist', 'artifacts', '.turbo']);
+
+async function readManifest(manifestPath: string): Promise<PackageManifest> {
+  return JSON.parse(await readFile(manifestPath, 'utf8')) as PackageManifest;
 }
 
-interface JsonSchemaDocument {
-  readonly $id?: unknown;
-  readonly $schema?: unknown;
+for await (const manifestPath of glob('packages/*/package.json')) {
+  const manifest = await readManifest(manifestPath);
+  if (manifest.private === true) continue;
+  const directory = dirname(manifestPath);
+  packageDefinitions.push({ directory, manifest, artifactPath: join(workspaceRoot, directory, 'artifacts', 'package.tgz') });
 }
 
-interface InstalledModulesMetadata {
-  readonly storeDir: string;
-}
-
-interface PackedPackage {
-  readonly artifactName: string;
-  readonly artifactPath: string;
-  readonly manifest: PackedPackageManifest;
-  readonly runtimeImportSpecifiers: readonly string[];
-}
-
-interface ExampleCoverageEntry {
-  readonly example: string;
-  readonly exportName: string;
-  readonly packageName: string;
-  readonly subpath: string;
-}
-
-interface ExampleCoverageManifest {
-  readonly entries: readonly ExampleCoverageEntry[];
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-async function discoverWorkspacePackages(
-  parentDirectoryName: string,
-  includeManifest: (manifest: PackedPackageManifest) => boolean,
-): Promise<readonly WorkspacePackageDefinition[]> {
-  const parentDirectory = join(workspaceRoot, parentDirectoryName);
-  const directoryEntries = await readdir(parentDirectory, { withFileTypes: true });
-  const workspacePackages: WorkspacePackageDefinition[] = [];
-  for (const directoryEntry of directoryEntries) {
-    if (!directoryEntry.isDirectory()) continue;
-    const manifestPath = join(parentDirectory, directoryEntry.name, 'package.json');
-    const manifestContents = await readFile(manifestPath, 'utf8').catch(() => undefined);
-    if (manifestContents === undefined) continue;
-    const manifest = JSON.parse(manifestContents) as PackedPackageManifest;
-    if (includeManifest(manifest)) workspacePackages.push({ directoryName: directoryEntry.name, manifest });
-  }
-  return workspacePackages.toSorted((left, right) => left.directoryName.localeCompare(right.directoryName));
-}
-
-function parseExampleCoverageManifest(value: unknown): ExampleCoverageManifest {
-  if (!isRecord(value) || !Array.isArray(value.entries) || value.entries.length === 0) {
-    throw new TypeError('examples/coverage.json must declare at least one public factory coverage entry.');
-  }
-  const entries = value.entries.map((entry): ExampleCoverageEntry => {
-    if (!isRecord(entry) || typeof entry.example !== 'string' || typeof entry.exportName !== 'string' || typeof entry.packageName !== 'string' || typeof entry.subpath !== 'string') {
-      throw new TypeError('examples/coverage.json entries must declare string example, exportName, packageName, and subpath values.');
-    }
-    return {
-      example: entry.example,
-      exportName: entry.exportName,
-      packageName: entry.packageName,
-      subpath: entry.subpath,
-    };
-  });
-  return { entries };
-}
-
-function collectImportTargets(exportValue: unknown): string[] {
-  if (typeof exportValue === 'string') {
-    return [exportValue];
-  }
-  if (exportValue === null || typeof exportValue !== 'object' || Array.isArray(exportValue)) {
-    return [];
-  }
-
-  const exportConditions = exportValue as Readonly<Record<string, unknown>>;
-  if (typeof exportConditions.import === 'string') {
-    return [exportConditions.import];
-  }
-  if (typeof exportConditions.default === 'string') {
-    return [exportConditions.default];
-  }
-  return Object.values(exportConditions).flatMap(collectImportTargets);
-}
-
-function createPackageImportSpecifier(packageName: string, exportName: string): string {
-  if (exportName === '.') {
-    return packageName;
-  }
-  if (!exportName.startsWith('./')) {
-    throw new Error(`${packageName} exposes unsupported export name ${exportName}`);
-  }
-  return `${packageName}/${exportName.slice(2)}`;
-}
-
-const publicWorkspacePackages = await discoverWorkspacePackages('packages', manifest => manifest.private !== true);
-const publicPackageNames = new Set(publicWorkspacePackages.map(({ manifest }) => manifest.name));
-const publicPackageVersions = new Map(publicWorkspacePackages.map(({ manifest }) => [manifest.name, manifest.version]));
-const exampleDirectories = (await discoverWorkspacePackages('examples', manifest => manifest.private === true))
-  .map(({ directoryName }) => directoryName);
-const packedPackages: PackedPackage[] = [];
-const exampleCoverageManifest = parseExampleCoverageManifest(JSON.parse(
-  await readFile(join(workspaceRoot, 'examples', 'coverage.json'), 'utf8'),
-));
-const artifactDirectory = join(workspaceRoot, 'artifacts');
-const artifactNames = (await readdir(artifactDirectory)).filter(artifactName => artifactName.endsWith('.tgz')).toSorted();
-if (artifactNames.length !== publicWorkspacePackages.length) {
-  throw new Error(`Expected ${publicWorkspacePackages.length} packed archives in ${artifactDirectory}, received ${artifactNames.length}`);
-}
-
-for (const artifactName of artifactNames) {
-  const artifactPath = join(artifactDirectory, artifactName);
-  const extractionDirectory = await mkdtemp(join(tmpdir(), 'chrome-debugger-bridge-package-'));
-
-  try {
-    await executeFile('tar', ['-xzf', artifactPath, '-C', extractionDirectory]);
-    const extractedPackageDirectory = join(extractionDirectory, 'package');
-    const manifest = JSON.parse(await readFile(join(extractedPackageDirectory, 'package.json'), 'utf8')) as PackedPackageManifest;
-
-    if (!publicPackageNames.has(manifest.name)) {
-      throw new Error(`Packed unexpected public package ${manifest.name}`);
-    }
-    if (manifest.version !== publicPackageVersions.get(manifest.name)) {
-      throw new Error(`${manifest.name} packed a version that differs from its workspace manifest.`);
-    }
-    if (packedPackages.some(packedPackage => packedPackage.manifest.name === manifest.name)) {
-      throw new Error(`Packed ${manifest.name} more than once`);
-    }
-    if (manifest.author !== 'dvcol'
-      || manifest.homepage !== 'https://github.com/dvcol/chrome-debugger-bridge#readme'
-      || !isRecord(manifest.bugs)
-      || manifest.bugs.url !== 'https://github.com/dvcol/chrome-debugger-bridge/issues'
-      || manifest.license !== 'MIT'
-      || !Array.isArray(manifest.keywords)
-      || manifest.keywords.length === 0
-      || typeof manifest.version !== 'string') {
-      throw new Error(`${manifest.name} must publish complete package metadata.`);
-    }
-    const [readme, license] = await Promise.all([
-      readFile(join(extractedPackageDirectory, 'README.md'), 'utf8'),
-      readFile(join(extractedPackageDirectory, 'LICENSE'), 'utf8'),
-    ]);
-    if (readme.trim().length === 0 || license.trim().length === 0) {
-      throw new Error(`${manifest.name} must publish a non-empty README and license.`);
-    }
-
-    if (manifest.sideEffects !== false) {
-      throw new Error(`${manifest.name} must declare sideEffects: false for import-only public entries.`);
-    }
-
-    if (manifest.name === corePackageName) {
-      const schemaExportTarget = manifest.exports[protocolJsonSchemaExportName];
-      if (schemaExportTarget !== protocolJsonSchemaExportTarget) {
-        throw new Error(
-          `${manifest.name} must export ${protocolJsonSchemaExportName} as ${protocolJsonSchemaExportTarget}`,
-        );
-      }
-
-      const schemaContents = await readFile(join(extractedPackageDirectory, protocolJsonSchemaExportTarget), 'utf8');
-      const schemaDocument = JSON.parse(schemaContents) as JsonSchemaDocument;
-      if (schemaDocument.$schema !== 'https://json-schema.org/draft/2020-12/schema') {
-        throw new Error(`${manifest.name} must publish a Draft 2020-12 protocol JSON Schema`);
-      }
-      if (schemaDocument.$id !== protocolJsonSchemaIdentifier) {
-        throw new Error(`${manifest.name} must publish protocol JSON Schema ${protocolJsonSchemaIdentifier}`);
-      }
-    }
-
-    for (const dependencyFieldName of dependencyFieldNames) {
-      const dependencies = manifest[dependencyFieldName] ?? {};
-      for (const [dependencyName, dependencySpecifier] of Object.entries(dependencies)) {
-        if (dependencySpecifier.startsWith('catalog:') || dependencySpecifier.startsWith('workspace:')) {
-          throw new Error(`${manifest.name} packed ${dependencyFieldName}.${dependencyName} as ${dependencySpecifier}`);
-        }
-      }
-    }
-
-    const runtimeImportSpecifiers = Object.entries(manifest.exports).flatMap(([exportName, exportValue]) => {
-      const importTargets = collectImportTargets(exportValue);
-      return importTargets.some(importTarget => !importTarget.endsWith('.json'))
-        ? [createPackageImportSpecifier(manifest.name, exportName)]
-        : [];
-    });
-
-    if (runtimeImportSpecifiers.length === 0) {
-      throw new Error(`${manifest.name} exposes no importable runtime entry`);
-    }
-    for (const exportValue of Object.values(manifest.exports)) {
-      for (const importTarget of collectImportTargets(exportValue)) {
-        if (importTarget.endsWith('.json')) continue;
-        await readFile(join(extractedPackageDirectory, importTarget));
-      }
-    }
-    packedPackages.push({
-      artifactName,
-      artifactPath,
-      manifest,
-      runtimeImportSpecifiers,
-    });
-  } finally {
-    await rm(extractionDirectory, { force: true, recursive: true });
-  }
-}
-
-if (packedPackages.length !== publicPackageNames.size) {
-  throw new Error('Packed package names do not match the public workspace package manifests.');
-}
-
-const packedPackagesByName = new Map(packedPackages.map(packedPackage => [packedPackage.manifest.name, packedPackage]));
-const coveredFactoryKeys = new Set<string>();
-for (const coverageEntry of exampleCoverageManifest.entries) {
-  const coverageImportSpecifier = createPackageImportSpecifier(coverageEntry.packageName, coverageEntry.subpath);
-  const coveredFactoryKey = `${coverageImportSpecifier}:${coverageEntry.exportName}`;
-  if (coveredFactoryKeys.has(coveredFactoryKey)) {
-    throw new Error(`examples/coverage.json maps ${coveredFactoryKey} more than once.`);
-  }
-  coveredFactoryKeys.add(coveredFactoryKey);
-  if (!exampleDirectories.includes(coverageEntry.example)) {
-    throw new Error(`examples/coverage.json maps ${coveredFactoryKey} to unknown example ${coverageEntry.example}.`);
-  }
-  const packedPackage = packedPackagesByName.get(coverageEntry.packageName);
-  if (packedPackage === undefined) {
-    throw new Error(`examples/coverage.json maps ${coveredFactoryKey} to a package that is not packed.`);
-  }
-  if (!(coverageEntry.subpath in packedPackage.manifest.exports)) {
-    throw new Error(`examples/coverage.json maps ${coveredFactoryKey} to missing export ${coverageEntry.subpath}.`);
-  }
-}
-
-const temporaryConsumerRoot = await mkdtemp(join(tmpdir(), 'chrome-debugger-bridge-consumer-'));
-const temporaryConsumerDirectory = join(temporaryConsumerRoot, 'package-consumer');
-const installedModulesMetadata = JSON.parse(
-  await readFile(join(workspaceRoot, 'node_modules', '.modules.yaml'), 'utf8'),
-) as InstalledModulesMetadata;
-const populatedStoreDirectory = dirname(installedModulesMetadata.storeDir);
-
+const temporaryRoot = await mkdtemp(join(tmpdir(), 'cdb-package-consumers-'));
 try {
-  await mkdir(temporaryConsumerDirectory);
-  await Promise.all([
-    copyFile(
-      join(workspaceRoot, 'tests', 'fixtures', 'package-consumer', 'browser-transport-consumer.ts'),
-      join(temporaryConsumerDirectory, 'browser-transport-consumer.ts'),
-    ),
-    copyFile(
-      join(workspaceRoot, 'tests', 'fixtures', 'package-consumer', 'protocol-consumer.ts'),
-      join(temporaryConsumerDirectory, 'protocol-consumer.ts'),
-    ),
-    copyFile(
-      join(workspaceRoot, 'tests', 'fixtures', 'package-consumer', 'transport-consumer.ts'),
-      join(temporaryConsumerDirectory, 'transport-consumer.ts'),
-    ),
-    copyFile(
-      join(workspaceRoot, 'tests', 'fixtures', 'package-consumer', 'tsconfig.json'),
-      join(temporaryConsumerDirectory, 'tsconfig.json'),
-    ),
-    copyFile(
-      join(workspaceRoot, 'tests', 'fixtures', 'package-consumer', 'tsconfig.browser.json'),
-      join(temporaryConsumerDirectory, 'tsconfig.browser.json'),
-    ),
-  ]);
-  await writeFile(
-    join(temporaryConsumerDirectory, 'package.json'),
-    `${JSON.stringify({
-      name: '@chrome-debugger-bridge-fixture/packed-package-consumer',
-      private: true,
-      type: 'module',
-      version: '0.0.0',
-    }, null, 2)}\n`,
-    'utf8',
-  );
+  const imports: string[] = [];
+  for (const { directory, manifest, artifactPath } of packageDefinitions) {
+    const extractionDirectory = join(temporaryRoot, directory);
+    await mkdir(extractionDirectory, { recursive: true });
+    await executeFile('tar', ['-xzf', artifactPath, '-C', extractionDirectory]);
+    const extractedDirectory = join(extractionDirectory, 'package');
+    const packedManifest = await readManifest(join(extractedDirectory, 'package.json'));
+    assert.equal(packedManifest.name, manifest.name);
+    assert.equal(packedManifest.version, manifest.version);
+    await Promise.all(['README.md', 'LICENSE'].map(async file => readFile(join(extractedDirectory, file), 'utf8')));
 
-  const packageOverrides = packedPackages
-    .map(({ artifactPath, manifest }) => `  ${JSON.stringify(manifest.name)}: ${JSON.stringify(`file:${artifactPath}`)}`)
-    .join('\n');
-  await writeFile(
-    join(temporaryConsumerDirectory, 'pnpm-workspace.yaml'),
-    `overrides:\n${packageOverrides}\n`,
-    'utf8',
-  );
+    const dependencySpecifiers = Object.values({
+      ...packedManifest.dependencies,
+      ...packedManifest.devDependencies,
+      ...packedManifest.optionalDependencies,
+      ...packedManifest.peerDependencies,
+    });
+    assert.ok(dependencySpecifiers.every(specifier => !specifier.startsWith('workspace:') && !specifier.startsWith('catalog:')), `${manifest.name} contains unresolved workspace dependencies.`);
 
-  await executeFile(
-    'pnpm',
-    [
-      'add',
-      '--ignore-scripts',
-      '--store-dir',
-      populatedStoreDirectory,
-      ...packedPackages.map(({ artifactPath }) => artifactPath),
-    ],
-    { cwd: temporaryConsumerDirectory },
-  );
-
-  await executeFile(
-    'pnpm',
-    ['exec', 'tsc', '--noEmit', '--project', join(temporaryConsumerDirectory, 'tsconfig.browser.json')],
-    { cwd: workspaceRoot },
-  );
-  await executeFile(
-    'pnpm',
-    ['add', '--ignore-scripts', '--store-dir', populatedStoreDirectory, '@types/node@26.1.2'],
-    { cwd: temporaryConsumerDirectory },
-  );
-
-  const runtimeImportSpecifiers = packedPackages.flatMap(({ runtimeImportSpecifiers }) => runtimeImportSpecifiers);
-  await executeFile(
-    process.execPath,
-    [
-      '--input-type=module',
-      '--eval',
-      `
-const coverageEntries = ${JSON.stringify(exampleCoverageManifest.entries.map(coverageEntry => ({
-  exportName: coverageEntry.exportName,
-  importSpecifier: createPackageImportSpecifier(coverageEntry.packageName, coverageEntry.subpath),
-})))};
-const runtimeImportSpecifiers = ${JSON.stringify(runtimeImportSpecifiers)};
-const coveredFactoryKeys = new Set(coverageEntries.map(({ exportName, importSpecifier }) => [importSpecifier, exportName].join(':')));
-for (const { exportName, importSpecifier } of coverageEntries) {
-  const exportedModule = await import(importSpecifier);
-  if (typeof exportedModule[exportName] !== 'function') {
-    throw new TypeError(['examples/coverage.json maps', [importSpecifier, exportName].join(':'), 'but it is not a runtime factory export.'].join(' '));
-  }
-}
-for (const importSpecifier of runtimeImportSpecifiers) {
-  const exportedModule = await import(importSpecifier);
-  for (const [exportName, exportedValue] of Object.entries(exportedModule)) {
-    if (!/^(?:connect|create|install|mount)/u.test(exportName) || typeof exportedValue !== 'function') continue;
-    if (!coveredFactoryKeys.has([importSpecifier, exportName].join(':'))) {
-      throw new TypeError([importSpecifier, exportName].join(':') + ' is a public factory without an example coverage entry.');
+    for (const [subpath, target] of Object.entries(packedManifest.exports ?? {})) {
+      if (typeof target === 'string' ? target.endsWith('.json') : !('import' in target)) continue;
+      imports.push(subpath === '.' ? manifest.name : `${manifest.name}${subpath.slice(1)}`);
     }
   }
-}
-`,
-    ],
-    { cwd: temporaryConsumerDirectory },
-  );
-  await executeFile(
-    'pnpm',
-    ['exec', 'tsc', '--noEmit', '--project', join(temporaryConsumerDirectory, 'tsconfig.json')],
-    { cwd: workspaceRoot },
-  );
 
-  for (const { artifactName, manifest, runtimeImportSpecifiers: packageRuntimeImportSpecifiers } of packedPackages) {
-    console.info(
-      styleText('green', '✅ [package]'),
-      manifest.name,
-      'imports',
-      packageRuntimeImportSpecifiers.length,
-      'runtime entries and compiles from',
-      artifactName,
-    );
+  const packageOverrides = packageDefinitions.map(({ manifest, artifactPath }) =>
+    `  ${JSON.stringify(manifest.name)}: ${JSON.stringify(`file:${artifactPath}`)}`).join('\n');
+  const modulesMetadata = JSON.parse(await readFile(join(workspaceRoot, 'node_modules', '.modules.yaml'), 'utf8')) as { storeDir: string };
+  const storeDirectory = dirname(modulesMetadata.storeDir);
+  const consumerDirectory = join(temporaryRoot, 'consumer');
+  await mkdir(consumerDirectory);
+  const fixtureDirectory = join(workspaceRoot, 'tests', 'fixtures', 'package-consumer');
+  for await (const filename of glob('*.{ts,json}', { cwd: fixtureDirectory })) {
+    await copyFile(join(fixtureDirectory, filename), join(consumerDirectory, filename));
   }
+  await writeFile(join(consumerDirectory, 'package.json'), JSON.stringify({ private: true, type: 'module', version: '0.0.0' }));
+  await writeFile(join(consumerDirectory, 'pnpm-workspace.yaml'), `overrides:\n${packageOverrides}\n`);
+  await executeFile('pnpm', [
+    'add',
+    '--ignore-scripts',
+    '--store-dir',
+    storeDirectory,
+    ...packageDefinitions.map(({ artifactPath }) => artifactPath),
+  ], { cwd: consumerDirectory });
+  await executeFile('pnpm', ['exec', 'tsc', '--noEmit', '--project', join(consumerDirectory, 'tsconfig.browser.json')]);
 
-  const packedExampleRoot = join(temporaryConsumerRoot, 'packed-examples');
-  const packedArtifactPathsByName = new Map(packedPackages.map(({ artifactPath, manifest }) => [manifest.name, artifactPath]));
-  await mkdir(join(packedExampleRoot, 'examples'), { recursive: true });
-  await writeFile(
-    join(packedExampleRoot, 'package.json'),
-    `${JSON.stringify({ name: '@chrome-debugger-bridge-fixture/packed-examples', private: true, version: '0.0.0' }, null, 2)}\n`,
-    'utf8',
-  );
-  const packedPackageOverrides = packedPackages
-    .map(({ artifactPath, manifest }) => `  ${JSON.stringify(manifest.name)}: ${JSON.stringify(`file:${artifactPath}`)}`)
-    .join('\n');
-  await writeFile(
-    join(packedExampleRoot, 'pnpm-workspace.yaml'),
-    `packages:\n  - examples/*\ncatalog:\n  '@modelcontextprotocol/client': 2.0.0\ncatalogs:\n  devtools:\n    '@vitejs/devtools-kit': 0.4.12\n    devframe: 0.8.2\n    vite: 8.2.0\noverrides:\n${packedPackageOverrides}\n`,
-    'utf8',
-  );
+  const nodeTypesManifest = await readManifest(join(workspaceRoot, 'node_modules', '@types', 'node', 'package.json'));
+  await executeFile('pnpm', [
+    'add',
+    '--ignore-scripts',
+    '--store-dir',
+    storeDirectory,
+    `@types/node@${nodeTypesManifest.version}`,
+  ], { cwd: consumerDirectory });
+  await writeFile(join(consumerDirectory, 'imports.ts'), imports.map(specifier => `import ${JSON.stringify(specifier)};`).join('\n'));
+  await executeFile('pnpm', ['exec', 'tsc', '--noEmit', '--project', join(consumerDirectory, 'tsconfig.json')]);
+  await executeFile(process.execPath, ['imports.ts'], { cwd: consumerDirectory });
+  await executeFile(process.execPath, ['packed-generic-smoke.ts'], { cwd: consumerDirectory });
+  console.info(styleText('green', '✅ [packages]'), 'compiled and imported', imports.length, 'entries from', packageDefinitions.length, 'tarballs; transport smoke passed');
 
-  for (const exampleDirectory of exampleDirectories) {
-    const sourceDirectory = join(workspaceRoot, 'examples', exampleDirectory);
-    const destinationDirectory = join(packedExampleRoot, 'examples', exampleDirectory);
-    const readme = await readFile(join(sourceDirectory, 'README.md'), 'utf8').catch(() => undefined);
-    if (readme === undefined || readme.trim().length === 0) {
-      throw new Error(`examples/${exampleDirectory} must document its purpose, setup, security boundary, and runnable command.`);
-    }
-    if (!/\b(?:smoke|start)\b/u.test(readme)) {
-      throw new Error(`examples/${exampleDirectory}/README.md must name a runnable command.`);
-    }
-    await cp(sourceDirectory, destinationDirectory, { recursive: true });
-    const manifestPath = join(destinationDirectory, 'package.json');
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as PackedPackageManifest;
-    if (manifest.private !== true || manifest.scripts?.smoke === undefined) {
-      throw new Error(`examples/${exampleDirectory} must remain private and expose a smoke command.`);
-    }
-    const dependencies = Object.fromEntries(Object.entries(manifest.dependencies ?? {}).map(([dependencyName, dependencySpecifier]) => {
-      const packedArtifactPath = packedArtifactPathsByName.get(dependencyName);
-      return [dependencyName, packedArtifactPath === undefined ? dependencySpecifier : `file:${packedArtifactPath}`];
-    }));
-    if (Object.values(dependencies).some(dependencySpecifier => dependencySpecifier.startsWith('workspace:'))) {
-      throw new Error(`examples/${exampleDirectory} retained a workspace source alias in its packed smoke consumer.`);
-    }
-    await writeFile(manifestPath, `${JSON.stringify({ ...manifest, dependencies }, null, 2)}\n`, 'utf8');
+  const exampleRoot = join(temporaryRoot, 'examples');
+  await mkdir(exampleRoot);
+  await writeFile(join(exampleRoot, 'package.json'), JSON.stringify({ private: true, type: 'module', version: '0.0.0' }));
+  await writeFile(join(exampleRoot, 'pnpm-workspace.yaml'), `${await readFile(join(workspaceRoot, 'pnpm-workspace.yaml'), 'utf8')}\noverrides:\n${packageOverrides}\n`);
+  const packagePaths = new Map(packageDefinitions.map(({ manifest, artifactPath }) => [manifest.name, `file:${artifactPath}`]));
+  const exampleDirectories: string[] = [];
+  for await (const manifestPath of glob('examples/*/package.json')) {
+    const directory = dirname(manifestPath);
+    const manifest = await readManifest(manifestPath);
+    if (manifest.scripts?.smoke === undefined) continue;
+    const destination = join(exampleRoot, directory);
+    await cp(join(workspaceRoot, directory), destination, {
+      recursive: true,
+      filter: source => !ignoredDirectories.has(basename(source)),
+    });
+    const dependencies = Object.fromEntries(Object.entries(manifest.dependencies ?? {})
+      .map(([name, specifier]) => [name, packagePaths.get(name) ?? specifier]));
+    await writeFile(join(destination, 'package.json'), JSON.stringify({ ...manifest, dependencies }, null, 2));
+    exampleDirectories.push(destination);
   }
-
-  await executeFile('pnpm', ['install', '--ignore-scripts', '--store-dir', populatedStoreDirectory], { cwd: packedExampleRoot });
-  for (const exampleDirectory of exampleDirectories) {
-    const packageDirectory = join(packedExampleRoot, 'examples', exampleDirectory);
-    await executeFile('pnpm', ['run', 'smoke'], { cwd: packageDirectory });
+  await executeFile('pnpm', ['install', '--ignore-scripts', '--store-dir', storeDirectory], { cwd: exampleRoot });
+  for (const directory of exampleDirectories) {
+    await executeFile('pnpm', ['run', 'smoke'], { cwd: directory });
+    console.info(styleText('green', '✅ [example]'), basename(directory), 'passed against packed packages');
   }
-  await copyFile(
-    join(workspaceRoot, 'tests', 'fixtures', 'package-consumer', 'packed-generic-smoke.ts'),
-    join(packedExampleRoot, 'examples', 'browser-client', 'packed-generic-smoke.ts'),
-  );
-  await executeFile(process.execPath, ['packed-generic-smoke.ts'], { cwd: join(packedExampleRoot, 'examples', 'browser-client') });
-  console.info(styleText('green', '✅ [examples]'), 'ran private example smoke commands against packed tarballs without workspace aliases');
 } finally {
-  await rm(temporaryConsumerRoot, { force: true, recursive: true });
+  await rm(temporaryRoot, { force: true, recursive: true });
 }

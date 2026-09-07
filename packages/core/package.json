@@ -86,6 +86,7 @@
   "scripts": {
     "build": "tsdown && node scripts/generate-protocol-json-schema.ts",
     "check:package": "publint",
+    "pack": "pnpm pack --out artifacts/package.tgz",
     "test": "vitest run",
     "typecheck": "tsc --noEmit --project tsconfig.json"
   },
