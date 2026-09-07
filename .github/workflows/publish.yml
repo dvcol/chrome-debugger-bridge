@@ -1,17 +1,7 @@
 name: Publish
-run-name: Publish ${{ inputs.tag-name }}
+run-name: Publish ${{ inputs.tag-name }} (${{ inputs.request-id }})
 
 on:
-  workflow_call:
-    inputs:
-      commit-hash:
-        description: Exact release commit
-        required: true
-        type: string
-      tag-name:
-        description: Exact release tag
-        required: true
-        type: string
   workflow_dispatch:
     inputs:
       commit-hash:
@@ -21,6 +11,11 @@ on:
       tag-name:
         description: Exact release tag
         required: true
+        type: string
+      request-id:
+        description: Unique caller identifier used to find the dispatched run
+        required: false
+        default: manual
         type: string
 
 permissions:
@@ -49,7 +44,7 @@ jobs:
 
       - name: Validate immutable release
         run: |
-          [[ "$PUBLISH_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]
+          [[ "$PUBLISH_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
           [[ "$PUBLISH_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$PUBLISH_COMMIT"
           test "$(git rev-list -n 1 "$PUBLISH_TAG")" = "$PUBLISH_COMMIT"
@@ -67,7 +62,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Validate packages
-        run: pnpm verify:pack
+        run: |
+          pnpm run verify:release -- --phase current --version "${PUBLISH_TAG#v}"
+          pnpm verify:pack
+          git diff --exit-code
 
       - name: Install npm with trusted publishing support
         run: npm install --global npm@latest

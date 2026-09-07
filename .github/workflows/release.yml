@@ -88,13 +88,54 @@ jobs:
   publish:
     name: Publish packages
     needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
+      actions: write
       contents: read
-      id-token: write
-    uses: ./.github/workflows/publish.yml
-    with:
-      commit-hash: ${{ needs.release.outputs.commit-hash }}
-      tag-name: ${{ needs.release.outputs.tag-name }}
+    env:
+      PUBLISH_COMMIT: ${{ needs.release.outputs.commit-hash }}
+      PUBLISH_TAG: ${{ needs.release.outputs.tag-name }}
+    steps:
+      - name: Dispatch immutable publication
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REQUEST_ID="release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          PUBLISH_RUN_TITLE="Publish $PUBLISH_TAG ($REQUEST_ID)"
+          gh workflow run publish.yml \
+            --ref main \
+            --field commit-hash="$PUBLISH_COMMIT" \
+            --field tag-name="$PUBLISH_TAG" \
+            --field request-id="$REQUEST_ID"
+
+          PUBLISH_RUN_ID=""
+          for _ in {1..30}; do
+            PUBLISH_RUN_ID="$(
+              gh run list \
+                --workflow publish.yml \
+                --event workflow_dispatch \
+                --branch main \
+                --limit 20 \
+                --json databaseId,displayTitle \
+              | jq --arg title "$PUBLISH_RUN_TITLE" -r \
+                '.[] | select(.displayTitle == $title) | .databaseId' \
+              | head -n 1
+            )"
+            if test -n "$PUBLISH_RUN_ID"; then
+              break
+            fi
+            sleep 2
+          done
+          test -n "$PUBLISH_RUN_ID"
+          echo "publish-run-id=$PUBLISH_RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for npm publication
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH_RUN_ID: ${{ steps.dispatch.outputs.publish-run-id }}
+        run: gh run watch "$PUBLISH_RUN_ID" --exit-status
 
   github-release:
     name: Create GitHub release

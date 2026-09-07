@@ -4,8 +4,8 @@ CDB publishes its six public packages on one synchronized version. A manually di
 
 ## Responsibilities
 
-- `release.yml` validates the requested version, runs Bumpp, verifies the complete repository, and pushes the generated commit and annotated tag.
-- `publish.yml` checks out that exact tag and publishes every public package with npm trusted publishing and provenance.
+- `release.yml` validates the requested version, runs Bumpp, verifies the complete repository, pushes the generated commit and annotated tag, dispatches `publish.yml`, and waits for it before creating the GitHub Release.
+- `publish.yml` runs as a standalone workflow, checks out that exact tag, and publishes every public package with npm trusted publishing and provenance. Keeping it standalone ensures npm validates `publish.yml` as the trusted workflow identity.
 - `bootstrap-publish.yml` exists only to create the initially unpublished package names. Remove it after trusted publishing is configured.
 - pnpm transforms `workspace:` and `catalog:` dependency specifiers in packed and published manifests. The packed-consumer verification rejects either protocol if it escapes.
 
