@@ -11,7 +11,7 @@
   "scripts": {
     "build": "turbo run build --cache-dir=.turbo/cache",
     "catalogue:generate": "node packages/core/scripts/generate-cdp-catalogue.ts",
-    "check": "pnpm run check:workspace && pnpm run check:catalogue && pnpm run lint && pnpm run knip && pnpm run typecheck && pnpm run test",
+    "check": "pnpm run check:workspace && pnpm run check:catalogue && pnpm run typecheck && pnpm run lint && pnpm run knip && pnpm run test",
     "check:catalogue": "node packages/core/scripts/generate-cdp-catalogue.ts --check",
     "check:runtime": "node scripts/check-runtime-boundaries.ts",
     "check:workspace": "node scripts/check-workspace-dependencies.ts",
