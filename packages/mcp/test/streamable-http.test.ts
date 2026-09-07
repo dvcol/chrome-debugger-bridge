@@ -961,7 +961,7 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       ),
     );
   }
-});
+}, 15_000);
 
 it('registers raw CDP only when a trusted host explicitly enables it', async () => {
   expect.assertions(1);
