@@ -282,7 +282,9 @@ async function executeSemanticCommand(
   parameters: JsonObject,
   signal?: AbortSignal,
 ): Promise<unknown> {
+  signal?.throwIfAborted();
   return withLease(client, input, mode, [method], async (lease) => {
+    signal?.throwIfAborted();
     const operationId = randomUUID();
     const abort = (): void => {
       void client
@@ -304,6 +306,8 @@ async function executeSemanticCommand(
         targetGeneration: input.targetGeneration,
         targetId: input.targetId,
       });
+    } catch (error) {
+      throw signal?.aborted ? signal.reason : error;
     } finally {
       signal?.removeEventListener('abort', abort);
     }
@@ -4538,9 +4542,15 @@ function createCdbToolDefinitionsForSession(
     },
     async (input, context) => {
       const completed: { index: number; action: string }[] = [];
+      const cancellation = new AbortController();
+      const signal = AbortSignal.any([context.mcpReq.signal, cancellation.signal]);
       const batchFailure = (failure: CallToolResult, failedStep?: number): CallToolResult => {
         const content = failure.content.find(item => item.type === 'text');
-        const error = objectValue(content?.type === 'text' ? JSON.parse(content.text) : undefined);
+        let error = objectValue(content?.type === 'text' ? JSON.parse(content.text) : undefined);
+        if (signal.aborted && error.code !== 'MCP_ACTION_OUTCOME_UNKNOWN') {
+          const cancellationContent = toolError(signal.reason).content.find(item => item.type === 'text');
+          error = objectValue(cancellationContent?.type === 'text' ? JSON.parse(cancellationContent.text) : undefined);
+        }
         return {
           ...jsonContent({
             ...error,
@@ -4554,8 +4564,6 @@ function createCdbToolDefinitionsForSession(
           isError: true,
         };
       };
-      const cancellation = new AbortController();
-      const signal = AbortSignal.any([context.mcpReq.signal, cancellation.signal]);
       const timeout = setTimeout(() => cancellation.abort(new McpToolError('MCP_BATCH_TIMEOUT', 'The batch exceeded its total deadline.')), input.timeoutMilliseconds);
       timeout.unref?.();
       const subscriptions: CdpSubscription[] = [];

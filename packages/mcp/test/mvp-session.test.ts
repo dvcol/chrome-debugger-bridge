@@ -307,18 +307,18 @@ it('executes ordered element actions in one batch lease and stops after an uncer
   expect(inputCount).toBe(4);
 });
 
-it('cancels stalled accessibility discovery at the batch deadline without dispatching input', async () => {
+it.each(['Page.getFrameTree', 'Accessibility.getFullAXTree'])('cancels stalled %s discovery at the batch deadline without dispatching input', async (stalledMethod) => {
   expect.assertions(4);
   const pendingDiscovery = Promise.withResolvers<unknown>();
   const discoveryStarted = Promise.withResolvers<void>();
   let cancellationCount = 0;
   let inputCount = 0;
   const harness = toolHarness(async (command) => {
-    if (command.method === 'Page.getFrameTree') return { value: { frameTree: { frame: { id: 'root-frame' } } } };
-    if (command.method === 'Accessibility.getFullAXTree') {
+    if (command.method === stalledMethod) {
       discoveryStarted.resolve();
       return pendingDiscovery.promise;
     }
+    if (command.method === 'Page.getFrameTree') return { value: { frameTree: { frame: { id: 'root-frame' } } } };
     if (command.method.startsWith('Input.')) inputCount += 1;
     return { value: { sessions: [] } };
   });
@@ -338,6 +338,23 @@ it('cancels stalled accessibility discovery at the batch deadline without dispat
     pendingDiscovery.reject(new Error('Test cleanup'));
   }
   const result = await batch;
+  const outcome = JSON.parse(result.text) as { readonly code: string; readonly details: unknown };
+  expect(outcome.code).toBe('MCP_BATCH_TIMEOUT');
+  expect(outcome.details).toMatchObject({ completed: [], failedStep: 0 });
+  expect(inputCount).toBe(0);
+});
+
+it('reports the batch deadline when locator polling is cancelled before input', async () => {
+  expect.assertions(3);
+  let inputCount = 0;
+  const harness = toolHarness(async (command) => {
+    if (command.method.startsWith('Input.')) inputCount += 1;
+    return { value: {} };
+  });
+  const result = await harness.invoke('browser.batch', {
+    actions: [{ action: 'focus', locator: { role: 'button', name: { match: 'exact', value: 'Missing control' } } }],
+    timeoutMilliseconds: 100,
+  });
   const outcome = JSON.parse(result.text) as { readonly code: string; readonly details: unknown };
   expect(outcome.code).toBe('MCP_BATCH_TIMEOUT');
   expect(outcome.details).toMatchObject({ completed: [], failedStep: 0 });
