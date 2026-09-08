@@ -8,6 +8,8 @@ export interface StoredBrokerPairing {
 
 export interface IndexedDbPairingStore {
   load: (endpoint: string) => Promise<StoredBrokerPairing | undefined>;
+  /** Finds a stored credential when the same broker moves to another transport endpoint. */
+  findByIdentity?: (brokerId: string, agentId: string) => Promise<StoredBrokerPairing | undefined>;
   remove: (credentialId: string) => Promise<void>;
   save: (pairing: StoredBrokerPairing) => Promise<void>;
 }
@@ -78,6 +80,19 @@ export function createIndexedDbPairingStore(
   const databaseName = options.databaseName ?? 'chrome-debugger-bridge';
 
   return {
+    async findByIdentity(brokerId, agentId) {
+      const database = await openPairingDatabase(databaseName);
+      try {
+        const transaction = database.transaction(pairingObjectStoreName, 'readonly');
+        const values = await requestResult(transaction.objectStore(pairingObjectStoreName).getAll() as IDBRequest<unknown[]>);
+        await transactionComplete(transaction);
+        const matching = values.filter(isValidPairing).filter(pairing => pairing.brokerId === brokerId && pairing.agentId === agentId);
+        if (matching.length > 1) throw new Error('Multiple stored credentials match this broker and provider. Select the original pairing endpoint.');
+        return matching[0];
+      } finally {
+        database.close();
+      }
+    },
     async load(endpoint) {
       const database = await openPairingDatabase(databaseName);
       try {

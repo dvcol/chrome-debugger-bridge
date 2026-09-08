@@ -347,6 +347,7 @@ it('supports the core Playwright-style locator strategies and XPath through DOM 
       if (command.method === 'Bridge.listChildSessions') return { value: { sessions: [] } };
       if (command.method === 'Accessibility.queryAXTree' || command.method === 'Accessibility.getFullAXTree')
         return { value: { nodes: [{ backendDOMNodeId: 7, childIds: [], ignored: false, name: { value: 'Save' }, nodeId: 'save', role: { value: 'button' } }] } };
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
       if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
       if (command.method === 'DOM.getFlattenedDocument')
         return { value: { nodes: [{ nodeId: 1, nodeType: 9, backendNodeId: 1, children: [{ nodeId: 70, backendNodeId: 7, nodeName: 'BUTTON', attributes: ['placeholder', 'Search', 'alt', 'Hero', 'title', 'Save title', 'data-testid', 'save'] }], shadowRoots: [{ nodeId: 2, shadowRootType: 'open' }, { nodeId: 3, shadowRootType: 'closed' }] }] } };
@@ -409,6 +410,7 @@ it('scopes locators through an OOPIF frame chain', async () => {
       commands.push(command);
       if (command.method === 'Bridge.listChildSessions')
         return { value: { sessions: [{ frameId: 'frame-target', generation: 1, id: childSessionId, type: 'iframe' }] } };
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
       if (command.method === 'DOM.getDocument')
         return { value: { root: { backendNodeId: command.sessionId === undefined ? 1 : 2 } } };
       if (command.method === 'Accessibility.queryAXTree' && command.sessionId === undefined)
@@ -455,6 +457,7 @@ it('scopes locators through a same-process iframe document', async () => {
     async cancelCommand() {},
     async executeCommand(command: CdpCommand) {
       if (command.method === 'Bridge.listChildSessions') return { value: { sessions: [] } };
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
       if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
       if (command.method === 'Accessibility.queryAXTree') {
         accessibilityTreeCalls += 1;
@@ -501,6 +504,7 @@ it('applies descendant, has-text, exclusion, and nth filters against DOM ancestr
     },
     async cancelCommand() {},
     async executeCommand(command: CdpCommand) {
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
       if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
       if (command.method === 'Accessibility.queryAXTree')
         return {
@@ -573,6 +577,7 @@ it('re-resolves a locator once when authority renews before input dispatch', asy
     async cancelCommand() {},
     async executeCommand(command: CdpCommand) {
       commands.push(command);
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
       if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
       if (command.method === 'Accessibility.queryAXTree' && !staleThrown) {
         staleThrown = true;
@@ -620,6 +625,7 @@ it('never replays a locator action after pointer input may have dispatched', asy
     async cancelCommand() {},
     async executeCommand(command: CdpCommand) {
       if (command.method === 'Bridge.listChildSessions') return { value: { sessions: [] } };
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
       if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
       if (command.method === 'Accessibility.queryAXTree')
         return { value: { nodes: [{ backendDOMNodeId: 7, childIds: [], ignored: false, name: { value: 'Save' }, nodeId: 'save', role: { value: 'button' } }] } };

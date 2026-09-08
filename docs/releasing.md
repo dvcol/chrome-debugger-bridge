@@ -1,6 +1,6 @@
 # Releasing CDB packages
 
-CDB publishes its six public packages on one synchronized version. A manually dispatched GitHub workflow creates the version commit and tag, publishes the immutable tagged commit, and then creates one GitHub Release.
+CDB publishes its eight public packages on one synchronized version. A manually dispatched GitHub workflow creates the version commit and tag, publishes the immutable tagged commit, and then creates one GitHub Release.
 
 ## Responsibilities
 

@@ -55,6 +55,24 @@ or resume-window expiry deletes the authority record and ends the logical sessio
 Session `metadata` is optional JSON-compatible data. CDB validates and stores it but never interprets
 it as identity, authority, or policy.
 
+### Optional host orchestration
+
+`@dvcol/cdb-broker` composes the core stores, pairing, logical sessions, grant coordinator and
+per-principal tool sessions. `defineBroker` is declarative; `createBroker` creates the runtime.
+Management state is a projection of these components. Persistent identity storage preserves the
+broker ID and existing provider pairings at a host-selected location.
+
+Navigation presets belong to this optional package, outside the protocol kernel. Each approval binds
+the selected preset to a principal and target. Disallowed presets fail without downgrading. Target
+generation renewal invalidates document-bound references independently of the navigation policy.
+
+`@dvcol/cdb-devframe` installs this runtime as a context-lifetime service. Provider messages, pairing
+proofs and operation cancellation use the host's authenticated Devframe RPC peer. CDB channel closure
+does not close that shared connection. Hosts forward peer lifecycle callbacks and dispose the service
+on startup failure and shutdown. The optional panel consumes an existing management client and never
+instantiates a broker. Registry aggregation, tool ownership/routing, MCP lifecycle and WebMCP
+publication remain with the embedding application.
+
 ### Grant request coordinator
 
 `createGrantRequestCoordinator` stores the authenticated logical session, principal, requested
@@ -72,8 +90,9 @@ for the contract and runnable public example.
 ### Extension helpers
 
 `@dvcol/cdb-extension` provides publication and recovery mechanics that remain useful to a browser
-extension but do not import Chrome APIs. The extension host supplies the Chrome adapter and user
-approval policy. The separate `presentation` entry is an opt-in content-script helper. It translates
+extension but do not import Chrome APIs. The optional `@dvcol/cdb-extension/chrome` entry composes
+Chrome debugger, tab, navigation, alarm and storage bindings. The embedding application owns
+permissions, installation, tab-selection policy and final approval trust. The separate `presentation` entry is an opt-in content-script helper. It translates
 successful CDP pointer commands into sanitized visual events and renders an isolated pointer plus a
 temporary favicon. The host owns installation, messaging, current grant state, and navigation
 reinjection.

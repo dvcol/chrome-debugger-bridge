@@ -2,6 +2,8 @@
   "references": [
     { "path": "./packages/automation-playwright" },
     { "path": "./packages/core" },
+    { "path": "./packages/broker" },
+    { "path": "./packages/devframe" },
     { "path": "./packages/extension" },
     { "path": "./packages/websocket" },
     { "path": "./packages/birpc" },

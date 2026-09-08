@@ -2,6 +2,29 @@ import { expect, it } from 'vitest';
 
 import { createAgentRecovery } from '../src/agent-recovery.js';
 
+it('reports the original connection failure while retaining reconnect behavior', async () => {
+  expect.assertions(3);
+  const failure = new Error('Stored pairing does not match the broker');
+  const errors: unknown[] = [];
+  const recovery = createAgentRecovery({
+    connect: async () => {
+      throw failure;
+    },
+    reconcile: async () => {},
+    onError: error => errors.push(error),
+    minimumBackoffMilliseconds: 60_000,
+  });
+  try {
+    recovery.start();
+    await Promise.resolve();
+    expect(errors).toEqual([failure]);
+    expect(recovery.state).toBe('reconnecting');
+    expect(recovery.connection).toBeUndefined();
+  } finally {
+    recovery.stop();
+  }
+});
+
 function createConnection(): { close: (code?: number, reason?: string) => void; closed: Promise<{ readonly code: number; readonly reason: string }>; resolveClose: (result: { readonly code: number; readonly reason: string }) => void } {
   let resolveClose: ((result: { readonly code: number; readonly reason: string }) => void) | undefined;
   const closed = new Promise<{ readonly code: number; readonly reason: string }>(resolve => resolveClose = resolve);
@@ -136,4 +159,21 @@ it('cancels a connection attempt when recovery stops before authentication finis
 
   expect(recovery.state).toBe('stopped');
   expect((await connection.closed).code).toBe(1000);
+});
+
+it('closes a candidate channel when reconciliation fails before recovery becomes ready', async () => {
+  expect.assertions(3);
+  const connection = createConnection();
+  const recovery = createAgentRecovery({
+    connect: async () => connection,
+    reconcile: async () => {
+      throw new Error('Handshake failed');
+    },
+    minimumBackoffMilliseconds: 60_000,
+  });
+  recovery.start();
+  expect(await connection.closed).toEqual({ code: 3001, reason: 'Agent reconciliation failed' });
+  expect(recovery.connection).toBeUndefined();
+  expect(recovery.state).toBe('reconnecting');
+  recovery.stop();
 });

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Browser access</title>
+    <style>
+      body {
+        font: 14px system-ui;
+        width: 360px;
+        padding: 12px;
+      }
+      input,
+      select,
+      button {
+        font: inherit;
+        padding: 6px;
+        margin: 4px;
+      }
+      section {
+        border-top: 1px solid #ccc;
+        padding: 12px 0;
+      }
+      p {
+        overflow-wrap: anywhere;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Browser access</h1>
+    <label>Host <input id="host" value="http://127.0.0.1:58920/" /></label><label>Devframe code <input id="code" autocomplete="off" /></label
+    ><button id="connect">Connect and pair</button>
+    <p id="status" role="status"></p>
+    <label
+      >Approve
+      <select id="scope">
+        <option value="tab">Current tab</option>
+        <option value="group">Current tab group</option>
+        <option value="window">Current window</option>
+      </select></label
+    >
+    <div id="requests"></div>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

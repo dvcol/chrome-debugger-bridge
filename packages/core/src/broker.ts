@@ -266,6 +266,8 @@ export interface CreateTargetBrokerOptions {
 }
 
 export interface TargetBroker {
+  /** Current broker-owned leases, scoped when an authenticated client is provided. */
+  listLeases: (authority?: ClientAuthority) => readonly (Lease & { readonly principalId: string })[];
   acquireLease: (
     request: AcquireLeaseRequest,
     authority?: ClientAuthority,
@@ -1548,6 +1550,16 @@ export function createTargetBroker(
     getTargetAgentPrincipalId(targetId) {
       ensureActive();
       return targetAgentPrincipalIdsById.get(targetId);
+    },
+    listLeases(authority = localClientAuthority) {
+      ensureActive();
+      if (authority.authorityAvailable === false) return [];
+      return [...leasesById.values()].flatMap((lease) => {
+        const principalId = leasePrincipalIdsById.get(lease.id);
+        return principalId === undefined || (authority !== localClientAuthority && principalId !== authority.principalId)
+          ? []
+          : [structuredClone({ ...lease, principalId })];
+      });
     },
     listTargets(authority = localClientAuthority) {
       ensureActive();

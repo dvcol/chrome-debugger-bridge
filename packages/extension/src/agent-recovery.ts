@@ -13,6 +13,8 @@ export interface CreateAgentRecoveryOptions<Connection extends RecoverableAgentC
   readonly maximumBackoffMilliseconds?: number;
   readonly minimumBackoffMilliseconds?: number;
   readonly onStateChange?: (state: AgentRecoveryState) => void;
+  /** Reports connection, reconciliation and heartbeat failures to the embedding host. */
+  readonly onError?: (error: unknown) => void;
   /** Completes agent.hello and returns its negotiated liveness parameters when heartbeats are enabled. */
   readonly reconcile: (connection: Connection, connectionGeneration: number) => Promise<HeartbeatParameters | void>;
   readonly schedule?: (task: () => void, delayMilliseconds: number) => ReturnType<typeof globalThis.setTimeout>;
@@ -62,8 +64,9 @@ export function createAgentRecovery<Connection extends RecoverableAgentConnectio
       scheduledHeartbeat = undefined;
       void options.heartbeat?.(connection, generation, parameters).then(() => {
         scheduleHeartbeat(connection, generation, parameters);
-      }).catch(() => {
+      }).catch((error) => {
         connection.close(3001, 'Agent heartbeat failed');
+        options.onError?.(error);
       });
     }, parameters.intervalMilliseconds);
   }
@@ -71,9 +74,10 @@ export function createAgentRecovery<Connection extends RecoverableAgentConnectio
   async function connect(): Promise<void> {
     if (stopped) return;
     setState('locating');
+    let candidateConnection: Connection | undefined;
     try {
       setState('connecting');
-      const candidateConnection = await options.connect(++connectionGeneration);
+      candidateConnection = await options.connect(++connectionGeneration);
       if (stopped) {
         candidateConnection.close(1000, 'Agent recovery stopped');
         return;
@@ -98,9 +102,11 @@ export function createAgentRecovery<Connection extends RecoverableAgentConnectio
         return;
       }
       scheduleReconnect();
-    } catch {
+    } catch (error) {
+      candidateConnection?.close(3001, 'Agent reconciliation failed');
       activeConnection = undefined;
       scheduleReconnect();
+      options.onError?.(error);
     }
   }
 

@@ -1,29 +1,36 @@
-import type { EmbeddedChromeDebuggerBridge } from '@dvcol/cdb';
+import type { BrokerDefinition } from '@dvcol/cdb-broker';
+import type { CdbDevframeService } from '@dvcol/cdb-devframe';
+import type { DevframeDefinition } from 'devframe';
 
-import { defineDevframe } from 'devframe/types';
+import { createCdbPanel, createCdbService, getCdbService } from '@dvcol/cdb-devframe';
 
-/** Creates an experimental Devframe surface over safe bridge target summaries only. */
-export function createDevframeDefinition(bridge: EmbeddedChromeDebuggerBridge): ReturnType<typeof defineDevframe> {
-  return defineDevframe({
-    description: 'Experimental Devframe target-summary integration for CDB.',
-    homepage: 'https://github.com/dvcol/chrome-debugger-bridge',
-    icon: 'ph:bug-duotone',
-    id: 'cdb-devframe',
-    name: 'CDB Devframe',
-    packageName: '@chrome-debugger-bridge-example/devframe',
-    setup(context) {
-      context.agent.registerTool({
-        description: 'Summarize the number of currently available Chrome Debugger Bridge targets without exposing target identifiers.',
-        handler: async () => {
-          const targets = await bridge.client.listTargets();
-          return {
-            markdown: `Available targets: ${targets.filter(target => target.availability === 'available').length}.`,
-          };
-        },
-        id: 'cdb-devframe:target-summary',
-        safety: 'read',
-      });
+/** The example owns service lifecycle; mounting its panel does not create another broker. */
+export function createDevframeExample(broker: BrokerDefinition = {}): { readonly definition: DevframeDefinition; readonly service: CdbDevframeService; dispose: () => Promise<void> } {
+  let service: CdbDevframeService | undefined;
+  const panel = createCdbPanel({ client() {
+    if (service === undefined) throw new Error('The example broker is not ready.');
+    const runtime = service.broker;
+    return { ...runtime, watch(listener) {
+      listener(runtime.snapshot());
+      return runtime.subscribe(listener);
+    } };
+  } });
+  return {
+    definition: {
+      ...panel.definition,
+      services: [createCdbService({ broker })],
+      async setup(context) {
+        service = getCdbService(context);
+        await panel.definition.setup(context);
+      },
     },
-    version: '0.0.0',
-  });
+    get service(): CdbDevframeService {
+      if (service === undefined) throw new Error('The example broker is not ready.');
+      return service;
+    },
+    async dispose() {
+      panel.dispose();
+      await service?.dispose();
+    },
+  };
 }

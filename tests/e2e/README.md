@@ -47,3 +47,16 @@ The [30-iteration report](measurements/native-normal-chromium-151.json) records 
 The [preserved MCP baseline](measurements/mcp-baseline-811909f.json), revision `811909f17b83fda8ca198acd0cb96573cf205ab1`, exposed 371,342 catalogue characters (approximately 92,836 tokens). Its snapshot omitted the deep controls and its warmup workflow failed; there is no successful baseline action distribution to compare. The current catalogue is 82.3% smaller by serialized character count. These reports preserve measured values, not portable performance guarantees.
 
 These isolated Chromium results do not establish behavior in a user's main Chrome profile. That requires the same public workflow with the extension installed and the intended tab/window scope approved in that profile.
+
+
+### Devframe workflow measurements
+
+Run the same public closed-shadow, three-level cross-origin fixture over the shared Devframe RPC provider connection:
+
+```sh
+CDB_DEVFRAME_PERFORMANCE_GATE=1 CDB_DEVFRAME_BENCHMARK_OUTPUT=/tmp/cdb-devframe.json pnpm exec vitest run --project extension-e2e tests/e2e/devframe-native.test.ts
+```
+
+The default is 30 warm samples each for fill, click, compact snapshot, fill/click batch with observation, and a persistent parent overlay. `CDB_DEVFRAME_BENCHMARK_SAMPLES` accepts 5–50 for short diagnostic probes or longer runs. Reports separate blocked actions from successful actions, include individual workflow p95, catalogue/argument/response character counts, and collect the optional `cdb.mcp.action` phase diagnostics. Characters divided by four is only a token estimate. This benchmark uses exact role/name locators; the WebSocket benchmark's default fresh references measure a different discovery cost and cannot isolate transport differences.
+
+Both harnesses record starting and ending OS load averages. The WebSocket report separates individual command round trips, direct `chrome.debugger.sendCommand` durations, and artifact HTTP reads. Chrome durations include browser scheduling and CDP execution; subtracting them from command round trips also includes provider/broker serialization and processing, so the difference is not network latency alone. `CDB_DEVFRAME_PERFORMANCE_GATE=1` enforces the same 500 ms action and 1,000 ms snapshot p95 budgets after saving the complete report.

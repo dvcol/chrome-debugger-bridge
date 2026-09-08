@@ -6,6 +6,52 @@ import { createSelectedTabPublisher } from '../src/selected-tab-publisher.js';
 
 const scopeId = '40000000-0000-4000-8000-000000000001';
 
+it('recovers a detached renderer with the same target identity and a new generation', async () => {
+  expect.assertions(5);
+  const attach = vi.fn();
+  const publishTarget = vi.fn();
+  const revokeTarget = vi.fn();
+  const publisher = createSelectedTabPublisher({
+    capabilities: { level: 'interact' },
+    scopeId,
+    chromeDebugger: { attach, detach() {}, async sendCommand() {
+      return {};
+    } },
+    publishTarget,
+    revokeTarget,
+    updateTarget() {},
+  });
+  const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.test' });
+  const child = publisher.attachChildSession('previous-frame');
+  await publisher.debuggerDetached(42, { recover: true });
+  expect(attach).toHaveBeenCalledTimes(2);
+  expect(revokeTarget).toHaveBeenCalledWith(target, 'explicit');
+  expect(publishTarget).toHaveBeenLastCalledWith({ ...target, generation: 2 });
+  expect(publisher.detachChildSession('previous-frame')).toBeUndefined();
+  expect(publisher.attachChildSession('previous-frame').id).not.toBe(child.id);
+  await publisher.revoke();
+});
+
+it('revokes a target when reattaching its renderer fails', async () => {
+  expect.assertions(3);
+  const attach = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('Tab closed'));
+  const revokeTarget = vi.fn();
+  const publisher = createSelectedTabPublisher({
+    capabilities: { level: 'interact' },
+    scopeId,
+    chromeDebugger: { attach, detach() {}, async sendCommand() {
+      return {};
+    } },
+    publishTarget() {},
+    revokeTarget,
+    updateTarget() {},
+  });
+  const target = await publisher.publish({ incognito: false, tabId: 42, url: 'https://example.test' });
+  await expect(publisher.debuggerDetached(42, { recover: true })).rejects.toThrow('Tab closed');
+  expect(revokeTarget).toHaveBeenLastCalledWith(target, 'detached');
+  await expect(publisher.renewAuthority()).rejects.toThrow('not available');
+});
+
 it('publishes the target before forwarding child attachment events raised during debugger setup', async () => {
   expect.assertions(3);
   const publicationStarted = Promise.withResolvers<void>();
@@ -431,7 +477,7 @@ it('invalidates child-session routing when the published root is revoked', async
   expect(() => publisher.attachChildSession('private-child-session')).toThrow('not available');
 });
 
-it('renews a published target with stable logical identity, a higher generation, and no child sessions', async () => {
+it('renews target and child references while retaining Chrome attachments', async () => {
   expect.assertions(7);
   const publishedTargets: unknown[] = [];
   const revokedTargets: unknown[] = [];
@@ -458,7 +504,7 @@ it('renews a published target with stable logical identity, a higher generation,
   expect(revokedTargets).toEqual([{ reason: 'explicit', target }]);
   expect(publishedTargets).toEqual([target, renewedTarget]);
   await expect(publisher.executeCommand({ leaseId: '20000000-0000-4000-8000-000000000001', method: 'Runtime.evaluate', operationId: '30000000-0000-4000-8000-000000000001', targetGeneration: target.generation, targetId: target.id }, new AbortController().signal)).rejects.toThrow('not permitted');
-  expect(publisher.detachChildSession('private-child-session')).toBeUndefined();
+  expect(publisher.detachChildSession('private-child-session')?.id).not.toBe(child.id);
   expect(child.id).toMatch(/^[0-9a-f-]{36}$/u);
 });
 
@@ -572,7 +618,7 @@ it('routes demanded root and child events through public session identities', as
   expect(events.some(event => event.method === 'Runtime.consoleAPICalled' && event.sessionId === child.id)).toBe(true);
   expect(events.some(event => event.method === 'Runtime.consoleAPICalled' && event.sessionId === 'private-frame-session')).toBe(false);
   expect(events.some(event => event.method === 'Page.frameNavigated' && event.sessionId === undefined)).toBe(true);
-  expect(publisher.detachChildSession('private-frame-session')).toBeUndefined();
+  expect(publisher.detachChildSession('private-frame-session')?.id).not.toBe(child.id);
 });
 
 it('replays active root domain demand for an eligible child session', async () => {

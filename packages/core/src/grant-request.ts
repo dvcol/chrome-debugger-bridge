@@ -1,6 +1,6 @@
 import type { AuthorityBinding, AuthorityRecord, AuthorityStore } from './authority.js';
 import type { AgentAuthority } from './broker.js';
-import type { CapabilityGrant, PublishedTarget } from './protocol.js';
+import type { CapabilityGrant, JsonValue, PublishedTarget } from './protocol.js';
 import type { TimeoutMilliseconds } from './timing.js';
 
 import { cdpCapabilityLevels, isCdpNameAllowed } from './cdp-catalogue.js';
@@ -8,6 +8,7 @@ import { capabilityGrantSchema } from './protocol.js';
 import { validateTimeoutMilliseconds } from './timing.js';
 
 export interface GrantedTargetReference {
+  readonly metadata?: JsonValue;
   readonly targetGeneration: number;
   readonly targetId: string;
 }
@@ -24,6 +25,7 @@ export interface GrantRequestTargetDirectory {
 }
 
 export interface GrantRequestInput {
+  readonly metadata?: JsonValue;
   readonly bindingExpiresAt?: string | null;
   readonly capabilities: CapabilityGrant;
   readonly expiresAt?: string | null;
@@ -59,6 +61,8 @@ export const defaultGrantRequestTimingPolicy: Readonly<GrantRequestTimingPolicy>
 });
 
 export interface GrantRequestCoordinator {
+  /** Copies of coordinator-owned requests and their last committed bindings, without claim secrets. */
+  inspect: () => readonly { readonly request: GrantRequest; readonly bindings: readonly AuthorityBinding[]; readonly provider?: GrantRequestProvider }[];
   cancel: (requestId: string) => Promise<void>;
   claim: (requestId: string, provider: GrantRequestProvider) => GrantRequestClaim;
   complete: (claim: GrantRequestClaim, targets: readonly GrantedTargetReference[]) => Promise<readonly AuthorityBinding[]>;
@@ -66,6 +70,8 @@ export interface GrantRequestCoordinator {
   getRequest: (requestId: string) => GrantRequest | undefined;
   reconcile: (requestId: string, provider: GrantRequestProvider, targets: readonly GrantedTargetReference[]) => Promise<readonly AuthorityBinding[]>;
   release: (claim: GrantRequestClaim) => void;
+  /** Revokes these targets for this request, including later membership reconciliation. Other requests retain their bindings. */
+  revokeBindings: (requestId: string, bindingIds: readonly string[]) => Promise<void>;
   request: (input: GrantRequestInput) => Promise<GrantRequest>;
   subscribe: (listener: (change: GrantRequestChange) => void) => () => void;
 }
@@ -88,6 +94,7 @@ export class GrantRequestError extends Error {
 
 interface StoredGrantRequest {
   readonly bindingIds: Set<string>;
+  readonly revokedTargetIds: Set<string>;
   bindings: readonly AuthorityBinding[];
   cancelled: boolean;
   claim?: GrantRequestClaim;
@@ -285,6 +292,13 @@ export function createGrantRequestCoordinator(
   }
 
   return {
+    inspect() {
+      return [...requests.values()].filter(stored => !stored.cancelled).map(stored => structuredClone({
+        request: stored.request,
+        bindings: stored.bindings,
+        ...(stored.claim === undefined ? {} : { provider: stored.claim.provider }),
+      }));
+    },
     cancel,
     claim(requestId, provider) {
       ensureActive();
@@ -325,7 +339,7 @@ export function createGrantRequestCoordinator(
       if (stored?.request.state !== 'granted' || stored.cancelled || stored.completing || stored.claim?.provider.principalId !== provider.principalId)
         throw new GrantRequestError('GRANT_CLAIM_INVALID', 'This provider does not own an idle approved grant request.');
       assertUnexpired(stored);
-      const operation = commitTargets(stored, structuredClone(provider), structuredClone(targets));
+      const operation = commitTargets(stored, structuredClone(provider), structuredClone(targets.filter(target => !stored.revokedTargetIds.has(target.targetId))));
       stored.operation = operation;
       return operation;
     },
@@ -334,6 +348,33 @@ export function createGrantRequestCoordinator(
       delete stored.claim;
       stored.request = { ...stored.request, state: 'pending' };
       notify(stored.request.id);
+    },
+    async revokeBindings(requestId, bindingIds) {
+      ensureActive();
+      const stored = requests.get(requestId);
+      if (stored === undefined || stored.cancelled) return;
+      const revokedTargetIds = new Set(stored.bindings.filter(binding => bindingIds.includes(binding.bindingId)).map(binding => binding.targetId));
+      while (stored.operation !== undefined) await stored.operation.catch(() => undefined);
+      if (stored.cancelled) return;
+      stored.completing = true;
+      const operation = (async (): Promise<readonly AuthorityBinding[]> => {
+        try {
+          const removedIds = new Set(stored.bindings.filter(binding => revokedTargetIds.has(binding.targetId)).map(binding => binding.bindingId));
+          await options.authorityStore.update(stored.request.logicalSessionId, record => record === undefined
+            ? undefined
+            : { ...record, bindings: record.bindings.filter(binding => !removedIds.has(binding.bindingId)) }).catch(authorityFailure);
+          for (const targetId of revokedTargetIds) stored.revokedTargetIds.add(targetId);
+          stored.bindings = stored.bindings.filter(binding => !removedIds.has(binding.bindingId));
+          for (const bindingId of removedIds) stored.bindingIds.delete(bindingId);
+          notify(requestId);
+          return stored.bindings;
+        } finally {
+          stored.completing = false;
+          delete stored.operation;
+        }
+      })();
+      stored.operation = operation;
+      await operation;
     },
     async request(input) {
       ensureActive();
@@ -360,7 +401,7 @@ export function createGrantRequestCoordinator(
         id,
         state: 'pending',
       };
-      const stored: StoredGrantRequest = { bindingIds: new Set(), bindings: [], cancelled: false, completing: false, request };
+      const stored: StoredGrantRequest = { bindingIds: new Set(), revokedTargetIds: new Set(), bindings: [], cancelled: false, completing: false, request };
       requests.set(id, stored);
       scheduleExpiry(stored);
       notify(id);

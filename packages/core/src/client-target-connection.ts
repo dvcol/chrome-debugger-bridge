@@ -134,6 +134,7 @@ export function connectClientTargetBroker(connection: ClientTargetConnection, br
   const subscriptions = new Map<string, CdpSubscription>();
   let stopped = false;
   async function sendError(message: Extract<ClientToBrokerMessage, { readonly kind: 'request' }>, error: unknown): Promise<void> {
+    if (stopped) return;
     const targetBrokerError = error instanceof Error && 'code' in error ? error as TargetBrokerError : undefined;
     const code = targetBrokerError?.code ?? 'FEATURE_UNSUPPORTED';
     await connection.send({
@@ -176,7 +177,7 @@ export function connectClientTargetBroker(connection: ClientTargetConnection, br
         if (message.method === 'cdp.subscribe') {
           const subscription = await broker.subscribe(message.parameters, authority);
           subscriptions.set(subscription.id, subscription);
-          void streamSubscription(subscription).finally(() => subscriptions.delete(subscription.id));
+          void streamSubscription(subscription).finally(() => subscriptions.delete(subscription.id)).catch(disconnect);
           await connection.send({ kind: 'response', method: 'cdp.subscribe', protocolVersion: 1, requestId: message.requestId, result: { subscriptionId: subscription.id } });
         } else if (message.method === 'cdp.unsubscribe') {
           subscriptions.get(message.parameters.subscriptionId)?.close();
@@ -205,7 +206,7 @@ export function connectClientTargetBroker(connection: ClientTargetConnection, br
       } catch (error) {
         await sendError(message, error);
       }
-    })();
+    })().catch(disconnect);
   });
   void (async () => {
     while (true) {
@@ -222,13 +223,16 @@ export function connectClientTargetBroker(connection: ClientTargetConnection, br
         await connection.send({ kind: 'notification', method: 'targets.revoked', parameters: { reason: change.reason, targetGeneration: change.targetGeneration, targetId: change.targetId }, protocolVersion: 1 });
       }
     }
-  })().catch(() => {});
-  return () => {
+  })().catch(disconnect);
+  return disconnect;
+
+  function disconnect(): void {
+    if (stopped) return;
     stopped = true;
     disconnectMessages?.();
     for (const subscription of subscriptions.values()) subscription.close();
     subscriptions.clear();
     broker.disconnectClient(authority);
     void iterator.return?.();
-  };
+  }
 }
