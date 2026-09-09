@@ -266,6 +266,8 @@ interface InputActionScope {
 
 const inputActionScope = new AsyncLocalStorage<InputActionScope>();
 const inputActionDiagnostics = channel('cdb.mcp.action');
+const hitTestDiagnostics = channel('cdb.mcp.hit-test');
+const snapshotDiagnostics = channel('cdb.mcp.snapshot');
 const elementActionNames = new Set(['browser.click', 'browser.fill', 'browser.type', 'browser.press', 'browser.check', 'browser.uncheck', 'browser.focus', 'browser.hover', 'browser.scroll_into_view', 'browser.drag', 'browser.select_option']);
 
 function inputPhase(phase: InputPhase): void {
@@ -1819,8 +1821,8 @@ async function collectAccessibilityCandidates(
         .map(session => ({ sessionId: session.id })),
     ];
   })();
-  const candidates: AccessibilityCandidate[] = [];
-  for (const context of contexts === undefined ? await accessibilityFrameContexts(client, target, resolvedContexts, signal) : resolvedContexts) {
+  const frameContexts = contexts === undefined ? await accessibilityFrameContexts(client, target, resolvedContexts, signal) : resolvedContexts;
+  const collectContext = async (context: LocatorContext): Promise<AccessibilityCandidate[]> => {
     const sessionAuthority = {
       ...authority,
       ...(context.sessionId === undefined ? {} : { sessionId: context.sessionId }),
@@ -1866,10 +1868,8 @@ async function collectAccessibilityCandidates(
       ...(context.sessionId === undefined ? {} : { sessionId: context.sessionId }),
       targetId: target.id,
     });
-    if (context.rootBackendNodeId === undefined) {
-      candidates.push(...contextCandidates);
-      continue;
-    }
+    if (context.rootBackendNodeId === undefined) return contextCandidates;
+    const candidates: AccessibilityCandidate[] = [];
     const rootCandidate: AccessibilityCandidate = {
       backendNodeId: context.rootBackendNodeId,
       generation: target.generation,
@@ -1879,6 +1879,13 @@ async function collectAccessibilityCandidates(
     };
     for (const candidate of contextCandidates)
       if (await candidateContains(client, target, rootCandidate, candidate, signal, containmentDocuments)) candidates.push(candidate);
+    return candidates;
+  };
+  const candidates: AccessibilityCandidate[] = [];
+  /** Bound independent reads while retaining frame order and complete ambiguity checks. */
+  for (let offset = 0; offset < frameContexts.length; offset += 4) {
+    const collected = await Promise.all(frameContexts.slice(offset, offset + 4).map(collectContext));
+    candidates.push(...collected.flat());
   }
   return candidates;
 }
@@ -2488,6 +2495,7 @@ async function assertAncestorFrameHit(
     const parentViewport = commandResultValue(await execute('Page.getLayoutMetrics', {}, parent.sessionId ?? null));
     const parentLayout = property(parentViewport, 'cssLayoutViewport') ?? property(parentViewport, 'layoutViewport');
     const hit = commandResultValue(await execute('DOM.getNodeForLocation', { x: Math.round(mappedPoint.x + (numberValue(property(parentLayout, 'pageX')) ?? 0)), y: Math.round(mappedPoint.y + (numberValue(property(parentLayout, 'pageY')) ?? 0)), includeUserAgentShadowDOM: false }, parent.sessionId ?? null));
+    if (hitTestDiagnostics.hasSubscribers) hitTestDiagnostics.publish({ phase: 'ancestor', frameId, sessionId: frame.sessionId, parentSessionId: parent.sessionId, backendNodeId, quad, viewport: layout, parentViewport: parentLayout, mappedPoint, hit });
     if (property(hit, 'backendNodeId') !== backendNodeId && property(hit, 'frameId') !== frameId)
       throw new McpToolError('MCP_ELEMENT_COVERED', 'An ancestor frame is covered by another element.', undefined, true);
     frameId = frame.parentId;
@@ -2565,6 +2573,10 @@ async function executeElementClick(
             y: candidatePoint.y + (numberValue(property(layout, 'pageY')) ?? 0),
           }));
           const hitBackendNodeId = numberValue(property(hitResult, 'backendNodeId'));
+          if (hitTestDiagnostics.hasSubscribers) {
+            const hitNode = hitBackendNodeId === undefined || hitBackendNodeId === element.backendNodeId ? undefined : commandResultValue(await execute('DOM.describeNode', { backendNodeId: hitBackendNodeId, depth: 0 }));
+            hitTestDiagnostics.publish({ phase: 'element', backendNodeId: element.backendNodeId, sessionId: element.sessionId, viewport: layout, geometry: commandResultValue(secondGeometry), point: candidatePoint, hit: hitResult, hitNode });
+          }
           await assertElementHit(element.backendNodeId, hitBackendNodeId, execute);
           await assertAncestorFrameHit(element, candidatePoint, execute);
           point = candidatePoint;
@@ -3741,6 +3753,7 @@ function createCdbToolDefinitionsForSession(
           const accessibilityMode = input.mode;
           const budget: AccessibilitySnapshotBudget = { remainingCharacters: Math.max(0, maximumCharacters - snapshotTruncationNotice.length - 128), remainingNodes: maximumNodes, truncated: false };
           const captureAccessibility = async (sessionId?: string, frameId?: string): Promise<string> => {
+            const started = performance.now();
             const commandValue = await executeArtifactCommand(
               client,
               { ...targetAuthority, ...(sessionId === undefined ? {} : { sessionId }) },
@@ -3748,12 +3761,15 @@ function createCdbToolDefinitionsForSession(
               root === undefined ? (frameId === undefined ? {} : { frameId }) : { backendNodeId: root.backendNodeId },
               context.mcpReq.signal,
             );
-            return formatAccessibilityTree(await readableCommandValue(
+            const commandCompleted = performance.now();
+            const readable = await readableCommandValue(
               client,
               targetAuthority,
               commandValue,
               context.mcpReq.signal,
-            ), {
+            );
+            const readCompleted = performance.now();
+            const formatted = formatAccessibilityTree(readable, {
               budget,
               generation: target.generation,
               maximumDepth: input.maximumDepth,
@@ -3762,8 +3778,12 @@ function createCdbToolDefinitionsForSession(
               state: sessionState,
               targetId: target.id,
             });
+            if (snapshotDiagnostics.hasSubscribers) snapshotDiagnostics.publish({ phase: 'frame', commandMilliseconds: commandCompleted - started, readMilliseconds: readCompleted - commandCompleted, formatMilliseconds: performance.now() - readCompleted, outputCharacters: formatted.length });
+            return formatted;
           };
+          const discoveryStarted = performance.now();
           const contexts = root === undefined ? await accessibilityFrameContexts(client, target, [{}, ...iframeSessions.map(session => ({ sessionId: session.id }))], context.mcpReq.signal) : [{ ...(root.sessionId === undefined ? {} : { sessionId: root.sessionId }) }];
+          if (snapshotDiagnostics.hasSubscribers) snapshotDiagnostics.publish({ phase: 'frame-discovery', milliseconds: performance.now() - discoveryStarted, frameCount: contexts.length });
           const sections: string[] = [];
           for (const [index, frame] of contexts.entries()) {
             if (budget.remainingNodes === 0 || budget.remainingCharacters < 128) {

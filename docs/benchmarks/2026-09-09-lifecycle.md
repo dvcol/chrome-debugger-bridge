@@ -49,4 +49,4 @@ All measured actions completed successfully. The covered-action duration include
 
 ## Remaining validation
 
-Performance acceptance is open. These public fixtures do not establish live validation in embedding applications. Upstream toast removal is fixed in [Devframe PR #375](https://github.com/devframes/devframe/pull/375). Downstream pins remain unchanged pending the compatible Vite upgrade; changing live notification details without resurfacing dismissed toasts remains deferred with that adoption.
+These results record the earlier validation attempt; its failed measurements remain part of the evidence. Public fixtures do not establish live validation in embedding applications. Upstream toast removal is fixed in [Devframe PR #375](https://github.com/devframes/devframe/pull/375). The follow-up backports that fix through a version-specific pnpm patch while retaining dependency pins. Changed notification descriptions may resurface dismissed toasts using Devframe’s existing update behavior; dismissal persistence across meaningful updates is no longer a requirement.

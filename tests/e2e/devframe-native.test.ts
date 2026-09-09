@@ -199,4 +199,4 @@ it('runs native MCP actions through Chrome extension and shared Devframe RPC acr
   } finally {
     for (const cleanup of cleanups.reverse()) await cleanup();
   }
-}, process.env.CDB_LIFECYCLE_DIAGNOSTICS_OUTPUT === undefined ? (process.env.CDB_DEVFRAME_BENCHMARK_OUTPUT === undefined ? 90_000 : 240_000) : 600_000);
+}, process.env.CDB_LIFECYCLE_DIAGNOSTICS_OUTPUT === undefined ? (process.env.CDB_DEVFRAME_BENCHMARK_OUTPUT === undefined ? 90_000 : 600_000) : 600_000);

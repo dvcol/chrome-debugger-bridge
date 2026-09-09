@@ -52,3 +52,7 @@ The page script emits `cdb:review-request` with `{ requestId }` to request the e
 Hosts with a direct approval channel can set `approvalAction: 'accept'` on `createCdbPanel`. The page script then labels its action **Accept** and emits `cdb:accept-request`; the embedding application authenticates and handles the final approval. The default remains **Review request** and `cdb:review-request`.
 
 See the [runnable example](../../examples/devframe/README.md).
+
+Notification descriptions and approved-tab counts update through the existing Devframe message handle. Changed content retains its message ID and follows the host's normal notification behavior, including resurfacing a dismissed toast. Unchanged broker publications do not update the message. Request completion, expiry and disposal remove its message and command.
+
+The public validation workspace backports Devframe's toast-removal fix to hub-ui 0.9.10 using [a temporary pnpm patch](https://github.com/dvcol/chrome-debugger-bridge/blob/main/patches/README.md). This workspace patch is not inherited by consumers of the published CDB package; embedding applications using that hub-ui version must apply the patch themselves until adopting an upstream version containing the fix.

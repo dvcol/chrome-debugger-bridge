@@ -8,6 +8,7 @@ import { afterEach, expect, it } from 'vitest';
 
 import { deepDomProfiles } from './fixtures/deep-dom-page.js';
 import { createNativeMcpHarness, toolText } from './fixtures/native-mcp-harness.js';
+import { benchmarkAgentWorkflow } from './fixtures/workflow-benchmark.js';
 
 interface CallMeasurement {
   readonly argumentCharacters: number;
@@ -195,3 +196,10 @@ it.runIf(process.env.CDB_NATIVE_BENCHMARK === '1')('measures the public native a
   expect(process.env.CDB_NATIVE_PERFORMANCE_GATE === '1' ? action95 ?? Infinity : 0).toBeLessThanOrEqual(500);
   expect(process.env.CDB_NATIVE_PERFORMANCE_GATE === '1' ? snapshot95 ?? Infinity : 0).toBeLessThanOrEqual(1_000);
 }, 180_000);
+
+it.runIf(process.env.CDB_WEBSOCKET_BENCHMARK_OUTPUT !== undefined)('measures the same workflow over the WebSocket provider transport', async () => {
+  expect.assertions(1);
+  harness = await createNativeMcpHarness({ profile: 'normal', frames: 'cross-origin', shadow: 'closed' });
+  await benchmarkAgentWorkflow(harness.mcpClient, harness.context.browser()?.version() ?? 'unavailable', harness.page, 'websocket');
+  expect(await harness.page.getByRole('status').textContent()).toBe('Saved: Benchmark value');
+}, 600_000);

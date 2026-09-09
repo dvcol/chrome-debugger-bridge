@@ -60,6 +60,9 @@ catalogs:
     '@devframes/hub':
       specifier: 0.9.10
       version: 0.9.10
+    '@devframes/hub-ui':
+      specifier: 0.9.10
+      version: 0.9.10
     '@devframes/json-render':
       specifier: 0.9.10
       version: 0.9.10
@@ -136,10 +139,19 @@ overrides:
   '@vitejs/devtools-kit>@devframes/hub': 0.9.10
   '@vitejs/devtools-kit>@devframes/json-render': 0.9.10
 
+patchedDependencies:
+  '@devframes/hub-ui@0.9.10': 52f9ce54ff28e6ee4b64e20e555b085f562f9ca932e4459a9032ff910dfce087
+
 importers:
 
   .:
     devDependencies:
+      '@devframes/hub':
+        specifier: catalog:devtools
+        version: 0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))
+      '@devframes/hub-ui':
+        specifier: catalog:devtools
+        version: 0.9.10(patch_hash=52f9ce54ff28e6ee4b64e20e555b085f562f9ca932e4459a9032ff910dfce087)(@devframes/hub@0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)))(@devframes/json-render@0.9.10(@devframes/hub@0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))
       '@dvcol/cdb':
         specifier: workspace:*
         version: link:packages/core
@@ -271,7 +283,7 @@ importers:
         version: 2.0.0
       '@vitejs/devtools-kit':
         specifier: catalog:devtools
-        version: 0.6.1(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)(vite@8.1.5(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0))
+        version: 0.6.1(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(crossws@0.4.12(srvx@1.0.3))(srvx@1.0.3)(vite@8.1.5(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0))
       devframe:
         specifier: catalog:devtools
         version: 0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)
@@ -417,7 +429,7 @@ importers:
         version: 0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))
       '@devframes/json-render':
         specifier: catalog:devtools
-        version: 0.9.10(@devframes/hub@0.9.10(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))
+        version: 0.9.10(@devframes/hub@0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))
       '@devframes/json-render-ui':
         specifier: catalog:devtools
         version: 0.9.10(@devframes/hub@0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))
@@ -655,6 +667,16 @@ packages:
   '@csstools/css-tokenizer@4.0.0':
     resolution: {integrity: sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA==}
     engines: {node: '>=20.19.0'}
+
+  '@devframes/hub-ui@0.9.10':
+    resolution: {integrity: sha512-lO0J6UV7bwtLJv/+TrGry6LqAe4BucOj53JAmXX+kQumSPvTfjKfVvFHEk/Hiegxpz+M9zlSRMWzJ/wtpl0o4g==}
+    peerDependencies:
+      '@devframes/hub': 0.9.10
+      '@devframes/json-render': 0.9.10
+      devframe: 0.9.10
+    peerDependenciesMeta:
+      '@devframes/json-render':
+        optional: true
 
   '@devframes/hub@0.9.10':
     resolution: {integrity: sha512-BFjO0iTEIazdNJbqvJkixV6d7DdUGaCpIHEsAZob2Lc59usOa8g4+jslRepbLhIraXm7SNUzP3w8Li9OBFHcdw==}
@@ -3895,6 +3917,13 @@ snapshots:
 
   '@csstools/css-tokenizer@4.0.0': {}
 
+  '@devframes/hub-ui@0.9.10(patch_hash=52f9ce54ff28e6ee4b64e20e555b085f562f9ca932e4459a9032ff910dfce087)(@devframes/hub@0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)))(@devframes/json-render@0.9.10(@devframes/hub@0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))':
+    dependencies:
+      '@devframes/hub': 0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))
+      devframe: 0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)
+    optionalDependencies:
+      '@devframes/json-render': 0.9.10(@devframes/hub@0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))
+
   '@devframes/hub@0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))':
     dependencies:
       '@standard-schema/spec': 1.1.0
@@ -3915,7 +3944,7 @@ snapshots:
       '@devframes/hub': 0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))
       devframe: 0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)
 
-  '@devframes/json-render@0.9.10(@devframes/hub@0.9.10(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))':
+  '@devframes/json-render@0.9.10(@devframes/hub@0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))':
     dependencies:
       '@json-render/core': 0.20.0
       '@standard-schema/spec': 1.1.0
@@ -4657,10 +4686,10 @@ snapshots:
       '@typescript-eslint/types': 8.65.0
       eslint-visitor-keys: 5.0.1
 
-  '@vitejs/devtools-kit@0.6.1(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)(vite@8.1.5(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0))':
+  '@vitejs/devtools-kit@0.6.1(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(crossws@0.4.12(srvx@1.0.3))(srvx@1.0.3)(vite@8.1.5(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0))':
     dependencies:
       '@devframes/hub': 0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))
-      '@devframes/json-render': 0.9.10(@devframes/hub@0.9.10(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))
+      '@devframes/json-render': 0.9.10(@devframes/hub@0.9.10(crossws@0.4.12(srvx@1.0.3))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)))(devframe@0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3))
       devframe: 0.9.10(@modelcontextprotocol/client@2.0.0)(cac@7.0.0)(srvx@1.0.3)
       local-pkg: 1.2.1
       mlly: 1.8.2

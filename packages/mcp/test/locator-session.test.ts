@@ -660,3 +660,47 @@ it('never replays a locator action after pointer input may have dispatched', asy
   expect(JSON.parse(text(result))).toMatchObject({ code: 'MCP_ACTION_OUTCOME_UNKNOWN' });
   expect(pointerCommands.map(command => command.parameters?.type)).toEqual(['mouseMoved', 'mousePressed']);
 });
+
+it('bounds concurrent frame discovery and waits for every match before deciding ambiguity', async () => {
+  expect.assertions(4);
+  const releaseQueries = Promise.withResolvers<void>();
+  let queries = 0;
+  let inputs = 0;
+  const childSessions = Array.from({ length: 8 }, (_unused, index) => ({ id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`, generation: 1, type: 'iframe' }));
+  const client = {
+    async acquireLease(request: { readonly requestedMethods: readonly string[] }) {
+      return lease(request.requestedMethods);
+    },
+    async cancelCommand() {},
+    async executeCommand(command: CdpCommand) {
+      if (command.method.startsWith('Input.')) inputs += 1;
+      if (command.method === 'Bridge.listChildSessions') return { value: { sessions: childSessions } };
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
+      if (command.method === 'Accessibility.queryAXTree') {
+        queries += 1;
+        await releaseQueries.promise;
+        return { value: { nodes: [{ backendDOMNodeId: 20, childIds: [], ignored: false, name: { value: 'Save' }, nodeId: 'save', role: { value: 'button' } }] } };
+      }
+      return { value: {} };
+    },
+    async listTargets() {
+      return [target];
+    },
+    async releaseLease() {},
+  } as unknown as McpChromeDebuggerBridgeClient;
+  const session = createCdbToolSession({ client });
+  const targetRef = session.projectTarget(target)?.targetRef;
+  const click = session.definitions.find(definition => definition.name === 'browser.click');
+  if (targetRef === undefined || click === undefined) throw new Error('browser.click is missing.');
+  const result = click.invoke({ targetRef, locator: { role: 'button', name: { match: 'exact', value: 'Save' } }, timeoutMilliseconds: 10_000 });
+  try {
+    await expect.poll(() => queries).toBe(4);
+    expect(inputs).toBe(0);
+    releaseQueries.resolve();
+    expect(text(await result)).toContain('MCP_LOCATOR_AMBIGUOUS');
+    expect(queries).toBe(9);
+  } finally {
+    releaseQueries.resolve();
+    await result;
+  }
+});
