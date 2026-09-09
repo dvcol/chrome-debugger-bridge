@@ -6,6 +6,17 @@ import { createBrowserControlPanelClient } from './panel.js';
 
 /** Page events request the host's final approval UI. They never approve browser access. */
 export const browserControlReviewEvent = 'cdb:review-request';
+export const browserControlAcceptEvent = 'cdb:accept-request';
+
+export interface BrowserControlPageOptions {
+  /** The embedding application owns the final approval channel for either action. */
+  readonly approvalAction?: 'review' | 'accept';
+}
+
+/** Client-script entry selected by a host that supplies a direct approval channel. */
+export async function setupBrowserControlAcceptPage(context: BrowserControlPageContext): Promise<() => void> {
+  return setupBrowserControlPage(context, { approvalAction: 'accept' });
+}
 
 export interface BrowserControlPageContext {
   readonly rpc: DevframeRpcClient;
@@ -19,17 +30,17 @@ export interface BrowserControlPageContext {
 }
 
 /** Uses the hub's existing page connection; the embedding extension handles the review intent. */
-export default async function setupBrowserControlPage(context: BrowserControlPageContext): Promise<() => void> {
+export default async function setupBrowserControlPage(context: BrowserControlPageContext, options: BrowserControlPageOptions = {}): Promise<() => void> {
   const client = createBrowserControlPanelClient(context.rpc);
   const review = (requestId: string): void => {
-    window.dispatchEvent(new CustomEvent(browserControlReviewEvent, { detail: { requestId } }));
+    window.dispatchEvent(new CustomEvent(options.approvalAction === 'accept' ? browserControlAcceptEvent : browserControlReviewEvent, { detail: { requestId } }));
   };
   const controller = createBrowserControlNotificationController({ onReview: request => review(request.id), onRevoke: async requestId => client.revokeScope(requestId) });
   const notifications = new Map<string, () => void>();
   const prefix = `cdb:browser-control:${crypto.randomUUID()}`;
   const stopNotifications = controller.subscribe((state) => {
     const items = [
-      ...state.requests.map(request => ({ id: `request:${request.id}`, title: 'Browser control requested', description: `${request.principalLabel} requests ${request.level} access with ${request.navigation} navigation.`, label: 'Review request', action: async () => controller.review(request.id) })),
+      ...state.requests.map(request => ({ id: `request:${request.id}`, title: 'Browser control requested', description: `${request.principalLabel} requests ${request.level} access with ${request.navigation} navigation.`, label: options.approvalAction === 'accept' ? 'Accept' : 'Review request', action: async () => controller.review(request.id) })),
       ...Array.from(Map.groupBy(state.grants, grant => grant.requestId), ([requestId, grants]) => ({ id: `grant:${requestId}`, title: 'Browser control active', description: `${grants[0]!.principalLabel}: ${grants[0]!.level} access to ${grants.length} approved ${grants.length === 1 ? 'tab' : 'tabs'}.`, label: 'Stop control', action: async () => controller.revoke(requestId) })),
     ];
     for (const [id, remove] of notifications) {

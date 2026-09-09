@@ -280,12 +280,14 @@ export async function createBroker(configuration: BrokerDefinition = {}): Promis
     });
   });
 
-  const unsubscribeRequests = grantCoordinator.subscribe(({ requestId, request, error }) => {
+  const unsubscribeRequests = grantCoordinator.subscribe(({ requestId, request, error, reason }) => {
     for (const session of sessions.values()) session.refreshTargets();
     const pending = pendingRequests.get(requestId);
     if (pending !== undefined && (request === undefined || error !== undefined)) {
       pendingRequests.delete(requestId);
-      pending.reject(new BrokerError(error?.code ?? 'ACCESS_REQUEST_TIMEOUT', error?.message ?? 'The browser access request ended.', error?.retryable ?? false));
+      const code = reason === 'expired' ? 'ACCESS_REQUEST_TIMEOUT' : reason === 'rejected' ? 'ACCESS_REQUEST_REJECTED' : 'ACCESS_REQUEST_CANCELLED';
+      const message = reason === 'expired' ? 'The browser access request expired.' : reason === 'rejected' ? 'The browser access request was rejected.' : 'The browser access request was cancelled.';
+      pending.reject(new BrokerError(error?.code ?? code, error?.message ?? message, error?.retryable ?? false));
     }
     changed();
   });
@@ -636,7 +638,8 @@ export async function createBroker(configuration: BrokerDefinition = {}): Promis
     },
     reconcileScope,
     async revokeScope(requestId: string) {
-      await grantCoordinator.cancel(requestId);
+      const request = grantCoordinator.getRequest(requestId);
+      await grantCoordinator.cancel(requestId, request?.state === 'granted' ? 'revoked' : 'rejected');
       await refreshSessions();
       changed();
     },

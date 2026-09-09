@@ -422,3 +422,30 @@ it('projects committed request metadata without claim secrets and revokes bindin
   expect(coordinator.inspect()[0]?.bindings).toEqual([]);
   await coordinator.dispose();
 });
+
+it('publishes the first cancellation reason once and fences a racing approval', async () => {
+  expect.assertions(3);
+  const { coordinator } = setup();
+  const request = await coordinator.request({ capabilities: { level: 'interact' }, logicalSessionId: 'session', principalId: 'client' });
+  const claim = coordinator.claim(request.id, provider);
+  const changed = vi.fn();
+  coordinator.subscribe(changed);
+  await Promise.all([coordinator.cancel(request.id, 'rejected'), coordinator.cancel(request.id, 'expired')]);
+  expect(changed).toHaveBeenCalledExactlyOnceWith({ requestId: request.id, reason: 'rejected' });
+  await expect(coordinator.complete(claim, [{ targetGeneration: 1, targetId: target.id }])).rejects.toMatchObject({ code: 'GRANT_CLAIM_INVALID' });
+  expect(coordinator.getRequest(request.id)).toBeUndefined();
+  await coordinator.dispose();
+});
+
+it('publishes expiry separately from ordinary cancellation', async () => {
+  expect.assertions(2);
+  vi.useFakeTimers();
+  const { coordinator } = setup();
+  const request = await coordinator.request({ capabilities: { level: 'interact' }, expiresAt: new Date(Date.now() + 100).toISOString(), logicalSessionId: 'session', principalId: 'client' });
+  const changed = vi.fn();
+  coordinator.subscribe(changed);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(changed).toHaveBeenCalledExactlyOnceWith({ requestId: request.id, reason: 'expired' });
+  expect(coordinator.getRequest(request.id)).toBeUndefined();
+  await coordinator.dispose();
+});

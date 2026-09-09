@@ -17,6 +17,7 @@ import { build } from 'vite';
 import { expect, it } from 'vitest';
 
 import { deepDomPage } from './fixtures/deep-dom-page.js';
+import { diagnoseLifecycle } from './fixtures/lifecycle-diagnostics.js';
 import { benchmarkAgentWorkflow } from './fixtures/workflow-benchmark.js';
 
 interface FixtureWorker {
@@ -50,7 +51,7 @@ it('runs native MCP actions through Chrome extension and shared Devframe RPC acr
     } });
     const devframe = await createDevServer(defineDevframe({
       ...panel.definition,
-      services: [createCdbService()],
+      services: [createCdbService({ broker: { timing: { requestRateLimitMilliseconds: 0 } } })],
       async setup(context) {
         service = getCdbService(context);
         await panel.definition.setup(context);
@@ -192,9 +193,10 @@ it('runs native MCP actions through Chrome extension and shared Devframe RPC acr
     await management.getByRole('button', { name: 'Revoke target', exact: true }).click();
     await expect.poll(() => broker.snapshot().grants).toEqual([]);
     await expect.poll(async () => management.getByText('No shared tabs. Approve an agent request in the browser to grant access.', { exact: true }).count()).toBe(1);
+    await diagnoseLifecycle({ agent, broker, worker, page, chromiumVersion: browser.browser()?.version() ?? 'unavailable' });
     await worker.evaluate(async () => (globalThis as unknown as FixtureWorker).stopDevframeProvider());
     expect(broker.snapshot().grants).toEqual([]);
   } finally {
     for (const cleanup of cleanups.reverse()) await cleanup();
   }
-}, process.env.CDB_DEVFRAME_BENCHMARK_OUTPUT === undefined ? 90_000 : 240_000);
+}, process.env.CDB_LIFECYCLE_DIAGNOSTICS_OUTPUT === undefined ? (process.env.CDB_DEVFRAME_BENCHMARK_OUTPUT === undefined ? 90_000 : 240_000) : 600_000);

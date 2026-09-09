@@ -3,6 +3,7 @@ import type { CdpCommand, Lease, PublishedTarget } from '@dvcol/cdb';
 import type { McpChromeDebuggerBridgeClient } from '../src/index.js';
 
 import { Buffer } from 'node:buffer';
+import { channel } from 'node:diagnostics_channel';
 
 import { expect, it, vi } from 'vitest';
 
@@ -534,8 +535,14 @@ it('bounds a stalled lease acquisition and releases authority arriving after the
 });
 
 it('reports uncertain input at the deadline and never replays a stalled dispatch', async () => {
-  expect.assertions(3);
+  expect.assertions(5);
   vi.useFakeTimers();
+  const measurements: unknown[] = [];
+  const collect = (measurement: unknown): void => {
+    measurements.push(measurement);
+  };
+  const diagnostics = channel('cdb.mcp.action');
+  diagnostics.subscribe(collect);
   let dispatches = 0;
   const harness = toolHarness(async (command) => {
     if (command.method === 'Accessibility.getFullAXTree') return { value: { nodes: [{ backendDOMNodeId: 1, nodeId: 'control', name: { value: 'Control' }, role: { value: 'button' } }] } };
@@ -555,10 +562,13 @@ it('reports uncertain input at the deadline and never replays a stalled dispatch
     const action = harness.invoke('browser.click', { ref: 'e1' });
     await vi.advanceTimersByTimeAsync(2_000);
     expect((await action).text).toContain('MCP_ACTION_OUTCOME_UNKNOWN');
+    expect(measurements).toMatchObject([{ dispatched: true }]);
     expect(cancel).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(dispatches).toBe(1);
+    expect((measurements[0] as { commands: unknown[] }).commands).toContainEqual(expect.objectContaining({ method: 'Input.dispatchMouseEvent', outcome: 'pending' }));
   } finally {
+    diagnostics.unsubscribe(collect);
     harness.session.dispose();
     vi.useRealTimers();
   }

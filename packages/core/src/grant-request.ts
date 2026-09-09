@@ -46,7 +46,10 @@ export interface GrantRequestClaim {
   readonly requestId: string;
 }
 
+export type GrantRequestCancellationReason = 'cancelled' | 'expired' | 'rejected' | 'revoked';
+
 export interface GrantRequestChange {
+  readonly reason?: GrantRequestCancellationReason;
   readonly error?: GrantRequestError;
   readonly request?: GrantRequest;
   readonly requestId: string;
@@ -63,7 +66,7 @@ export const defaultGrantRequestTimingPolicy: Readonly<GrantRequestTimingPolicy>
 export interface GrantRequestCoordinator {
   /** Copies of coordinator-owned requests and their last committed bindings, without claim secrets. */
   inspect: () => readonly { readonly request: GrantRequest; readonly bindings: readonly AuthorityBinding[]; readonly provider?: GrantRequestProvider }[];
-  cancel: (requestId: string) => Promise<void>;
+  cancel: (requestId: string, reason?: GrantRequestCancellationReason) => Promise<void>;
   claim: (requestId: string, provider: GrantRequestProvider) => GrantRequestClaim;
   complete: (claim: GrantRequestClaim, targets: readonly GrantedTargetReference[]) => Promise<readonly AuthorityBinding[]>;
   dispose: () => Promise<void>;
@@ -114,10 +117,11 @@ export function createGrantRequestCoordinator(
   validateTimeoutMilliseconds(timing.requestTimeoutMilliseconds, 'requestTimeoutMilliseconds');
   let disposed = false;
 
-  function notify(requestId: string, error?: GrantRequestError): void {
+  function notify(requestId: string, error?: GrantRequestError, reason?: GrantRequestCancellationReason): void {
     const stored = requests.get(requestId);
     const request = stored?.cancelled === true ? undefined : stored?.request;
     const change = {
+      ...(reason === undefined ? {} : { reason }),
       ...(error === undefined ? {} : { error }),
       ...(request === undefined ? {} : { request: structuredClone(request) }),
       requestId,
@@ -156,7 +160,7 @@ export function createGrantRequestCoordinator(
         scheduleExpiry(stored);
         return;
       }
-      void cancel(stored.request.id).catch(() => notify(stored.request.id, new GrantRequestError('GRANT_AUTHORITY_UNAVAILABLE', 'Expired authority could not be removed from the store.', true)));
+      void cancel(stored.request.id, 'expired').catch(() => notify(stored.request.id, new GrantRequestError('GRANT_AUTHORITY_UNAVAILABLE', 'Expired authority could not be removed from the store.', true)));
     }, Math.min(2_147_483_647, Math.max(0, deadline - Date.now())));
   }
 
@@ -278,13 +282,13 @@ export function createGrantRequestCoordinator(
     }
   }
 
-  async function cancel(requestId: string): Promise<void> {
+  async function cancel(requestId: string, reason: GrantRequestCancellationReason = 'cancelled'): Promise<void> {
     const stored = requests.get(requestId);
     if (stored === undefined) return;
     if (!stored.cancelled) {
       stored.cancelled = true;
       if (stored.timeout !== undefined) clearTimeout(stored.timeout);
-      notify(requestId);
+      notify(requestId, undefined, reason);
     }
     await stored.operation?.catch(() => undefined);
     if (stored.bindingIds.size > 0) await removeBindings(stored).catch(authorityFailure);
@@ -325,7 +329,7 @@ export function createGrantRequestCoordinator(
     },
     async dispose() {
       disposed = true;
-      await Promise.all(Array.from(requests.keys(), cancel));
+      await Promise.all(Array.from(requests.keys(), async requestId => cancel(requestId)));
       listeners.clear();
     },
     getRequest(requestId) {

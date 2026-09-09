@@ -13,9 +13,9 @@ afterEach(async () => {
   await Promise.all(brokers.splice(0).map(async broker => broker.dispose()));
 });
 
-async function fixture() {
+async function fixture(accessRequestTimeoutMilliseconds = 60_000) {
   const identityStore = createMemoryBrokerIdentityStore();
-  const broker = await createBroker({ identityStore, timing: { requestRateLimitMilliseconds: 0 } });
+  const broker = await createBroker({ identityStore, timing: { requestRateLimitMilliseconds: 0, accessRequestTimeoutMilliseconds } });
   brokers.push(broker);
   const peer = { id: 'provider-peer' };
   const registration = { id: 'test-provider', instanceId: crypto.randomUUID(), name: 'Public test provider', version: '1.0.0', maximumLevel: 'debug' as const };
@@ -67,6 +67,29 @@ async function approve(setup: Awaited<ReturnType<typeof fixture>>, principalId: 
 }
 
 describe('composed browser broker', () => {
+  it('reports approval expiry separately from rejection and clears the request', async () => {
+    expect.assertions(3);
+    const setup = await fixture(500);
+    const outcome = setup.broker.invoke({ id: 'expired-agent' }, 'browser.request_access', { level: 'interact' })
+      .catch((error: unknown) => error);
+    await expect.poll(() => setup.broker.snapshot().requests.length).toBe(1);
+    expect(await outcome).toMatchObject({ code: 'ACCESS_REQUEST_TIMEOUT', retryable: false });
+    expect(setup.broker.snapshot().requests).toEqual([]);
+  });
+
+  it('reports explicit rejection without granting access or calling it a timeout', async () => {
+    expect.assertions(4);
+    const setup = await fixture();
+    const outcome = setup.broker.invoke({ id: 'rejected-agent' }, 'browser.request_access', { level: 'interact' })
+      .catch((error: unknown) => error);
+    await expect.poll(() => setup.broker.snapshot().requests.length).toBe(1);
+    const request = setup.broker.snapshot().requests[0]!;
+    await setup.broker.revokeScope(request.id);
+    expect(await outcome).toMatchObject({ code: 'ACCESS_REQUEST_REJECTED', retryable: false });
+    expect(setup.broker.snapshot().requests).toEqual([]);
+    expect(await setup.broker.invoke({ id: 'rejected-agent' }, 'browser.list_targets', {})).toEqual([]);
+  });
+
   it('forgets every retained credential for a provider installation', async () => {
     expect.assertions(4);
     const setup = await fixture();

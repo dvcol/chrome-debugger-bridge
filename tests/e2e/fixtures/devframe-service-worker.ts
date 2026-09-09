@@ -42,6 +42,9 @@ Object.assign(globalThis, {
     if (joined) await chrome.tabs.group({ tabIds: [tab.id], groupId: approvedGroupId });
     else await chrome.tabs.ungroup(tab.id);
   },
+  async readDevframeState() {
+    return client!.snapshot();
+  },
   disconnectDevframeProvider() {
     client?.disconnected();
     connection?.close?.();

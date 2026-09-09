@@ -49,4 +49,6 @@ For an existing application container, import `mountBrowserControlPanel` from `@
 
 The page script emits `cdb:review-request` with `{ requestId }` to request the embedding application's final approval UI. This is an untrusted presentation intent. It never grants authority or proves a human decision. The extension must authenticate final approval from its trusted popup or other host-approved channel.
 
+Hosts with a direct approval channel can set `approvalAction: 'accept'` on `createCdbPanel`. The page script then labels its action **Accept** and emits `cdb:accept-request`; the embedding application authenticates and handles the final approval. The default remains **Review request** and `cdb:review-request`.
+
 See the [runnable example](../../examples/devframe/README.md).

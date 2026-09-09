@@ -30,6 +30,8 @@ export type CdbPanelDefinition = Pick<DevframeDefinition, 'id' | 'name' | 'versi
 export interface CdbPanelOptions {
   readonly client: () => BrowserControlPanelClient;
   readonly name?: string;
+  /** Match the notification action to the embedding application's approval channel. */
+  readonly approvalAction?: 'review' | 'accept';
   /** A mounted host may use its own JSON renderer and component properties. */
   readonly renderer?: { readonly type: string; readonly components?: BrowserControlPanelComponents };
   readonly dock?: { readonly category?: string; readonly defaultOrder?: number };
@@ -58,7 +60,7 @@ export function createCdbPanel(options: CdbPanelOptions): CdbPanel {
       icon: 'ph:browser-duotone',
       capabilities: { build: false },
       clientAssets: jsonRenderSpaDir,
-      dock: { defaultOrder: 1_000, ...options.dock, clientScript: { importFrom: join(directory, 'view/page-script.js') } },
+      dock: { defaultOrder: 1_000, ...options.dock, clientScript: { importFrom: join(directory, 'view/page-script.js'), ...(options.approvalAction === 'accept' ? { importName: 'setupBrowserControlAcceptPage' } : {}) } },
       async setup(context) {
         if (disposed) throw new Error('The CDB panel was disposed.');
         const client = options.client();

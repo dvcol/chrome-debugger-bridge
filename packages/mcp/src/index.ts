@@ -261,7 +261,7 @@ interface InputActionScope {
   requestCharacters: number;
   responseCharacters: number;
   retries: number;
-  readonly commands: { method: string; milliseconds: number }[];
+  readonly commands: { method: string; started: number; milliseconds?: number; outcome: 'pending' | 'completed' | 'failed' }[];
 }
 
 const inputActionScope = new AsyncLocalStorage<InputActionScope>();
@@ -315,7 +315,7 @@ async function invokeElementAction(name: string, timeoutMilliseconds: number, pa
     signal.removeEventListener('abort', abort);
     if (inputActionDiagnostics.hasSubscribers) {
       scope.phaseMilliseconds[scope.phase] += performance.now() - scope.phaseStarted;
-      inputActionDiagnostics.publish({ name, milliseconds: performance.now() - started, phaseMilliseconds: { ...scope.phaseMilliseconds }, commandCount: scope.commandCount, requestCharacters: scope.requestCharacters, responseCharacters: scope.responseCharacters, retries: scope.retries, commands: [...scope.commands], dispatched: scope.dispatched, timedOut: cancellation.signal.aborted });
+      inputActionDiagnostics.publish({ name, milliseconds: performance.now() - started, phaseMilliseconds: { ...scope.phaseMilliseconds }, commandCount: scope.commandCount, requestCharacters: scope.requestCharacters, responseCharacters: scope.responseCharacters, retries: scope.retries, commands: scope.commands.map(({ started: commandStarted, milliseconds, ...command }) => ({ ...command, milliseconds: milliseconds ?? performance.now() - commandStarted })), dispatched: scope.dispatched, timedOut: cancellation.signal.aborted });
     }
   }
 }
@@ -1176,7 +1176,7 @@ async function executeLifecycleAction(
             }, signal);
           };
           const loaderId = stringValue(property(navigationValue, 'loaderId'));
-          if (input.sessionId === undefined && loaderId !== undefined) {
+          if (input.sessionId === undefined && (loaderId !== undefined || commandMethods.includes('Page.reload'))) {
             const target = await renewedTarget;
             return { command: commandResult, milestone: await waitAfterAuthorityRenewal(target) };
           }
@@ -3164,11 +3164,22 @@ function createCdbToolDefinitionsForSession(
         if (inputActionDiagnostics.hasSubscribers) scope.requestCharacters += JSON.stringify(command).length;
       }
       const started = performance.now();
-      const result = await rawClient.executeCommand(command);
-      if (scope !== undefined && inputActionDiagnostics.hasSubscribers) scope.commands.push({ method: command.method, milliseconds: performance.now() - started });
-      if (scope !== undefined && inputActionDiagnostics.hasSubscribers) scope.responseCharacters += JSON.stringify(result).length;
-      scope?.signal.throwIfAborted();
-      return result;
+      const measurement: InputActionScope['commands'][number] | undefined = scope !== undefined && inputActionDiagnostics.hasSubscribers
+        ? { method: command.method, started, outcome: 'pending' }
+        : undefined;
+      if (measurement !== undefined) scope!.commands.push(measurement);
+      try {
+        const result = await rawClient.executeCommand(command);
+        if (measurement !== undefined) measurement.outcome = 'completed';
+        if (scope !== undefined && inputActionDiagnostics.hasSubscribers) scope.responseCharacters += JSON.stringify(result).length;
+        scope?.signal.throwIfAborted();
+        return result;
+      } catch (error) {
+        if (measurement !== undefined && measurement.outcome === 'pending') measurement.outcome = 'failed';
+        throw error;
+      } finally {
+        if (measurement !== undefined) measurement.milliseconds = performance.now() - started;
+      }
     },
     listTargets: async () => {
       const scope = inputActionScope.getStore();
