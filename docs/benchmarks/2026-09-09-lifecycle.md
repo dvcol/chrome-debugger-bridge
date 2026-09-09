@@ -49,4 +49,4 @@ All measured actions completed successfully. The covered-action duration include
 
 ## Remaining validation
 
-Performance acceptance is open. The main-profile QA Helper must reload the rebuilt extension before final staging and local-shell validation can establish the new readiness replay behavior. Upstream toast removal is fixed in [Devframe PR #375](https://github.com/devframes/devframe/pull/375). Downstream pins remain unchanged pending the compatible Vite upgrade; changing live notification details without resurfacing dismissed toasts remains deferred with that adoption.
+Performance acceptance is open. These public fixtures do not establish live validation in embedding applications. Upstream toast removal is fixed in [Devframe PR #375](https://github.com/devframes/devframe/pull/375). Downstream pins remain unchanged pending the compatible Vite upgrade; changing live notification details without resurfacing dismissed toasts remains deferred with that adoption.
