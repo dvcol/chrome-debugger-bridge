@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { styleText } from 'node:util';
 
-import { createFileBrokerIdentityStore, defineBroker } from '@dvcol/cdb-broker';
+import { createFileBrokerIdentityStore, defineBroker, normalizeBrowserControlError } from '@dvcol/cdb-broker';
 import { Server } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { createDevServer } from 'devframe/adapters/dev';
@@ -10,8 +10,9 @@ import { getTempAuthCode } from 'devframe/node/auth';
 import { createDevframeExample } from './devframe.ts';
 
 async function main(): Promise<void> {
+  const identityDirectory = process.env.CDB_IDENTITY_DIRECTORY ?? join(import.meta.dirname, 'dist', 'identity');
   const example = createDevframeExample(defineBroker({
-    identityStore: await createFileBrokerIdentityStore(join(import.meta.dirname, 'dist', 'identity')),
+    identityStore: await createFileBrokerIdentityStore(identityDirectory),
     navigation: { default: 'same-origin', allowed: ['same-origin', 'follow-tab'] },
   }));
   const extensionOrigin = process.env.CDB_EXTENSION_ORIGIN;
@@ -34,6 +35,7 @@ async function main(): Promise<void> {
   });
   const broker = example.service.broker;
   const agent = { id: 'example-stdio-agent', label: 'Example MCP agent' };
+  await broker.connectSession(agent);
   const mcp = new Server({ name: 'cdb-devframe-example', version: example.definition.version }, { capabilities: { tools: {} } });
   mcp.setRequestHandler('tools/list', async () => ({ tools: broker.tools.map(tool => ({ ...tool, inputSchema: { ...tool.inputSchema, type: 'object' as const } })) }));
   mcp.setRequestHandler('tools/call', async (request, context) => {
@@ -41,7 +43,7 @@ async function main(): Promise<void> {
       const value = await broker.invoke(agent, request.params.name, request.params.arguments, { signal: context.mcpReq.signal });
       return { content: [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value) }] };
     } catch (error) {
-      return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ ...(error as object), message: error instanceof Error ? error.message : String(error) }) }] };
+      return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify(normalizeBrowserControlError(error)) }] };
     }
   });
   let closing = false;

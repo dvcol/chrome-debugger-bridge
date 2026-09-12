@@ -11,7 +11,7 @@ The supported baseline is Devframe 0.9.10, DevTools Kit 0.6.1 and Vite 8.1.5. Up
 5. Open the management panel at the host URL. Connect the extension popup to the same host and authenticate with the Devframe code printed in the host's stderr log for that connection. Keep the inspected application tab active when approving.
 6. Ask the agent for `browser.request_access`, review its requested level/navigation policy in the extension popup, and approve the current tab, group or window. Run `browser.snapshot` and `browser.batch` from that same agent session.
 
-The example's identity file lives under `examples/devframe/dist/identity`. Preserve it and the extension's storage to retain pairing across restarts. The standalone panel requests review; the popup performs the final approval and validates the selected Chrome scope.
+Set `CDB_IDENTITY_DIRECTORY` to a persistent directory chosen by the host. The default remains `examples/devframe/dist/identity` for existing example installations; use a directory outside build output for a long-lived installation. Preserve it and the extension's storage to retain pairing across restarts. The standalone panel requests review; the popup performs the final approval and validates the selected Chrome scope.
 
 `pnpm --filter @chrome-debugger-bridge-example/devframe smoke` checks the served panel, page-script assets and native catalogue without a browser. The focused `tests/e2e/devframe-native.test.ts` exercises real Chromium, closed shadow roots, nested cross-origin frames, overlapping grants, live group membership and provider recovery through Devframe RPC and native MCP.
 

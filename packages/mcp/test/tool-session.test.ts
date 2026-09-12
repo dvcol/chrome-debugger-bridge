@@ -309,3 +309,15 @@ it('rejects an element ref after its document generation has renewed', async () 
     code: 'MCP_ELEMENT_REF_STALE',
   });
 });
+
+it('defines tool safety explicitly for consumers without name heuristics', () => {
+  expect.assertions(5);
+  const session = createCdbToolSession({ client: {} as McpChromeDebuggerBridgeClient, enableRawCdp: true });
+  const safety = (name: string) => session.definitions.find(definition => definition.name === name)?.safety;
+  expect(session.definitions.every(definition => definition.safety !== undefined)).toBe(true);
+  expect(safety('browser.snapshot')).toBe('read');
+  expect(safety('browser.click')).toBe('action');
+  expect(safety('browser.evaluate')).toBe('destructive');
+  expect(safety('browser.raw_cdp')).toBe('destructive');
+  session.dispose();
+});

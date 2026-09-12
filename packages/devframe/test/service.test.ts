@@ -171,3 +171,31 @@ it.each(['direct', 'host-catalogue'] as const)('cancels %s browser work over an 
   provider.close();
   expect(await providerRpc.scope('fixture').rpc.call('echo', 'after channel closure')).toBe('after channel closure');
 }, 20_000);
+
+it('keeps connection-bound principal sessions separate and resumes only their own credentials', async () => {
+  expect.assertions(6);
+  const { createCdbConnection } = await import('../src/connection.js');
+  const setup = await fixture();
+  const store = createMemoryCredentialStore();
+  const first = createCdbConnection({ session: { credentialKey: 'one', credentialStore: store } });
+  const second = createCdbConnection({ session: { credentialKey: 'two', credentialStore: store } });
+  cleanups.push(async () => first.dispose(), async () => second.dispose());
+  const firstPeer = await setup.connect();
+  first.attach(firstPeer);
+  second.attach(await setup.connect());
+  await Promise.all([first.ready(), second.ready()]);
+  const firstCredential = await store.get('one');
+  const secondCredential = await store.get('two');
+  expect(firstCredential).toBeDefined();
+  expect(secondCredential).toBeDefined();
+  expect(firstCredential).not.toEqual(secondCredential);
+  expect(setup.service.broker.snapshot().principals).toHaveLength(2);
+  first.disconnected();
+  firstPeer.close?.();
+  first.attach(await setup.connect());
+  await first.ready();
+  expect(setup.service.broker.snapshot().principals).toHaveLength(2);
+  await second.dispose();
+  const ordinary = await setup.connect();
+  await expect(ordinary.scope('fixture').rpc.call('echo', 'ordinary')).resolves.toBe('ordinary');
+});

@@ -41,6 +41,11 @@ export interface CdbClient {
 
 const clients = new WeakMap<object, CdbClient>();
 
+function replyValue<Value>(result: CdbReply<Value>): Value {
+  if (!result.ok) throw Object.assign(new Error(result.error.message), result.error);
+  return result.value;
+}
+
 export interface CdbClientSession {
   connect: (client: CdbClient) => Promise<void>;
   terminate: (client: CdbClient) => Promise<void>;
@@ -95,8 +100,7 @@ export function createCdbClient(client: CdbDevframeClient): CdbClient {
   async function call<Value>(name: string, ...arguments_: unknown[]): Promise<Value> {
     if (disposed) throw new Error('The CDB client has been disposed.');
     const result = await rpc.call(name, ...arguments_) as CdbReply<Value>;
-    if (!result.ok) throw Object.assign(new Error(result.error.message), result.error);
-    return result.value;
+    return replyValue(result);
   }
 
   function publish(value: BrokerState): void {
@@ -235,14 +239,16 @@ export function createCdbClient(client: CdbDevframeClient): CdbClient {
     },
     async dispose() {
       if (disposed) return;
-      provider?.close(1000, 'CDB client disposed');
       try {
-        if (watching !== undefined) await call('unwatch');
+        provider?.close(1000, 'CDB client disposed');
       } finally {
         disposed = true;
+        clients.delete(client);
+        const subscribed = watching !== undefined;
         stateListeners.clear();
         watching = undefined;
         state = undefined;
+        if (subscribed) replyValue(await rpc.call('unwatch') as CdbReply<void>);
       }
     },
   };

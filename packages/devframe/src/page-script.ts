@@ -11,11 +11,13 @@ export const browserControlAcceptEvent = 'cdb:accept-request';
 export interface BrowserControlPageOptions {
   /** The embedding application owns the final approval channel for either action. */
   readonly approvalAction?: 'review' | 'accept';
+  /** Install host approval bindings only while this panel has an available broker. */
+  readonly onAvailable?: () => void | (() => void);
 }
 
 /** Client-script entry selected by a host that supplies a direct approval channel. */
-export async function setupBrowserControlAcceptPage(context: BrowserControlPageContext): Promise<() => void> {
-  return setupBrowserControlPage(context, { approvalAction: 'accept' });
+export async function setupBrowserControlAcceptPage(context: BrowserControlPageContext, options: Omit<BrowserControlPageOptions, 'approvalAction'> = {}): Promise<() => void> {
+  return setupBrowserControlPage(context, { ...options, approvalAction: 'accept' });
 }
 
 export interface BrowserControlPageContext {
@@ -32,7 +34,11 @@ export interface BrowserControlPageContext {
 /** Uses the hub's existing page connection; the embedding extension handles the review intent. */
 export default async function setupBrowserControlPage(context: BrowserControlPageContext, options: BrowserControlPageOptions = {}): Promise<() => void> {
   const client = createBrowserControlPanelClient(context.rpc);
+  let disposed = false;
+  let available = false;
+  let stopHostBindings: (() => void) | undefined;
   const review = (requestId: string): void => {
+    if (disposed || !available) return;
     window.dispatchEvent(new CustomEvent(options.approvalAction === 'accept' ? browserControlAcceptEvent : browserControlReviewEvent, { detail: { requestId } }));
   };
   const controller = createBrowserControlNotificationController({ onReview: request => review(request.id), onRevoke: async requestId => client.revokeScope(requestId) });
@@ -85,6 +91,10 @@ export default async function setupBrowserControlPage(context: BrowserControlPag
   };
   let stopWatching: (() => void) | undefined;
   const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    stopHostBindings?.();
+    stopHostBindings = undefined;
     stopWatching?.();
     document.documentElement.removeAttribute('data-cdb-notifications-ready');
     stopNotifications();
@@ -94,15 +104,31 @@ export default async function setupBrowserControlPage(context: BrowserControlPag
     window.removeEventListener('message', receive);
     window.removeEventListener('pagehide', dispose);
   };
+  window.addEventListener('pagehide', dispose, { once: true });
   try {
-    stopWatching = await client.watch(state => controller.update(state));
-    /** Embedding extensions defer their fallback card only once this notifier is listening. */
-    document.documentElement.setAttribute('data-cdb-notifications-ready', '');
+    stopWatching = await client.watch((state, nextAvailable = true) => {
+      if (disposed) return;
+      if (available !== nextAvailable) {
+        available = nextAvailable;
+        if (available) stopHostBindings = options.onAvailable?.() ?? undefined;
+        else {
+          stopHostBindings?.();
+          stopHostBindings = undefined;
+        }
+      }
+      controller.update(available ? state : { requests: [], grants: [] });
+      document.documentElement.toggleAttribute('data-cdb-notifications-ready', available);
+    });
+    if (disposed) {
+      stopWatching();
+      return dispose;
+    }
     window.addEventListener('message', receive);
-    window.addEventListener('pagehide', dispose, { once: true });
     return dispose;
   } catch (error) {
     dispose();
     throw error;
   }
 }
+
+export { createPageRequestBridge, type PageRequestBridge, type PageRequestBridgeOptions, type PageRequestOptions } from '@dvcol/cdb-extension';

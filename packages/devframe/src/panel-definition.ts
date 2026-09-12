@@ -1,5 +1,6 @@
 import type { DevframeHubContext } from '@devframes/hub';
 import type { JsonRenderView } from '@devframes/json-render';
+import type { BrokerState } from '@dvcol/cdb-broker/contract';
 import type { DevframeDefinition, DevframeNodeContext, DevframeScopedNodeRpc } from 'devframe';
 
 import type { BrowserControlPanelComponents } from './panel-view.js';
@@ -40,6 +41,8 @@ export interface CdbPanelOptions {
 export interface CdbPanel {
   readonly definition: CdbPanelDefinition;
   dispose: () => void;
+  /** Rebind after host replacement, or clear presentation when browser control is disabled. */
+  setClient: (client: BrowserControlPanelClient | undefined) => Promise<void>;
 }
 
 /** Serves Devframe's reference SPA; mounted hosts can select their own renderer. */
@@ -48,6 +51,17 @@ export function createCdbPanel(options: CdbPanelOptions): CdbPanel {
   let disposed = false;
   let unsubscribe: (() => void) | undefined;
   let view: JsonRenderView | undefined;
+  let client: BrowserControlPanelClient | undefined;
+  let clientResolved = false;
+  let generation = 0;
+  let replaceClient: (() => Promise<void>) | undefined;
+  function activeClient(): BrowserControlPanelClient {
+    if (disposed || client === undefined) throw new Error('Browser control is unavailable.');
+    return client;
+  }
+  function emptyState(): BrokerState {
+    return { revision: 0, providers: [], principals: [], requests: [], targets: [], grants: [], leases: [], scopes: [] };
+  }
   return {
     definition: {
       id: 'cdb-browser-control',
@@ -63,36 +77,54 @@ export function createCdbPanel(options: CdbPanelOptions): CdbPanel {
       dock: { defaultOrder: 1_000, ...options.dock, clientScript: { importFrom: join(directory, 'view/page-script.js'), ...(options.approvalAction === 'accept' ? { importName: 'setupBrowserControlAcceptPage' } : {}) } },
       async setup(context) {
         if (disposed) throw new Error('The CDB panel was disposed.');
-        const client = options.client();
+        if (!clientResolved) {
+          client = options.client();
+          clientResolved = true;
+        }
         const renderer = 'docks' in context ? options.renderer : undefined;
         const rpc = context.scope('cdb:panel').rpc;
-        const initial = await client.snapshot();
-        const state = await rpc.sharedState('state', { initialValue: { broker: initial } });
+        const initial = emptyState();
+        const state = await rpc.sharedState('state', { initialValue: { broker: initial, available: client !== undefined } });
         view = createJsonRenderView(context as DevframeNodeContext, {
           id: 'browser-control',
           title: options.name ?? 'Browser control',
           spec: buildBrowserControlPanelView(initial, renderer?.components),
           ...(renderer === undefined ? {} : { schema: false as const }),
         });
-        const stop = await client.watch((broker) => {
-          state.mutate((value) => {
-            value.broker = broker;
-          });
-          view?.update(buildBrowserControlPanelView(broker, renderer?.components));
-        });
+        replaceClient = async () => {
+          const selected = client;
+          const selectedGeneration = ++generation;
+          unsubscribe?.();
+          unsubscribe = undefined;
+          const publish = (broker: BrokerState): void => {
+            if (disposed || generation !== selectedGeneration) return;
+            state.mutate((value) => {
+              value.broker = broker;
+              value.available = selected !== undefined;
+            });
+            view?.update(buildBrowserControlPanelView(broker, renderer?.components));
+          };
+          publish(emptyState());
+          if (selected === undefined) return;
+          const snapshot = await selected.snapshot();
+          if (disposed || generation !== selectedGeneration) return;
+          publish(snapshot);
+          const stop = await selected.watch(publish);
+          if (disposed || generation !== selectedGeneration) stop();
+          else unsubscribe = stop;
+        };
+        await replaceClient();
         if (disposed) {
-          stop();
           view?.dispose();
           return;
         }
-        unsubscribe = stop;
-        rpc.register({ name: 'state', type: 'query', handler: async () => client.snapshot() });
-        rpc.register({ name: 'revoke-scope', type: 'action', handler: async (requestId: string) => client.revokeScope(requestId) });
-        rpc.register({ name: 'revoke-grant', type: 'action', handler: async (grantId: string) => client.revokeGrant(grantId) });
-        rpc.register({ name: 'disconnect-provider', type: 'action', handler: async (providerId: string, forgetPairing: boolean) => client.disconnectProvider(providerId, forgetPairing) });
-        rpc.register({ name: 'revoke-target', type: 'action', handler: async ({ grantId }: { grantId: string }) => client.revokeGrant(grantId) });
-        rpc.register({ name: 'disconnect', type: 'action', handler: async ({ providerId }: { providerId: string }) => client.disconnectProvider(providerId) });
-        rpc.register({ name: 'forget', type: 'action', handler: async ({ providerId }: { providerId: string }) => client.disconnectProvider(providerId, true) });
+        rpc.register({ name: 'state', type: 'query', handler: async () => activeClient().snapshot() });
+        rpc.register({ name: 'revoke-scope', type: 'action', handler: async (requestId: string) => activeClient().revokeScope(requestId) });
+        rpc.register({ name: 'revoke-grant', type: 'action', handler: async (grantId: string) => activeClient().revokeGrant(grantId) });
+        rpc.register({ name: 'disconnect-provider', type: 'action', handler: async (providerId: string, forgetPairing: boolean) => activeClient().disconnectProvider(providerId, forgetPairing) });
+        rpc.register({ name: 'revoke-target', type: 'action', handler: async ({ grantId }: { grantId: string }) => activeClient().revokeGrant(grantId) });
+        rpc.register({ name: 'disconnect', type: 'action', handler: async ({ providerId }: { providerId: string }) => activeClient().disconnectProvider(providerId) });
+        rpc.register({ name: 'forget', type: 'action', handler: async ({ providerId }: { providerId: string }) => activeClient().disconnectProvider(providerId, true) });
         if ('docks' in context) {
           const hub = context as unknown as DevframeHubContext;
           const entry = hub.docks.views.get('cdb-browser-control');
@@ -103,8 +135,16 @@ export function createCdbPanel(options: CdbPanelOptions): CdbPanel {
         }
       },
     },
+    async setClient(next) {
+      if (disposed) throw new Error('The CDB panel was disposed.');
+      if (clientResolved && client === next) return;
+      clientResolved = true;
+      client = next;
+      await replaceClient?.();
+    },
     dispose() {
       disposed = true;
+      generation += 1;
       unsubscribe?.();
       unsubscribe = undefined;
       view?.dispose();
