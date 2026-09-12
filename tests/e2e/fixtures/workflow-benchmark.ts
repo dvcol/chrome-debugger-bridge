@@ -32,7 +32,8 @@ export async function benchmarkAgentWorkflow(agent: Client, chromiumVersion: str
     actionMetrics.push(measurement);
   };
   const measurements: { selector: string; name: string; milliseconds: number; argumentsCharacters: number; responseCharacters: number; error: boolean }[] = [];
-  const summaries: Record<string, { p95Milliseconds: number | undefined }> = {};
+  const summaries: Record<string, { samples: number; p95Milliseconds: number | undefined }> = {};
+  const workflows: Record<string, number[]> = { ref: [], locator: [] };
   const percentile95 = (values: number[]): number | undefined => values.sort((left, right) => left - right)[Math.ceil(values.length * 0.95) - 1];
   const worker = page.context().serviceWorkers()[0];
   if (worker === undefined) throw new Error('The benchmark extension worker is unavailable.');
@@ -75,14 +76,13 @@ export async function benchmarkAgentWorkflow(agent: Client, chromiumVersion: str
         fill: { ...locate('textbox', 'Deep value'), text: 'Benchmark value' },
         click: { ...locate('button', 'Save deep value') },
       });
-      const workflows: number[] = [];
       for (let sample = -5; sample < samples; sample += 1) {
         const started = performance.now();
         const individual = actions();
         await call('browser.fill', { targetRef: 't1', ...individual.fill }, sample >= 0);
         await call('browser.click', { targetRef: 't1', ...individual.click }, sample >= 0);
         snapshot = await call('browser.snapshot', { targetRef: 't1' }, sample >= 0);
-        if (sample >= 0) workflows.push(performance.now() - started);
+        if (sample >= 0) workflows[selector]!.push(performance.now() - started);
         const next = actions();
         const batch = { targetRef: 't1', observe: true, actions: [{ action: 'fill', ...next.fill }, { action: 'click', ...next.click }] };
         snapshot = (JSON.parse(await call('browser.batch', batch, sample >= 0)) as { observation: string }).observation;
@@ -93,12 +93,18 @@ export async function benchmarkAgentWorkflow(agent: Client, chromiumVersion: str
       } finally {
         await page.locator('#parent-overlay').evaluate(element => element.remove());
       }
-      for (const name of ['browser.fill', 'browser.click', 'browser.snapshot', 'browser.batch', 'browser.click:blocked']) summaries[`${selector}:${name}`] = { p95Milliseconds: percentile95(measurements.filter(measurement => measurement.selector === selector && measurement.name === name).map(measurement => measurement.milliseconds)) };
-      summaries[`${selector}:individual-workflow`] = { p95Milliseconds: percentile95(workflows) };
     }
   } finally {
     diagnostics.unsubscribe(collect);
     snapshotDiagnostics.unsubscribe(collectSnapshot);
+    /** Summarize completed calls even when a later action interrupts the run. */
+    for (const selector of ['ref', 'locator']) {
+      for (const name of ['browser.fill', 'browser.click', 'browser.snapshot', 'browser.batch', 'browser.click:blocked']) {
+        const durations = measurements.filter(measurement => measurement.selector === selector && measurement.name === name && (name.endsWith(':blocked') || !measurement.error)).map(measurement => measurement.milliseconds);
+        summaries[`${selector}:${name}`] = { samples: durations.length, p95Milliseconds: percentile95(durations) };
+      }
+      summaries[`${selector}:individual-workflow`] = { samples: workflows[selector]!.length, p95Milliseconds: percentile95(workflows[selector]!) };
+    }
     const chromeCommands = await worker.evaluate(() => {
       const workerGlobal = globalThis as unknown as BenchmarkWorker;
       workerGlobal.restoreCdbBenchmarkCommands();

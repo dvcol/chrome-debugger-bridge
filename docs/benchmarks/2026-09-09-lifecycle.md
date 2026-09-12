@@ -19,7 +19,7 @@ Each of 30 cycles reloads and acts, reconnects and acts, cancels a covered actio
 | Cancel, shared RPC read and action | 30 | 0 | 777 ms |
 | Revoke, shared RPC read, reapprove and action | 30 | 0 | 1,129 ms |
 
-These are complete lifecycle scenarios, not warm single-action measurements. Machine load averages were 26.3/20.6/18.3 before and 22.2/19.9/18.2 afterward. [All lifecycle samples](./2026-09-09-lifecycle.csv) include the preliminary failures:
+These are complete lifecycle scenarios, not warm single-action measurements. Machine load averages were 26.3/20.6/18.3 before and 22.2/19.9/18.2 afterward. The preliminary runs included these failures:
 
 - Run 1 revoked a scope left empty by the earlier overlap test. The diagnostic setup now clears those earlier scopes.
 - Run 2 completed 11 cycles before its rapid reapproval reached the existing two-second request rate limit. The test service now disables this throttle, and the diagnostic surfaces an early access-request error immediately.
@@ -30,7 +30,7 @@ Opt-in `cdb.mcp.action` diagnostics now include pending and failed commands, the
 
 ## Performance gates
 
-Both benchmarks ran sequentially after the lifecycle matrix, using their existing warmups and 30 samples. [Raw measurements](./2026-09-09-latency.csv) retain these failed gates.
+Both benchmarks ran sequentially after the lifecycle matrix, using their existing warmups and 30 samples. The failed gates are summarized below.
 
 | Transport and scenario | p95 | Required gate | Result |
 | --- | ---: | ---: | --- |

@@ -49,14 +49,12 @@ The [preserved MCP baseline](measurements/mcp-baseline-811909f.json), revision `
 These isolated Chromium results do not establish behavior in a user's main Chrome profile. That requires the same public workflow with the extension installed and the intended tab/window scope approved in that profile.
 
 
-### Devframe workflow measurements
+### Aligned transport and lifecycle diagnostics
 
-Run the same public closed-shadow, three-level cross-origin fixture over the shared Devframe RPC provider connection:
+Run **Browser diagnostics** manually in GitHub Actions on the desired branch or tag. It builds once, then measures WebSocket, Devframe and lifecycle scenarios sequentially with one worker. Failed suites do not skip the remaining suites. Full measurements and opt-in phase/command diagnostics go to the logs; the job summary includes completed sample counts and p95 values. No artifacts are uploaded or committed.
 
-```sh
-CDB_DEVFRAME_PERFORMANCE_GATE=1 CDB_DEVFRAME_BENCHMARK_OUTPUT=/tmp/cdb-devframe.json pnpm exec vitest run --project extension-e2e tests/e2e/devframe-native.test.ts
-```
+Both transports use the same normal closed-shadow fixture with three cross-origin frame levels, five warm-ups and 30 samples for each reference/locator scenario. Fill, click, snapshot, batch with observation, individual workflows and blocked clicks are reported separately. Action p95 must be at most 500 ms and snapshot p95 at most 1,000 ms. Partial runs remain incomplete even when their available samples meet a latency target. The lifecycle suite requires all 120 scenarios across 30 cycles of navigation, reconnect, cancellation and revocation.
 
-The default is 30 warm samples each for fill, click, compact snapshot, fill/click batch with observation, and a persistent parent overlay. `CDB_DEVFRAME_BENCHMARK_SAMPLES` accepts 5–50 for short diagnostic probes or longer runs. Reports separate blocked actions from successful actions, include individual workflow p95, catalogue/argument/response character counts, and collect the optional `cdb.mcp.action` phase diagnostics. Characters divided by four is only a token estimate. This benchmark uses exact role/name locators; the WebSocket benchmark's default fresh references measure a different discovery cost and cannot isolate transport differences.
+Linux CI measurements establish a separate baseline from the historical macOS reports. Compare matching browser versions, fixtures and runner environments. Browser scheduling and transport overhead remain included; model time and application loading are excluded. Failed performance gates and unexplained stalls remain follow-ups for the experimental release.
 
-Both harnesses record starting and ending OS load averages. The WebSocket report separates individual command round trips, direct `chrome.debugger.sendCommand` durations, and artifact HTTP reads. Chrome durations include browser scheduling and CDP execution; subtracting them from command round trips also includes provider/broker serialization and processing, so the difference is not network latency alone. `CDB_DEVFRAME_PERFORMANCE_GATE=1` enforces the same 500 ms action and 1,000 ms snapshot p95 budgets after saving the complete report.
+For a targeted diagnostic outside CI, the shared runner accepts `CDB_WORKFLOW_BENCHMARK_SAMPLES` from 5 to 50 and `CDB_WORKFLOW_PERFORMANCE_GATE=1`. Enable either `CDB_WEBSOCKET_BENCHMARK_OUTPUT` for `native-agent-benchmark.test.ts` or `CDB_DEVFRAME_BENCHMARK_OUTPUT` for `devframe-native.test.ts`. Enable `CDB_LIFECYCLE_DIAGNOSTICS_OUTPUT` separately for the latter's lifecycle matrix. Output paths are JSON files; do not commit generated measurements.
