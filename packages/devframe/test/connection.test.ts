@@ -4,6 +4,7 @@ import type { CdbDevframeClient } from '../src/wire.js';
 
 import { expect, it, vi } from 'vitest';
 
+import { createCdbClient } from '../src/client.js';
 import { createCdbConnection } from '../src/connection.js';
 
 const state: BrokerState = { revision: 1, providers: [], principals: [], requests: [], targets: [], grants: [], leases: [], scopes: [] };
@@ -99,5 +100,40 @@ it('can attach the same transport after disconnection and rejects obsolete resul
   await expect(connection.snapshot()).resolves.toEqual(state);
   pending.resolve({ ok: true, value: 'obsolete' });
   await connection.dispose();
+  expect(fixture.close).not.toHaveBeenCalled();
+});
+
+it.each(['transport', 'protocol'])('cleans up listeners and reports %s unsubscribe failure', async (failureKind) => {
+  expect.assertions(5);
+  const fixture = peer();
+  const client = createCdbClient(fixture.transport);
+  const listener = vi.fn();
+  await client.watch(listener);
+  fixture.call.mockImplementation(async (name) => {
+    if (name !== 'unwatch') return { ok: true, value: state };
+    if (failureKind === 'transport') throw new Error('Unsubscribe failed');
+    return { ok: false, error: { code: 'UNWATCH_FAILED', message: 'Unsubscribe failed', retryable: false } };
+  });
+  await expect(client.dispose()).rejects.toThrow('Unsubscribe failed');
+  fixture.handlers.get('state-changed')!({ ...state, revision: 2 });
+  expect(listener).toHaveBeenCalledOnce();
+  await expect(client.snapshot()).rejects.toThrow('disposed');
+  expect(createCdbClient(fixture.transport)).not.toBe(client);
+  expect(fixture.close).not.toHaveBeenCalled();
+});
+
+it('fences a watch that completes after disposal', async () => {
+  expect.assertions(3);
+  const fixture = peer();
+  const pending = Promise.withResolvers<unknown>();
+  fixture.call.mockImplementation(async name => name === 'watch' ? pending.promise : { ok: true, value: undefined });
+  const client = createCdbClient(fixture.transport);
+  const listener = vi.fn();
+  const watching = client.watch(listener);
+  const rejected = expect(watching).rejects.toThrow('disposed');
+  await client.dispose();
+  pending.resolve({ ok: true, value: state });
+  await rejected;
+  expect(listener).not.toHaveBeenCalled();
   expect(fixture.close).not.toHaveBeenCalled();
 });

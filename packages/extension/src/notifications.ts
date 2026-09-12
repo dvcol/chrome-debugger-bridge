@@ -2,7 +2,7 @@ import type { BrokerGrant, BrokerRequest, BrokerState } from '@dvcol/cdb-broker/
 
 import type { BrowserControlNotificationColorMode, BrowserControlNotificationThemeOverrides } from './notification-theme.js';
 
-import { browserControlNotificationStyles, notificationThemeStyles } from './notification-theme.js';
+import { browserControlNotificationStyles, updateNotificationTheme } from './notification-theme.js';
 
 export { defaultBrowserControlNotificationTheme } from './notification-theme.js';
 export type { BrowserControlNotificationColorMode, BrowserControlNotificationPalette, BrowserControlNotificationTheme, BrowserControlNotificationThemeOverrides } from './notification-theme.js';
@@ -104,17 +104,29 @@ export interface BrowserControlNotificationRendererOptions {
   readonly css?: string;
 }
 
+export interface BrowserControlNotificationRenderer {
+  dispose: () => void;
+  setTheme: (theme: BrowserControlNotificationThemeOverrides) => void;
+  setColorMode: (mode: BrowserControlNotificationColorMode) => void;
+}
+
 /** Optional themed presentation. Review buttons delegate to the host's trusted final approval UI. */
-export function renderBrowserControlNotifications(options: BrowserControlNotificationRendererOptions): { dispose: () => void; setTheme: (theme: BrowserControlNotificationThemeOverrides) => void; setColorMode: (mode: BrowserControlNotificationColorMode) => void } {
+export function renderBrowserControlNotifications(options: BrowserControlNotificationRendererOptions): BrowserControlNotificationRenderer {
   const document = options.container.ownerDocument;
   const host = document.createElement('section');
   host.dataset.cdbNotifications = '';
   const root = host.attachShadow({ mode: 'open' });
-  const style = document.createElement('style');
+  const window = document.defaultView;
+  if (window === null) throw new Error('Notification rendering requires a document attached to a window.');
+  const baseStylesheet = new window.CSSStyleSheet();
+  const themeStylesheet = new window.CSSStyleSheet();
+  const customStylesheet = new window.CSSStyleSheet();
+  baseStylesheet.replaceSync(browserControlNotificationStyles);
+  customStylesheet.replaceSync(options.css ?? '');
+  root.adoptedStyleSheets = [baseStylesheet, themeStylesheet, customStylesheet];
+
   function setTheme(theme: BrowserControlNotificationThemeOverrides): void {
-    style.textContent = `${notificationThemeStyles(theme, options.branding?.accent)}
-${browserControlNotificationStyles}
-${options.css ?? ''}`;
+    updateNotificationTheme(themeStylesheet, theme, options.branding?.accent);
   }
   function setColorMode(mode: BrowserControlNotificationColorMode): void {
     host.dataset.colorMode = mode;
@@ -122,31 +134,46 @@ ${options.css ?? ''}`;
   setTheme(options.theme ?? {});
   setColorMode(options.colorMode ?? 'system');
   const content = document.createElement('div');
-  root.append(style, content);
+  root.append(content);
   options.container.append(host);
   let disposed = false;
   let renderedNotification: string | undefined;
 
-  function button(article: HTMLElement, label: string, action: () => void | Promise<void>): HTMLButtonElement {
-    const element = document.createElement('button');
-    element.type = 'button';
-    element.textContent = label;
-    element.onclick = () => {
-      element.disabled = true;
-      void Promise.resolve().then(action).catch((error: unknown) => {
-        if (disposed) return;
-        const message = document.createElement('p');
-        message.setAttribute('role', 'alert');
-        message.textContent = error instanceof Error ? error.message : 'The browser request could not be completed.';
-        article.append(message);
-      }).finally(() => {
-        element.disabled = false;
-      });
-    };
-    article.append(element);
-    return element;
+  async function runAction(
+    button: HTMLButtonElement,
+    container: HTMLElement,
+    action: () => void | Promise<void>,
+  ): Promise<void> {
+    button.disabled = true;
+    try {
+      await action();
+    } catch (error) {
+      if (disposed) return;
+      const message = document.createElement('p');
+      message.setAttribute('role', 'alert');
+      message.textContent = error instanceof Error ? error.message : 'The browser request could not be completed.';
+      container.append(message);
+    } finally {
+      button.disabled = false;
+    }
   }
-  function article(title: string, description?: string): HTMLElement {
+
+  function createActionButton(
+    container: HTMLElement,
+    label: string,
+    action: () => void | Promise<void>,
+  ): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.onclick = () => {
+      void runAction(button, container, action);
+    };
+    container.append(button);
+    return button;
+  }
+
+  function createCard(title: string, description?: string): HTMLElement {
     const element = document.createElement('article');
     const heading = document.createElement('h2');
     heading.textContent = title;
@@ -158,6 +185,28 @@ ${options.css ?? ''}`;
     }
     return element;
   }
+  function createRequestDetails(request: BrokerRequest): HTMLElement {
+    const details = document.createElement('dl');
+    const values = [
+      ['Client', options.clientLabel?.(request) ?? request.principalLabel],
+      ['Grant', request.level],
+      ['Navigation', request.navigation],
+    ] as const;
+    for (const [label, value] of values) {
+      const column = document.createElement('div');
+      const term = document.createElement('dt');
+      term.textContent = label;
+      const definition = document.createElement('dd');
+      const text = document.createElement('code');
+      text.textContent = value;
+      if (label === 'Grant') text.dataset.level = request.level;
+      definition.append(text);
+      column.append(term, definition);
+      details.append(column);
+    }
+    return details;
+  }
+
   function render(notification: BrowserControlNotification): void {
     if (disposed) return;
     /** Unrelated broker publications must not replace focused or pending controls. */
@@ -166,45 +215,38 @@ ${options.css ?? ''}`;
     renderedNotification = serializedNotification;
     content.replaceChildren();
     for (const request of notification.requests) {
-      const element = article(options.branding?.title ?? 'Browser control requested');
-      const dismiss = button(element, '×', () => options.controller.dismiss(request.id));
+      const element = createCard(options.branding?.title ?? 'Browser control requested');
+      const dismiss = createActionButton(element, '×', () => options.controller.dismiss(request.id));
       dismiss.className = 'dismiss';
       dismiss.setAttribute('aria-label', 'Dismiss');
       dismiss.title = 'Dismiss notification';
-      const details = document.createElement('dl');
-      for (const [label, value] of [['Client', options.clientLabel?.(request) ?? request.principalLabel], ['Grant', request.level], ['Navigation', request.navigation]] as const) {
-        const column = document.createElement('div');
-        const term = document.createElement('dt');
-        term.textContent = label;
-        const definition = document.createElement('dd');
-        const badge = document.createElement('code');
-        badge.textContent = value;
-        if (label === 'Grant') badge.dataset.level = request.level;
-        definition.append(badge);
-        column.append(term, definition);
-        details.append(column);
-      }
-      element.append(details);
+      element.append(createRequestDetails(request));
       const actions = document.createElement('footer');
       element.append(actions);
-      button(actions, options.reviewLabel?.(request) ?? 'Review request', async () => options.controller.review(request.id));
+      createActionButton(actions, options.reviewLabel?.(request) ?? 'Review request', async () => options.controller.review(request.id));
       const reject = options.onReject;
-      if (reject !== undefined) button(actions, 'Reject', async () => reject(request));
+      if (reject !== undefined) createActionButton(actions, 'Reject', async () => reject(request));
       content.append(element);
     }
     const grouped = Map.groupBy(notification.grants, grant => grant.requestId);
     for (const [requestId, grants] of grouped) {
       const grant = grants[0]!;
-      const element = article(options.branding?.title ?? 'Browser control', `${grant.principalLabel}: ${grant.level}, ${grant.navigation}. ${grants.length} approved ${grants.length === 1 ? 'tab' : 'tabs'}.`);
-      button(element, 'Stop control', async () => options.controller.revoke(requestId));
+      const tabCount = `${grants.length} approved ${grants.length === 1 ? 'tab' : 'tabs'}`;
+      const description = `${grant.principalLabel}: ${grant.level}, ${grant.navigation}. ${tabCount}.`;
+      const element = createCard(options.branding?.title ?? 'Browser control', description);
+      createActionButton(element, 'Stop control', async () => options.controller.revoke(requestId));
       content.append(element);
     }
   }
   const unsubscribe = options.controller.subscribe(render);
   render(options.controller.snapshot());
-  return { setTheme, setColorMode, dispose() {
-    disposed = true;
-    unsubscribe();
-    host.remove();
-  } };
+  return {
+    setTheme,
+    setColorMode,
+    dispose() {
+      disposed = true;
+      unsubscribe();
+      host.remove();
+    },
+  };
 }

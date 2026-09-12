@@ -10,8 +10,9 @@ import { getTempAuthCode } from 'devframe/node/auth';
 import { createDevframeExample } from './devframe.ts';
 
 async function main(): Promise<void> {
+  const identityDirectory = process.env.CDB_IDENTITY_DIRECTORY ?? join(import.meta.dirname, 'dist', 'identity');
   const example = createDevframeExample(defineBroker({
-    identityStore: await createFileBrokerIdentityStore(process.env.CDB_IDENTITY_DIRECTORY ?? join(import.meta.dirname, 'dist', 'identity')),
+    identityStore: await createFileBrokerIdentityStore(identityDirectory),
     navigation: { default: 'same-origin', allowed: ['same-origin', 'follow-tab'] },
   }));
   const extensionOrigin = process.env.CDB_EXTENSION_ORIGIN;

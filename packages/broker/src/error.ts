@@ -5,13 +5,15 @@ export class BrokerError extends Error {
     readonly retryable = false,
     readonly retryAfterMilliseconds?: number,
     readonly details?: Readonly<Record<string, unknown>>,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = 'BrokerError';
   }
 }
 
-export interface BrowserControlError {
+/** Public error data sent over RPC. Local exception causes and stacks stay with the host. */
+export interface BrowserControlErrorData {
   readonly code: string;
   readonly message: string;
   readonly retryable: boolean;
@@ -19,8 +21,11 @@ export interface BrowserControlError {
   readonly details?: Readonly<Record<string, unknown>>;
 }
 
+/** @deprecated Use BrowserControlErrorData for the serialized error shape. */
+export type BrowserControlError = BrowserControlErrorData;
+
 /** Preserve protocol errors and semantic MCP errors without copying their evolving code catalogue. */
-export function normalizeBrowserControlError(error: unknown): BrowserControlError {
+export function normalizeBrowserControlError(error: unknown): BrowserControlErrorData {
   const record = error !== null && typeof error === 'object' ? error as Record<string, unknown> : {};
   const retryDelay = record.retryAfterMilliseconds ?? record.retryAfterMs;
   return {
@@ -33,7 +38,7 @@ export function normalizeBrowserControlError(error: unknown): BrowserControlErro
 }
 
 /** Returns a semantic failure only for an MCP error result; successful observations are never parsed as errors. */
-export function browserControlToolError(result: unknown): BrowserControlError | undefined {
+export function browserControlToolError(result: unknown): BrowserControlErrorData | undefined {
   if (result === null || typeof result !== 'object' || !('isError' in result) || result.isError !== true) return undefined;
   if ('content' in result && Array.isArray(result.content)) {
     for (const content of result.content as unknown[]) {

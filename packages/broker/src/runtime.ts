@@ -1,5 +1,5 @@
 import type { AgentTargetConnection, AuthorityBinding, GrantedTargetReference, GrantRequest, GrantRequestClaim, GrantRequestProvider, JsonValue, LogicalSessionCredential } from '@dvcol/cdb';
-import type { CdbToolInvocationContext, McpChromeDebuggerBridgeClient } from '@dvcol/cdb-mcp';
+import type { CdbToolDefinition, CdbToolInvocationContext, McpChromeDebuggerBridgeClient } from '@dvcol/cdb-mcp';
 import type { AgentAuthenticationTranscript, BrokerAuthenticationClaims } from '@dvcol/cdb/authentication';
 
 import type { BrokerDefinition } from './config.js';
@@ -17,6 +17,15 @@ import { createProviderAuthentication } from './provider-authentication.js';
 import { createBrokerSession } from './session-client.js';
 
 const accessLevels: readonly AccessLevel[] = ['observe', 'inspect', 'interact', 'debug', 'unsafe'];
+
+function toolDescriptor({ name, description, inputSchema, safety }: CdbToolDefinition): BrokerTool {
+  return {
+    name,
+    description,
+    inputSchema,
+    ...(safety === undefined ? {} : { safety }),
+  };
+}
 
 interface Provider {
   readonly registration: ProviderRegistration;
@@ -287,7 +296,7 @@ export async function createBroker(configuration: BrokerDefinition = {}): Promis
       pendingRequests.delete(requestId);
       const code = reason === 'expired' ? 'ACCESS_REQUEST_TIMEOUT' : reason === 'rejected' ? 'ACCESS_REQUEST_REJECTED' : 'ACCESS_REQUEST_CANCELLED';
       const message = reason === 'expired' ? 'The browser access request expired.' : reason === 'rejected' ? 'The browser access request was rejected.' : 'The browser access request was cancelled.';
-      pending.reject(new BrokerError(error?.code ?? code, error?.message ?? message, error?.retryable ?? false));
+      pending.reject(new BrokerError(error?.code ?? code, error?.message ?? message, error?.retryable ?? false, undefined, undefined, { cause: error }));
     }
     changed();
   });
@@ -515,7 +524,7 @@ export async function createBroker(configuration: BrokerDefinition = {}): Promis
     toolProvider: { name: '@dvcol/cdb', version: packageManifest.version },
     connectSession,
     snapshot,
-    tools: [requestTool, ...descriptors.definitions.map(({ name, description, inputSchema, safety }) => ({ name, description, inputSchema, ...(safety === undefined ? {} : { safety }) }))],
+    tools: [requestTool, ...descriptors.definitions.map(toolDescriptor)],
     subscribe(listener: (state: BrokerState) => void) {
       ensureActive();
       listeners.add(listener);

@@ -147,4 +147,4 @@ export type BrokerTool = Omit<CdbToolDefinition, 'invoke' | 'mcpInputSchema'>;
 
 export type { AgentAuthenticationTranscript, AuthorityBinding, GrantRequestClaim, LogicalSessionCredential };
 
-export { type BrowserControlError, browserControlToolError, normalizeBrowserControlError } from './error.js';
+export { type BrowserControlError, type BrowserControlErrorData, browserControlToolError, normalizeBrowserControlError } from './error.js';
