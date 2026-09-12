@@ -4,8 +4,11 @@ import type { AgentAuthenticationTranscript } from '../src/authentication.js';
 import type {
   AgentAuthenticationAdapter,
   AuthenticatedAgentConnection,
+  AuthenticatedClientConnection,
   StandaloneAuthenticatedWebSocketBridge,
 } from '../src/node.js';
+
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { afterEach, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
@@ -46,6 +49,7 @@ async function createTestBridge(options: {
     connection: AuthenticatedAgentConnection<{ readonly id: string; readonly role: 'agent' }>,
   ) => void;
   readonly onClientMessage?: () => void;
+  readonly onClientConnection?: (connection: AuthenticatedClientConnection<{ readonly id: string; readonly role: 'client' }>) => void;
   readonly onClientPrincipal?: (principalId: string) => void;
   readonly originPolicy?: (origin: string | undefined) => boolean | Promise<boolean>;
   readonly pairingTimeoutMilliseconds?: number;
@@ -82,7 +86,9 @@ async function createTestBridge(options: {
     onAgentConnection(connection) {
       options.onAgentConnection?.(connection);
     },
-    onClientConnection({ connection, principal }) {
+    onClientConnection(client) {
+      if (options.onClientConnection !== undefined) return options.onClientConnection(client);
+      const { connection, principal } = client;
       options.onClientPrincipal?.(principal.id);
       connection.onMessage((message) => {
         options.onClientMessage?.();
@@ -127,6 +133,46 @@ async function createTestBridge(options: {
   openBridges.push(bridge);
   return bridge;
 }
+
+it('delivers the initial client request after asynchronous host session setup', async () => {
+  expect.assertions(1);
+  const connected = Promise.withResolvers<AuthenticatedClientConnection<{ readonly id: string; readonly role: 'client' }>>();
+  const bridge = await createTestBridge({ onClientConnection: connected.resolve });
+  const client = await connectNodeClientWebSocket({ endpoint: `ws://${bridge.host}:${bridge.port}/cdb/client`, authorization: 'Bearer valid-client-token' });
+  const server = await connected.promise;
+  const request = { kind: 'request', method: 'targets.list', parameters: {}, protocolVersion: 1, requestId: crypto.randomUUID() } as const;
+  const nextRequest = { ...request, requestId: crypto.randomUUID() };
+  try {
+    await client.send(request);
+    await client.send(nextRequest);
+    /** Allow receipt while the embedding host is still awaiting its session store. */
+    await delay(50);
+    const received = new Promise((resolve) => {
+      const messages: unknown[] = [];
+      server.connection.onMessage((message) => {
+        messages.push(message);
+        if (messages.length === 2) resolve(messages);
+      });
+    });
+    await expect(waitForTestStage(received, 'delivering the initial requests')).resolves.toEqual([request, nextRequest]);
+  } finally {
+    client.close();
+    await client.closed;
+  }
+});
+
+it('bounds client messages waiting for the first host listener', async () => {
+  expect.assertions(1);
+  const bridge = await createTestBridge({ onClientConnection() {} });
+  const client = await connectNodeClientWebSocket({ endpoint: `ws://${bridge.host}:${bridge.port}/cdb/client`, authorization: 'Bearer valid-client-token' });
+  try {
+    for (let index = 0; index < 33; index += 1) await client.send({ kind: 'request', method: 'targets.list', parameters: {}, protocolVersion: 1, requestId: crypto.randomUUID() });
+    await expect(waitForTestStage(client.closed, 'closing the overflowing connection')).resolves.toMatchObject({ code: 1008 });
+  } finally {
+    client.close();
+    await client.closed;
+  }
+});
 
 async function waitForClientMessage(
   connection: { onMessage: (listener: (message: BrokerToClientMessage) => void) => () => void },
