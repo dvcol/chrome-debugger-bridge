@@ -94,6 +94,7 @@ export {
   defaultGrantRequestTimingPolicy,
   type GrantedTargetReference,
   type GrantRequest,
+  type GrantRequestCancellationReason,
   type GrantRequestChange,
   type GrantRequestClaim,
   type GrantRequestCoordinator,

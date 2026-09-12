@@ -33,6 +33,7 @@ export {
   type IndexedDbPairingStore,
   type StoredBrokerPairing,
 } from './pairing-store.js';
+export type { ProviderConnection } from './provider-connection.js';
 export {
   type ChromeSelectedTabLifecyclePort,
   createSelectedTabLifecycle,

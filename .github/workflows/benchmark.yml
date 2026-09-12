@@ -1,0 +1,79 @@
+name: Browser diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-diagnostics-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  diagnostics:
+    name: Sequential browser measurements
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+      CDB_WORKFLOW_BENCHMARK_SAMPLES: '30'
+      CDB_WORKFLOW_PERFORMANCE_GATE: '1'
+    steps:
+      - name: 📥 Checkout selected revision
+        uses: actions/checkout@v7
+
+      - name: 🏗️ Set up workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          install-chromium: 'true'
+
+      - name: 🔨 Build before measuring
+        run: pnpm exec turbo run build --concurrency=1
+
+      - name: 🖥️ Record runner environment
+        run: |
+          git rev-parse HEAD
+          node --version
+          pnpm exec playwright --version
+          uname -a
+          lscpu
+          uptime
+          echo 'Linux CI baseline. Compare only matching fixtures, browser versions and runner environments.' >> "$GITHUB_STEP_SUMMARY"
+          git rev-parse HEAD >> "$GITHUB_STEP_SUMMARY"
+
+      # Keep transports and lifecycle work sequential, including after a failed gate.
+      - name: 📊 Measure WebSocket workflows
+        id: websocket
+        continue-on-error: true
+        env:
+          CDB_WEBSOCKET_BENCHMARK_OUTPUT: ${{ runner.temp }}/cdb-websocket.json
+        run: pnpm exec vitest run --project extension-e2e --maxWorkers=1 tests/e2e/native-agent-benchmark.test.ts
+
+      - name: 📊 Measure Devframe workflows
+        id: devframe
+        if: ${{ !cancelled() && steps.websocket.outcome != 'skipped' }}
+        continue-on-error: true
+        env:
+          CDB_DEVFRAME_BENCHMARK_OUTPUT: ${{ runner.temp }}/cdb-devframe.json
+        run: pnpm exec vitest run --project extension-e2e --maxWorkers=1 tests/e2e/devframe-native.test.ts
+
+      - name: 🔄 Exercise 30 lifecycle cycles
+        id: lifecycle
+        if: ${{ !cancelled() && steps.websocket.outcome != 'skipped' }}
+        continue-on-error: true
+        env:
+          CDB_LIFECYCLE_DIAGNOSTICS_OUTPUT: ${{ runner.temp }}/cdb-lifecycle.json
+        run: pnpm exec vitest run --project extension-e2e --maxWorkers=1 tests/e2e/devframe-native.test.ts
+
+      - name: 📝 Report complete and partial results
+        if: always()
+        run: node tests/e2e/fixtures/report-validation.ts "$RUNNER_TEMP/cdb-websocket.json" "$RUNNER_TEMP/cdb-devframe.json" "$RUNNER_TEMP/cdb-lifecycle.json"
+
+      - name: ✅ Require all diagnostic suites to pass
+        if: ${{ !cancelled() }}
+        env:
+          WEBSOCKET_OUTCOME: ${{ steps.websocket.outcome }}
+          DEVFRAME_OUTCOME: ${{ steps.devframe.outcome }}
+          LIFECYCLE_OUTCOME: ${{ steps.lifecycle.outcome }}
+        run: test "$WEBSOCKET_OUTCOME/$DEVFRAME_OUTCOME/$LIFECYCLE_OUTCOME" = success/success/success

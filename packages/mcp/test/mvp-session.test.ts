@@ -3,8 +3,9 @@ import type { CdpCommand, Lease, PublishedTarget } from '@dvcol/cdb';
 import type { McpChromeDebuggerBridgeClient } from '../src/index.js';
 
 import { Buffer } from 'node:buffer';
+import { channel } from 'node:diagnostics_channel';
 
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 
 import { createCdbToolSession } from '../src/index.js';
 
@@ -182,6 +183,7 @@ it('re-resolves a locator after replacement before input, while a disposable ref
   let searches = 0;
   let inputCount = 0;
   const harness = toolHarness(async (command) => {
+    if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
     if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
     if (command.method === 'Accessibility.getFullAXTree') return { value: { nodes: [{ backendDOMNodeId: 41, nodeId: 'old', name: { value: 'Save' }, role: { value: 'button' } }] } };
     if (command.method === 'Accessibility.queryAXTree') {
@@ -307,7 +309,7 @@ it('executes ordered element actions in one batch lease and stops after an uncer
   expect(inputCount).toBe(4);
 });
 
-it.each(['Page.getFrameTree', 'Accessibility.getFullAXTree'])('cancels stalled %s discovery at the batch deadline without dispatching input', async (stalledMethod) => {
+it.each(['Page.getFrameTree', 'Accessibility.queryAXTree'])('cancels stalled %s discovery at the batch deadline without dispatching input', async (stalledMethod) => {
   expect.assertions(4);
   const pendingDiscovery = Promise.withResolvers<unknown>();
   const discoveryStarted = Promise.withResolvers<void>();
@@ -318,6 +320,8 @@ it.each(['Page.getFrameTree', 'Accessibility.getFullAXTree'])('cancels stalled %
       discoveryStarted.resolve();
       return pendingDiscovery.promise;
     }
+    if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
+    if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
     if (command.method === 'Page.getFrameTree') return { value: { frameTree: { frame: { id: 'root-frame' } } } };
     if (command.method.startsWith('Input.')) inputCount += 1;
     return { value: { sessions: [] } };
@@ -348,6 +352,7 @@ it('reports the batch deadline when locator polling is cancelled before input', 
   expect.assertions(3);
   let inputCount = 0;
   const harness = toolHarness(async (command) => {
+    if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
     if (command.method.startsWith('Input.')) inputCount += 1;
     return { value: {} };
   });
@@ -374,6 +379,7 @@ it('keeps raw authority and debug execution out of the default compact catalogue
 it('reports the complete match count when limiting returned references', async () => {
   expect.assertions(3);
   const harness = toolHarness(async (command) => {
+    if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
     if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
     if (command.method === 'Accessibility.queryAXTree') return { value: { nodes: Array.from({ length: 3 }, (_unused, index) => ({ backendDOMNodeId: index + 1, nodeId: `button-${index}`, name: { value: 'Save' }, role: { value: 'button' } })) } };
     return { value: { sessions: [] } };
@@ -433,7 +439,7 @@ it.each([
   });
   await harness.invoke('browser.snapshot');
 
-  const result = await harness.invoke(tool, { ref: 'e1', text: 'Sample', timeoutMilliseconds: 1 });
+  const result = await harness.invoke(tool, { ref: 'e1', text: 'Sample', timeoutMilliseconds: 150 });
 
   expect(result.text).toContain(code);
   expect(inputCount).toBe(0);
@@ -457,4 +463,168 @@ it('checks an indeterminate control and verifies the resulting checked state', a
 
   expect(result.error).toBeUndefined();
   expect(JSON.parse(result.text)).toEqual({ changed: true, checked: true });
+});
+
+it('defaults element actions to two seconds without changing navigation deadlines', () => {
+  expect.assertions(3);
+  const harness = toolHarness(async () => ({ value: {} }));
+  expect(harness.session.definitions.find(definition => definition.name === 'browser.click')!.mcpInputSchema.parse({ targetRef: 't1', ref: 'e1' })).toMatchObject({ timeoutMilliseconds: 2_000 });
+  expect(harness.session.definitions.find(definition => definition.name === 'browser.navigate')!.mcpInputSchema.parse({ targetRef: 't1', url: 'https://example.test' })).toMatchObject({ timeoutMilliseconds: 10_000 });
+  expect(harness.session.definitions.find(definition => definition.name === 'browser.batch')!.mcpInputSchema.parse({ targetRef: 't1', actions: [{ action: 'click', ref: 'e1' }] })).toMatchObject({ actionTimeoutMilliseconds: 2_000, timeoutMilliseconds: 30_000 });
+  harness.session.dispose();
+});
+
+it('uses one deadline across locator discovery and disabled-element retries', async () => {
+  expect.assertions(3);
+  vi.useFakeTimers();
+  let inputCount = 0;
+  const harness = toolHarness(async (command) => {
+    if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
+    if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
+    if (command.method === 'Accessibility.queryAXTree' || command.method === 'Accessibility.getFullAXTree') {
+      if (command.method === 'Accessibility.queryAXTree') await new Promise(resolve => setTimeout(resolve, 1_000));
+      return { value: { nodes: [{ backendDOMNodeId: 1, nodeId: 'control', name: { value: 'Control' }, role: { value: 'button' } }] } };
+    }
+    if (command.method === 'Accessibility.getPartialAXTree') return { value: { nodes: [{ properties: [{ name: 'disabled', value: { value: true } }] }] } };
+    if (command.method.startsWith('Input.')) inputCount += 1;
+    return { value: { sessions: [] } };
+  });
+  try {
+    let completed = false;
+    const action = harness.invoke('browser.click', { locator: { role: 'button', name: { match: 'exact', value: 'Control' } } }).then((result) => {
+      completed = true;
+      return result;
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(completed).toBe(true);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect((await action).text).toContain('MCP_ELEMENT_DISABLED');
+    expect(inputCount).toBe(0);
+  } finally {
+    harness.session.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it('bounds a stalled lease acquisition and releases authority arriving after the deadline', async () => {
+  expect.assertions(3);
+  vi.useFakeTimers();
+  const harness = toolHarness(async () => ({ value: {} }));
+  const acquire = harness.client.acquireLease.bind(harness.client);
+  const release = vi.fn(async () => {});
+  harness.client.releaseLease = release;
+  harness.client.acquireLease = async (request) => {
+    await new Promise(resolve => setTimeout(resolve, 5_000));
+    return acquire(request);
+  };
+  try {
+    let completed = false;
+    const action = harness.invoke('browser.click', { locator: { role: 'button' } }).then((result) => {
+      completed = true;
+      return result;
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(completed).toBe(true);
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect((await action).text).toContain('MCP_ACTION_TIMEOUT');
+    expect(release).toHaveBeenCalledOnce();
+  } finally {
+    harness.session.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it('reports uncertain input at the deadline and never replays a stalled dispatch', async () => {
+  expect.assertions(5);
+  vi.useFakeTimers();
+  const measurements: unknown[] = [];
+  const collect = (measurement: unknown): void => {
+    measurements.push(measurement);
+  };
+  const diagnostics = channel('cdb.mcp.action');
+  diagnostics.subscribe(collect);
+  let dispatches = 0;
+  const harness = toolHarness(async (command) => {
+    if (command.method === 'Accessibility.getFullAXTree') return { value: { nodes: [{ backendDOMNodeId: 1, nodeId: 'control', name: { value: 'Control' }, role: { value: 'button' } }] } };
+    if (command.method === 'DOM.describeNode') return { value: { node: { backendNodeId: 1 } } };
+    if (command.method === 'DOM.getContentQuads') return { value: { quads: [[0, 0, 100, 0, 100, 50, 0, 50]] } };
+    if (command.method === 'DOM.getNodeForLocation') return { value: { backendNodeId: 1 } };
+    if (command.method.startsWith('Input.')) {
+      dispatches += 1;
+      await new Promise(resolve => setTimeout(resolve, 5_000));
+    }
+    return { value: { sessions: [] } };
+  });
+  const cancel = vi.fn(async () => {});
+  harness.client.cancelCommand = cancel;
+  try {
+    await harness.invoke('browser.snapshot');
+    const action = harness.invoke('browser.click', { ref: 'e1' });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect((await action).text).toContain('MCP_ACTION_OUTCOME_UNKNOWN');
+    expect(measurements).toMatchObject([{ dispatched: true }]);
+    expect(cancel).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(dispatches).toBe(1);
+    expect((measurements[0] as { commands: unknown[] }).commands).toContainEqual(expect.objectContaining({ method: 'Input.dispatchMouseEvent', outcome: 'pending' }));
+  } finally {
+    diagnostics.unsubscribe(collect);
+    harness.session.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it.each([
+  { name: 'default action deadline', tool: 'browser.click', input: { ref: 'e1' }, succeeds: false },
+  { name: 'explicit longer action deadline', tool: 'browser.click', input: { ref: 'e1', timeoutMilliseconds: 4_000 }, succeeds: true },
+  { name: 'default batch step deadline', tool: 'browser.batch', input: { actions: [{ action: 'click', ref: 'e1' }] }, succeeds: false },
+  { name: 'explicit longer batch step deadline', tool: 'browser.batch', input: { actions: [{ action: 'click', ref: 'e1' }], actionTimeoutMilliseconds: 4_000 }, succeeds: true },
+])('honors $name for a transient disabled control', async ({ tool, input, succeeds }) => {
+  expect.assertions(2);
+  vi.useFakeTimers();
+  const readyAt = Date.now() + 2_500;
+  let dispatches = 0;
+  const harness = toolHarness(async (command) => {
+    if (command.method === 'Accessibility.getFullAXTree') return { value: { nodes: [{ backendDOMNodeId: 1, nodeId: 'control', name: { value: 'Control' }, role: { value: 'button' } }] } };
+    if (command.method === 'Accessibility.getPartialAXTree') return { value: { nodes: [{ properties: [{ name: 'disabled', value: { value: Date.now() < readyAt } }] }] } };
+    if (command.method === 'DOM.describeNode') return { value: { node: { backendNodeId: 1 } } };
+    if (command.method === 'DOM.getContentQuads') return { value: { quads: [[0, 0, 100, 0, 100, 50, 0, 50]] } };
+    if (command.method === 'DOM.getNodeForLocation') return { value: { backendNodeId: 1 } };
+    if (command.method.startsWith('Input.')) dispatches += 1;
+    return { value: { sessions: [] } };
+  });
+  try {
+    await harness.invoke('browser.snapshot');
+    const action = harness.invoke(tool, input);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await action;
+    expect(result.error === true).toBe(!succeeds);
+    expect(dispatches > 0).toBe(succeeds);
+  } finally {
+    harness.session.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it('queries session roots while retaining in-process frame candidates and ambiguity', async () => {
+  expect.assertions(3);
+  const methods: string[] = [];
+  const node = (backendDOMNodeId: number) => ({ backendDOMNodeId, nodeId: String(backendDOMNodeId), name: { value: 'Save' }, role: { value: 'button' } });
+  const harness = toolHarness(async (command) => {
+    methods.push(command.method);
+    if (command.method === 'Page.getFrameTree') return { value: { frameTree: { frame: { id: 'root' }, childFrames: [{ frame: { id: 'child' } }] } } };
+    if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 10 } } };
+    if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 10 } } };
+    if (command.method === 'Accessibility.queryAXTree') return { value: { nodes: [node(1)] } };
+    if (command.method === 'Accessibility.getFullAXTree') return { value: { nodes: [node(2)] } };
+    return { value: { sessions: [] } };
+  });
+  try {
+    const result = await harness.invoke('browser.click', { locator: { role: 'button', name: { match: 'exact', value: 'Save' } } });
+    expect(result.text).toContain('MCP_LOCATOR_AMBIGUOUS');
+    expect(methods).toContain('Accessibility.queryAXTree');
+    expect(methods).toContain('Accessibility.getFullAXTree');
+  } finally {
+    harness.session.dispose();
+  }
 });

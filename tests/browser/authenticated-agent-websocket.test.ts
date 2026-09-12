@@ -7,6 +7,22 @@ import { createIndexedDbPairingStore } from '../../packages/extension/src/index.
 import { connectAgentWebSocket } from '../../packages/websocket/src/browser.js';
 import { agentWebSocketProtocol } from '../../packages/websocket/src/protocols.js';
 
+it('preserves the pairing key across transport changes and isolates broker identities', async () => {
+  expect.assertions(4);
+  const store = createIndexedDbPairingStore({ databaseName: `bridge-migration-${crypto.randomUUID()}` });
+  const key = await crypto.subtle.importKey('raw', crypto.getRandomValues(new Uint8Array(32)), 'HKDF', false, ['deriveKey']);
+  const pairing = { brokerId: 'original-broker', agentId: 'provider-installation', credentialId: crypto.randomUUID(), endpoint: 'ws://127.0.0.1:43210/provider', key };
+  await store.save(pairing);
+  try {
+    expect(await store.load('http://127.0.0.1:43211/')).toBeUndefined();
+    expect(await store.findByIdentity!('another-broker', pairing.agentId)).toBeUndefined();
+    expect(await store.findByIdentity!(pairing.brokerId, 'another-installation')).toBeUndefined();
+    expect(await store.findByIdentity!(pairing.brokerId, pairing.agentId)).toMatchObject({ ...pairing, key: { extractable: false, algorithm: { name: 'HKDF' } } });
+  } finally {
+    await store.remove(pairing.credentialId);
+  }
+});
+
 async function waitForAgentMessage(
   connection: { onMessage: (listener: (message: BrokerToAgentMessage) => void) => () => void },
 ): Promise<BrokerToAgentMessage> {

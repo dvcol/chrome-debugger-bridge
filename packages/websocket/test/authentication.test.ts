@@ -28,7 +28,7 @@ const transcript: AgentAuthenticationTranscript = {
 };
 
 it('binds mutual proofs to their direction and one handshake transcript', async () => {
-  expect.assertions(3);
+  expect.assertions(5);
   const credential = await importAgentCredential(new Uint8Array(32).fill(7));
   const agentProof = await createAgentAuthenticationProof(credential, transcript);
   const brokerClaims = {
@@ -37,6 +37,8 @@ it('binds mutual proofs to their direction and one handshake transcript', async 
   } as const;
 
   expect(await verifyAgentAuthenticationProof(credential, transcript, agentProof)).toBe(true);
+  expect(await verifyAgentAuthenticationProof(credential, { ...transcript, transportProtocol: 'chrome-debugger-bridge.rpc.v1' }, agentProof)).toBe(false);
+  expect(await verifyAgentAuthenticationProof(credential, { ...transcript, transportProtocol: 'chrome-debugger-bridge.agent.v1' }, agentProof)).toBe(true);
   expect(await verifyBrokerAuthenticationProof(credential, transcript, brokerClaims, agentProof)).toBe(false);
   expect(await verifyAgentAuthenticationProof(
     credential,

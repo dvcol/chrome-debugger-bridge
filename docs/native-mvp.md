@@ -16,6 +16,14 @@ Debug evaluation, raw leases, artifact tools, and network/console diagnostics re
 
 Default screenshots return MCP image content and release temporary artifacts internally. Debug sessions retain the inline-or-artifact result for explicit inspection.
 
+## Element action deadlines
+
+Element actions default to a two-second total deadline. Hosts can change `timing.defaultInputActionTimeoutMilliseconds`; callers can supply `timeoutMilliseconds` for an action that intentionally waits longer. Discovery, locator renewal, lease acquisition, readiness, dispatch and verification consume the same budget. Navigation, snapshots, explicit waits and approval retain their existing deadlines.
+
+Before input, timeout preserves the last readiness error when available. Once input may have been dispatched, timeout or cancellation returns `MCP_ACTION_OUTCOME_UNKNOWN`. Observe the control before deciding on another action; CDB never automatically replays uncertain input. A lease arriving after cancellation is released without issuing commands.
+
+For local diagnosis, subscribe to Node's `cdb.mcp.action` diagnostics channel. It reports wall-clock phase durations, CDP method durations and counts, serialized command/response sizes and readiness retry counts. It includes no DOM content or command arguments and adds nothing to normal agent responses. Artifact command sizes describe the envelope; benchmark response sizes include the returned observation. Measurements are emitted only to subscribers.
+
 ## Batches
 
 `browser.batch` runs ordered element actions on one target under one exclusive lease. The default total deadline is 30 seconds, with at most 20 actions. The first catalogue contains click, fill, type, press, check, uncheck, focus, hover and scroll-into-view. Navigation commands are excluded.
@@ -31,7 +39,9 @@ Default screenshots return MCP image content and release temporary artifacts int
 }
 ```
 
-Each step calls the same implementation as its individual tool. Success returns `completed` entries with zero-based indices and action names. `observe` adds a final compact snapshot. Failures use the standard `code`, `message`, `retryable` and `details` error envelope. `details.completed` records successful steps, `details.failedStep` identifies the failed step, and `details.uncertain:true` means input may have occurred. A final observation failure uses `details.phase: "observation"`. Cancellation, target authority replacement, or document replacement stops subsequent steps. Completed actions are not rolled back or replayed. If final observation fails, completed actions remain recorded.
+Each step calls the same implementation as its individual tool and receives the lesser of the remaining batch time and its action budget. `actionTimeoutMilliseconds` changes the per-step budget, which defaults to two seconds; the overall batch remains capped at 30 seconds. Success returns `completed` entries with zero-based indices and action names. `observe` adds a final compact snapshot. Failures use the standard `code`, `message`, `retryable` and `details` error envelope. `details.completed` records successful steps, `details.failedStep` identifies the failed step, and `details.uncertain:true` means input may have occurred. A final observation failure uses `details.phase: "observation"`. Cancellation, target authority replacement, or document replacement stops subsequent steps. Completed actions are not rolled back or replayed. If final observation fails, completed actions remain recorded.
+
+For a known sequence, send one batch with `observe: true` instead of separate action calls followed by a snapshot. This reduces agent round trips and shares one lease. Observation remains opt-in; use individual tools when the next action depends on inspecting the preceding result.
 
 ## Browser behavior and limits
 

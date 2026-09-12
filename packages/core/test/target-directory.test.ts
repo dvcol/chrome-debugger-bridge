@@ -2443,3 +2443,30 @@ it('fences automation cancellation, forbidden provider commands, replacement, an
   expect(broker.listTargets()).toEqual([{ ...target, generation: 2 }]);
   expect(() => broker.unregisterAutomationProvider(agentAuthority)).not.toThrow();
 });
+
+it('disposes the client binding when a late reply cannot be delivered', async () => {
+  expect.assertions(2);
+  const broker = createTargetBroker();
+  const disconnected = vi.spyOn(broker, 'disconnectClient');
+  let listener: ((message: ClientToBrokerMessage) => void) | undefined;
+  const disconnect = connectClientTargetBroker({
+    onMessage(received) {
+      listener = received;
+      return () => {
+        listener = undefined;
+      };
+    },
+    async send(message) {
+      if (message.kind !== 'notification') throw new Error('The client transport closed before its reply.');
+    },
+  }, broker);
+  try {
+    listener!({ kind: 'request', method: 'targets.list', parameters: {}, protocolVersion: 1, requestId: '70000000-0000-4000-8000-000000000099' });
+    await vi.waitUntil(() => disconnected.mock.calls.length > 0);
+    expect(disconnected).toHaveBeenCalledOnce();
+    expect(listener).toBeUndefined();
+  } finally {
+    disconnect();
+    broker.dispose();
+  }
+});

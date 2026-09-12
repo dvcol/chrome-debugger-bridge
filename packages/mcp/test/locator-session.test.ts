@@ -347,6 +347,7 @@ it('supports the core Playwright-style locator strategies and XPath through DOM 
       if (command.method === 'Bridge.listChildSessions') return { value: { sessions: [] } };
       if (command.method === 'Accessibility.queryAXTree' || command.method === 'Accessibility.getFullAXTree')
         return { value: { nodes: [{ backendDOMNodeId: 7, childIds: [], ignored: false, name: { value: 'Save' }, nodeId: 'save', role: { value: 'button' } }] } };
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
       if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
       if (command.method === 'DOM.getFlattenedDocument')
         return { value: { nodes: [{ nodeId: 1, nodeType: 9, backendNodeId: 1, children: [{ nodeId: 70, backendNodeId: 7, nodeName: 'BUTTON', attributes: ['placeholder', 'Search', 'alt', 'Hero', 'title', 'Save title', 'data-testid', 'save'] }], shadowRoots: [{ nodeId: 2, shadowRootType: 'open' }, { nodeId: 3, shadowRootType: 'closed' }] }] } };
@@ -409,6 +410,7 @@ it('scopes locators through an OOPIF frame chain', async () => {
       commands.push(command);
       if (command.method === 'Bridge.listChildSessions')
         return { value: { sessions: [{ frameId: 'frame-target', generation: 1, id: childSessionId, type: 'iframe' }] } };
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
       if (command.method === 'DOM.getDocument')
         return { value: { root: { backendNodeId: command.sessionId === undefined ? 1 : 2 } } };
       if (command.method === 'Accessibility.queryAXTree' && command.sessionId === undefined)
@@ -455,6 +457,7 @@ it('scopes locators through a same-process iframe document', async () => {
     async cancelCommand() {},
     async executeCommand(command: CdpCommand) {
       if (command.method === 'Bridge.listChildSessions') return { value: { sessions: [] } };
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
       if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
       if (command.method === 'Accessibility.queryAXTree') {
         accessibilityTreeCalls += 1;
@@ -501,6 +504,7 @@ it('applies descendant, has-text, exclusion, and nth filters against DOM ancestr
     },
     async cancelCommand() {},
     async executeCommand(command: CdpCommand) {
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
       if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
       if (command.method === 'Accessibility.queryAXTree')
         return {
@@ -573,6 +577,7 @@ it('re-resolves a locator once when authority renews before input dispatch', asy
     async cancelCommand() {},
     async executeCommand(command: CdpCommand) {
       commands.push(command);
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
       if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
       if (command.method === 'Accessibility.queryAXTree' && !staleThrown) {
         staleThrown = true;
@@ -620,6 +625,7 @@ it('never replays a locator action after pointer input may have dispatched', asy
     async cancelCommand() {},
     async executeCommand(command: CdpCommand) {
       if (command.method === 'Bridge.listChildSessions') return { value: { sessions: [] } };
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
       if (command.method === 'DOM.getDocument') return { value: { root: { backendNodeId: 1 } } };
       if (command.method === 'Accessibility.queryAXTree')
         return { value: { nodes: [{ backendDOMNodeId: 7, childIds: [], ignored: false, name: { value: 'Save' }, nodeId: 'save', role: { value: 'button' } }] } };
@@ -653,4 +659,48 @@ it('never replays a locator action after pointer input may have dispatched', asy
   expect(result.isError).toBe(true);
   expect(JSON.parse(text(result))).toMatchObject({ code: 'MCP_ACTION_OUTCOME_UNKNOWN' });
   expect(pointerCommands.map(command => command.parameters?.type)).toEqual(['mouseMoved', 'mousePressed']);
+});
+
+it('bounds concurrent frame discovery and waits for every match before deciding ambiguity', async () => {
+  expect.assertions(4);
+  const releaseQueries = Promise.withResolvers<void>();
+  let queries = 0;
+  let inputs = 0;
+  const childSessions = Array.from({ length: 8 }, (_unused, index) => ({ id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`, generation: 1, type: 'iframe' }));
+  const client = {
+    async acquireLease(request: { readonly requestedMethods: readonly string[] }) {
+      return lease(request.requestedMethods);
+    },
+    async cancelCommand() {},
+    async executeCommand(command: CdpCommand) {
+      if (command.method.startsWith('Input.')) inputs += 1;
+      if (command.method === 'Bridge.listChildSessions') return { value: { sessions: childSessions } };
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
+      if (command.method === 'Accessibility.queryAXTree') {
+        queries += 1;
+        await releaseQueries.promise;
+        return { value: { nodes: [{ backendDOMNodeId: 20, childIds: [], ignored: false, name: { value: 'Save' }, nodeId: 'save', role: { value: 'button' } }] } };
+      }
+      return { value: {} };
+    },
+    async listTargets() {
+      return [target];
+    },
+    async releaseLease() {},
+  } as unknown as McpChromeDebuggerBridgeClient;
+  const session = createCdbToolSession({ client });
+  const targetRef = session.projectTarget(target)?.targetRef;
+  const click = session.definitions.find(definition => definition.name === 'browser.click');
+  if (targetRef === undefined || click === undefined) throw new Error('browser.click is missing.');
+  const result = click.invoke({ targetRef, locator: { role: 'button', name: { match: 'exact', value: 'Save' } }, timeoutMilliseconds: 10_000 });
+  try {
+    await expect.poll(() => queries).toBe(4);
+    expect(inputs).toBe(0);
+    releaseQueries.resolve();
+    expect(text(await result)).toContain('MCP_LOCATOR_AMBIGUOUS');
+    expect(queries).toBe(9);
+  } finally {
+    releaseQueries.resolve();
+    await result;
+  }
 });

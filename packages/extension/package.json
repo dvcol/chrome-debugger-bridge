@@ -39,6 +39,14 @@
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
+    },
+    "./chrome": {
+      "types": "./dist/chrome.d.ts",
+      "import": "./dist/chrome.js"
+    },
+    "./notifications": {
+      "types": "./dist/notifications.d.ts",
+      "import": "./dist/notifications.js"
     }
   },
   "files": [
@@ -54,7 +62,8 @@
     "typecheck": "tsc --noEmit --project tsconfig.json"
   },
   "dependencies": {
-    "@dvcol/cdb": "workspace:^"
+    "@dvcol/cdb": "workspace:^",
+    "@dvcol/cdb-broker": "workspace:^"
   },
   "publishConfig": {
     "access": "public"

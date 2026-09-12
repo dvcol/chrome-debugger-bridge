@@ -1,17 +1,20 @@
 import type { NativeMcpHarness } from './fixtures/native-mcp-harness.js';
 
 import { writeFile } from 'node:fs/promises';
-import { cpus } from 'node:os';
+import { cpus, loadavg } from 'node:os';
 import { styleText } from 'node:util';
 
 import { afterEach, expect, it } from 'vitest';
 
 import { deepDomProfiles } from './fixtures/deep-dom-page.js';
 import { createNativeMcpHarness, toolText } from './fixtures/native-mcp-harness.js';
+import { benchmarkAgentWorkflow } from './fixtures/workflow-benchmark.js';
 
 interface CallMeasurement {
   readonly argumentCharacters: number;
   readonly artifactBytes: number;
+  readonly artifactReadMilliseconds: number;
+  readonly commands: readonly { readonly method: string; readonly durationMilliseconds: number }[];
   readonly commandCount: number;
   readonly commandRequestCharacters: number;
   readonly commandResponseCharacters: number;
@@ -40,18 +43,38 @@ it.runIf(process.env.CDB_NATIVE_BENCHMARK === '1')('measures the public native a
   const mcpModule = process.env.CDB_MCP_BASELINE_MODULE;
   harness = await createNativeMcpHarness({ ...(mcpModule === undefined ? {} : { mcpModule }), profile });
   const activeHarness = harness;
+  const worker = activeHarness.context.serviceWorkers()[0]!;
+  await worker.evaluate(() => {
+    const workerGlobal = globalThis as unknown as {
+      chrome: { debugger: { sendCommand: (...parameters: unknown[]) => Promise<unknown> } };
+      debuggerCommandMeasurements: Array<{ readonly method: string; readonly durationMilliseconds: number }>;
+    };
+    workerGlobal.debuggerCommandMeasurements = [];
+    const sendCommand = workerGlobal.chrome.debugger.sendCommand.bind(workerGlobal.chrome.debugger);
+    workerGlobal.chrome.debugger.sendCommand = async (...parameters) => {
+      const startedAt = performance.now();
+      const result = await sendCommand(...parameters);
+      workerGlobal.debuggerCommandMeasurements.push({ method: String(parameters[1]), durationMilliseconds: performance.now() - startedAt });
+      return result;
+    };
+  });
   const measurements: CallMeasurement[] = [];
-  const commandMeasurements: Array<{ readonly method: string; readonly requestCharacters: number; readonly responseCharacters: number }> = [];
+  const initialLoad = loadavg();
+  const commandMeasurements: Array<{ readonly method: string; readonly durationMilliseconds: number; readonly requestCharacters: number; readonly responseCharacters: number }> = [];
   let artifactBytes = 0;
+  let artifactReadMilliseconds = 0;
   const executeCommand = activeHarness.client.executeCommand.bind(activeHarness.client);
   activeHarness.client.executeCommand = async (command) => {
+    const startedAt = performance.now();
     const result = await executeCommand(command);
-    commandMeasurements.push({ method: command.method, requestCharacters: JSON.stringify(command).length, responseCharacters: JSON.stringify(result).length });
+    commandMeasurements.push({ method: command.method, durationMilliseconds: performance.now() - startedAt, requestCharacters: JSON.stringify(command).length, responseCharacters: JSON.stringify(result).length });
     return result;
   };
   const readArtifact = activeHarness.client.readArtifact.bind(activeHarness.client);
   activeHarness.client.readArtifact = async (request, signal) => {
+    const startedAt = performance.now();
     const result = await readArtifact(request, signal);
+    artifactReadMilliseconds += performance.now() - startedAt;
     artifactBytes += result.byteLength;
     return result;
   };
@@ -62,10 +85,13 @@ it.runIf(process.env.CDB_NATIVE_BENCHMARK === '1')('measures the public native a
     const startedAt = performance.now();
     const commandStart = commandMeasurements.length;
     const artifactStart = artifactBytes;
+    const artifactReadStart = artifactReadMilliseconds;
     const result = await activeHarness.mcpClient.callTool({ arguments: toolArguments, name });
     if (include) measurements.push({
       argumentCharacters: JSON.stringify(toolArguments).length,
       artifactBytes: artifactBytes - artifactStart,
+      artifactReadMilliseconds: artifactReadMilliseconds - artifactReadStart,
+      commands: commandMeasurements.slice(commandStart).map(({ method, durationMilliseconds }) => ({ method, durationMilliseconds })),
       commandCount: commandMeasurements.length - commandStart,
       commandRequestCharacters: commandMeasurements.slice(commandStart).reduce((total, command) => total + command.requestCharacters, 0),
       commandResponseCharacters: commandMeasurements.slice(commandStart).reduce((total, command) => total + command.responseCharacters, 0),
@@ -111,6 +137,7 @@ it.runIf(process.env.CDB_NATIVE_BENCHMARK === '1')('measures the public native a
   const snapshot95 = snapshots.length === 0 ? null : percentile95(snapshots.map(measurement => measurement.durationMilliseconds));
   const lastCompletedWorkflow = measurements.flatMap((measurement, index) => measurement.name === 'browser.click' && !measurement.error && index >= 2 ? [measurements.slice(index - 2, index + 1)] : []).at(-1);
   const workflowTokenEstimate = lastCompletedWorkflow === undefined ? null : Math.ceil(lastCompletedWorkflow.reduce((total, measurement) => total + measurement.argumentCharacters + measurement.responseCharacters, 0) / 4);
+  const debuggerCommandMeasurements = await worker.evaluate(() => (globalThis as typeof globalThis & { debuggerCommandMeasurements: Array<{ readonly method: string; readonly durationMilliseconds: number }> }).debuggerCommandMeasurements);
   await activeHarness.close();
   harness = await createNativeMcpHarness({ profile, shadow: 'open' });
   const referenceDurations: number[] = [];
@@ -130,13 +157,14 @@ it.runIf(process.env.CDB_NATIVE_BENCHMARK === '1')('measures the public native a
   const report = {
     budgets: { nativeActionP95Milliseconds: 500, nativeSnapshotP95Milliseconds: 1_000 },
     chromiumVersion,
-    environment: { architecture: process.arch, nodeVersion: process.version, operatingSystem: process.platform, processorModel: cpus()[0]?.model, processors: cpus().length },
+    environment: { architecture: process.arch, nodeVersion: process.version, operatingSystem: process.platform, processorModel: cpus()[0]?.model, processors: cpus().length, initialLoad, finalLoad: loadavg() },
     fixture: deepDomProfiles[profile],
     measuredAt: new Date().toISOString(),
     modelExcluded: true,
     native: {
       actionP95Milliseconds: action95,
       errors: measurements.filter(measurement => measurement.error).length,
+      debuggerCommandMeasurements,
       initialSnapshotIncludesDeepControls: toolText(initialSnapshot).includes('Save deep value'),
       initialSnapshotDurationMilliseconds,
       measurements,
@@ -168,3 +196,10 @@ it.runIf(process.env.CDB_NATIVE_BENCHMARK === '1')('measures the public native a
   expect(process.env.CDB_NATIVE_PERFORMANCE_GATE === '1' ? action95 ?? Infinity : 0).toBeLessThanOrEqual(500);
   expect(process.env.CDB_NATIVE_PERFORMANCE_GATE === '1' ? snapshot95 ?? Infinity : 0).toBeLessThanOrEqual(1_000);
 }, 180_000);
+
+it.runIf(process.env.CDB_WEBSOCKET_BENCHMARK_OUTPUT !== undefined)('measures the same workflow over the WebSocket provider transport', async () => {
+  expect.assertions(1);
+  harness = await createNativeMcpHarness({ profile: 'normal', frames: 'cross-origin', shadow: 'closed' });
+  await benchmarkAgentWorkflow(harness.mcpClient, harness.context.browser()?.version() ?? 'unavailable', harness.page, 'websocket');
+  expect(await harness.page.getByRole('status').textContent()).toBe('Saved: Benchmark value');
+}, 600_000);

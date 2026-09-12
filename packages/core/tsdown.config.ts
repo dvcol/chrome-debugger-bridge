@@ -11,6 +11,7 @@ export default defineConfig({
     'src/index.ts',
     'src/agent.ts',
     'src/authority.ts',
+    'src/authentication.ts',
     'src/automation.ts',
     'src/broker.ts',
     'src/cdp-catalogue.ts',

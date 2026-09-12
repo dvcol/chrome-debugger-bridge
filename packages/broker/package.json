@@ -1,0 +1,62 @@
+{
+  "name": "@dvcol/cdb-broker",
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Composed CDB broker, authenticated provider lifecycle, and agent tool sessions.",
+  "author": "dvcol",
+  "license": "MIT",
+  "homepage": "https://github.com/dvcol/chrome-debugger-bridge#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dvcol/chrome-debugger-bridge.git",
+    "directory": "packages/broker"
+  },
+  "bugs": {
+    "url": "https://github.com/dvcol/chrome-debugger-bridge/issues"
+  },
+  "keywords": [
+    "chrome",
+    "chrome-debugger",
+    "cdp",
+    "browser-automation",
+    "mcp",
+    "agent"
+  ],
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./contract": {
+      "types": "./dist/contract.d.mts",
+      "import": "./dist/contract.mjs"
+    }
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "check:package": "publint",
+    "pack": "pnpm pack --out artifacts/package.tgz",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit --project tsconfig.json"
+  },
+  "dependencies": {
+    "@dvcol/cdb": "workspace:^",
+    "@dvcol/cdb-mcp": "workspace:^"
+  },
+  "devDependencies": {
+    "tsdown": "catalog:build",
+    "vitest": "catalog:testing"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

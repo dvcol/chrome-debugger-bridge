@@ -4,11 +4,15 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "smoke": "node smoke.ts"
+    "smoke": "node smoke.ts",
+    "start": "node host.ts",
+    "build:extension": "node extension/build.ts"
   },
   "dependencies": {
-    "@dvcol/cdb": "workspace:*",
-    "@modelcontextprotocol/client": "catalog:",
+    "@dvcol/cdb-broker": "workspace:*",
+    "@dvcol/cdb-devframe": "workspace:*",
+    "@dvcol/cdb-extension": "workspace:*",
+    "@modelcontextprotocol/server": "catalog:",
     "@vitejs/devtools-kit": "catalog:devtools",
     "devframe": "catalog:devtools",
     "vite": "catalog:devtools"

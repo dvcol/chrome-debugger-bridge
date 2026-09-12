@@ -367,11 +367,16 @@ function createBrokerClientConnection(
   webSocket: WebSocket,
 ): AuthenticatedConnection<ClientToBrokerMessage, BrokerToClientMessage> {
   const listeners = new Set<ConnectionListener<ClientToBrokerMessage>>();
+  const listenerReady = Promise.withResolvers<void>();
   const closed = createClosedPromise(webSocket);
   let pendingMessages = 0;
   let pendingReceive = Promise.resolve();
   let receiveFailed = false;
-  webSocket.once('close', () => listeners.clear());
+  webSocket.once('close', () => {
+    receiveFailed = true;
+    listeners.clear();
+    listenerReady.resolve();
+  });
   webSocket.on('message', (data, isBinary) => {
     if (receiveFailed) {
       return;
@@ -396,6 +401,9 @@ function createBrokerClientConnection(
       if ('issues' in result) {
         throw new Error('Invalid client-plane message');
       }
+      /** Hosts may await session storage before attaching their first listener. */
+      await listenerReady.promise;
+      if (receiveFailed) return;
       for (const listener of listeners) {
         listener(result.value);
       }
@@ -411,6 +419,7 @@ function createBrokerClientConnection(
     },
     onMessage(listener) {
       listeners.add(listener);
+      listenerReady.resolve();
       return () => listeners.delete(listener);
     },
     async send(message) {

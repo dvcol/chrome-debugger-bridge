@@ -3,6 +3,8 @@ import type { CapabilityGrant, JsonValue } from './protocol.js';
 export interface AuthorityBinding {
   readonly bindingId: string;
   readonly capabilities: CapabilityGrant;
+  /** Opaque host annotations; never interpreted as authority. */
+  readonly metadata?: JsonValue;
   readonly expiresAt?: string | null;
   readonly targetGeneration: number;
   readonly targetId: string;

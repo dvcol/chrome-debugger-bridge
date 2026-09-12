@@ -9,6 +9,8 @@ export default defineConfig({
   },
   entry: [
     'src/index.ts',
+    'src/chrome.ts',
+    'src/notifications.ts',
     'src/bootstrap.ts',
     'src/presentation.ts',
     'src/testing.ts',

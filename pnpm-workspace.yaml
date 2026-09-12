@@ -13,6 +13,11 @@ packages:
   - packages/*
   - examples/*
   - tests/fixtures/*
+overrides:
+  '@vitejs/devtools-kit>@devframes/hub': 0.9.10
+  '@vitejs/devtools-kit>@devframes/json-render': 0.9.10
+patchedDependencies:
+  '@devframes/hub-ui@0.9.10': patches/@devframes__hub-ui@0.9.10.patch
 catalog:
   '@modelcontextprotocol/client': 2.0.0
   '@modelcontextprotocol/node': 2.0.0
@@ -34,9 +39,13 @@ catalogs:
     tsdown: 0.22.14
     turbo: 2.10.8
   devtools:
-    '@vitejs/devtools-kit': 0.4.12
-    devframe: 0.8.2
-    vite: 8.2.0
+    '@devframes/hub': 0.9.10
+    '@devframes/hub-ui': 0.9.10
+    '@devframes/json-render': 0.9.10
+    '@devframes/json-render-ui': 0.9.10
+    '@vitejs/devtools-kit': 0.6.1
+    devframe: 0.9.10
+    vite: 8.1.5
   protocol:
     '@standard-schema/spec': 1.1.0
     devtools-protocol: 0.0.1672245

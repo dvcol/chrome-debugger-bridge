@@ -47,3 +47,14 @@ The [30-iteration report](measurements/native-normal-chromium-151.json) records 
 The [preserved MCP baseline](measurements/mcp-baseline-811909f.json), revision `811909f17b83fda8ca198acd0cb96573cf205ab1`, exposed 371,342 catalogue characters (approximately 92,836 tokens). Its snapshot omitted the deep controls and its warmup workflow failed; there is no successful baseline action distribution to compare. The current catalogue is 82.3% smaller by serialized character count. These reports preserve measured values, not portable performance guarantees.
 
 These isolated Chromium results do not establish behavior in a user's main Chrome profile. That requires the same public workflow with the extension installed and the intended tab/window scope approved in that profile.
+
+
+### Aligned transport and lifecycle diagnostics
+
+Run **Browser diagnostics** manually in GitHub Actions on the desired branch or tag. It builds once, then measures WebSocket, Devframe and lifecycle scenarios sequentially with one worker. Failed suites do not skip the remaining suites. Full measurements and opt-in phase/command diagnostics go to the logs; the job summary includes completed sample counts and p95 values. No artifacts are uploaded or committed.
+
+Both transports use the same normal closed-shadow fixture with three cross-origin frame levels, five warm-ups and 30 samples for each reference/locator scenario. Fill, click, snapshot, batch with observation, individual workflows and blocked clicks are reported separately. Action p95 must be at most 500 ms and snapshot p95 at most 1,000 ms. Partial runs remain incomplete even when their available samples meet a latency target. The lifecycle suite requires all 120 scenarios across 30 cycles of navigation, reconnect, cancellation and revocation.
+
+Linux CI measurements establish a separate baseline from the historical macOS reports. Compare matching browser versions, fixtures and runner environments. Browser scheduling and transport overhead remain included; model time and application loading are excluded. Failed performance gates and unexplained stalls remain follow-ups for the experimental release.
+
+For a targeted diagnostic outside CI, the shared runner accepts `CDB_WORKFLOW_BENCHMARK_SAMPLES` from 5 to 50 and `CDB_WORKFLOW_PERFORMANCE_GATE=1`. Enable either `CDB_WEBSOCKET_BENCHMARK_OUTPUT` for `native-agent-benchmark.test.ts` or `CDB_DEVFRAME_BENCHMARK_OUTPUT` for `devframe-native.test.ts`. Enable `CDB_LIFECYCLE_DIAGNOSTICS_OUTPUT` separately for the latter's lifecycle matrix. Output paths are JSON files; do not commit generated measurements.

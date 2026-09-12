@@ -79,7 +79,7 @@ export interface SelectedTabPublisher {
   setSubscriptionDemand: (methodPrefix: string, active: boolean, sessionId?: string) => Promise<void>;
   revoke: (reason?: 'closed' | 'detached' | 'explicit' | 'policy-invalid') => Promise<void>;
   tabClosed: (tabId: number) => Promise<void>;
-  debuggerDetached: (tabId: number) => Promise<void>;
+  debuggerDetached: (tabId: number, options?: { readonly recover?: boolean }) => Promise<void>;
 }
 
 const domainNamePattern = /^[A-Za-z]+$/u;
@@ -165,13 +165,13 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       && eligibleChildTargetTypes.has(targetInfo.type);
   }
 
-  function handleAttachedChild(parameters: JsonObject): PublicChildSession | undefined {
+  function handleAttachedChild(parameters: JsonObject, parentChromeSessionId?: string): PublicChildSession | undefined {
     if (!isEligibleChildAttachment(parameters)) return undefined;
     const childSession = childSessionRouter.attach(parameters.sessionId, {
       ...(typeof parameters.targetInfo.targetId === 'string' ? { frameId: parameters.targetInfo.targetId } : {}),
       type: parameters.targetInfo.type,
       ...(typeof parameters.targetInfo.url === 'string' ? { url: parameters.targetInfo.url } : {}),
-    });
+    }, parentChromeSessionId);
     void (async () => {
       await configureFlatSessions(parameters.sessionId);
       await enableActiveRootDomains(parameters.sessionId);
@@ -203,7 +203,8 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     if (method !== 'Page.frameNavigated') return;
     const frame = parameters.frame;
     if (frame === null || typeof frame !== 'object' || Array.isArray(frame) || frame.parentId !== undefined) return;
-    childSessionRouter.revoke();
+    /** Chrome may attach the new document's frames before delivering root navigation. */
+    childSessionRouter.renew();
     activeChildSubscriptionDemands.clear();
   }
 
@@ -354,7 +355,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       ...priorTarget,
       generation: priorTarget.generation + 1,
     };
-    childSessionRouter.revoke();
+    childSessionRouter.renew();
     activeRootSubscriptionDomains.clear();
     activeRootSubscriptionDemands.clear();
     activeChildSubscriptionDemands.clear();
@@ -382,7 +383,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     debuggerEvent(source, method, parameters) {
       if (source.tabId !== undefined && source.tabId !== selectedTabId) return;
       if (method === 'Target.attachedToTarget') {
-        const childSession = handleAttachedChild(parameters);
+        const childSession = handleAttachedChild(parameters, source.sessionId);
         if (childSession !== undefined && isEligibleChildAttachment(parameters)) {
           publishEvent('Bridge.childSessionAttached', { type: parameters.targetInfo.type }, childSession.id);
         }
@@ -480,8 +481,28 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     async tabClosed(tabId) {
       if (tabId === selectedTabId) await revoke('closed');
     },
-    async debuggerDetached(tabId) {
-      if (tabId === selectedTabId) await revoke('detached');
+    async debuggerDetached(tabId, recovery) {
+      if (tabId !== selectedTabId || publishedTarget === undefined) return;
+      if (recovery?.recover !== true) return revoke('detached');
+      const renewedTarget = { ...publishedTarget, generation: publishedTarget.generation + 1 };
+      publicationReady = false;
+      pendingEvents.length = 0;
+      childSessionRouter.revoke();
+      activeRootSubscriptionDomains.clear();
+      activeRootSubscriptionDemands.clear();
+      activeChildSubscriptionDemands.clear();
+      try {
+        await options.revokeTarget(publishedTarget, 'explicit');
+        await options.chromeDebugger.attach({ tabId }, '1.3');
+        publishedTarget = renewedTarget;
+        await configureFlatSessions();
+        await options.publishTarget(renewedTarget);
+        finishPublication();
+        options.registerTargetExecutor?.(renewedTarget, { execute: executeCommand, setSubscriptionDemand });
+      } catch (error) {
+        await revoke('detached');
+        throw error;
+      }
     },
     executeCommand,
     detachChildSession(chromeSessionId) {

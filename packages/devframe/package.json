@@ -1,0 +1,76 @@
+{
+  "name": "@dvcol/cdb-devframe",
+  "type": "module",
+  "version": "0.1.0",
+  "description": "CDB services, provider transport, and browser-control panels for Devframe hosts.",
+  "author": "dvcol",
+  "license": "MIT",
+  "homepage": "https://github.com/dvcol/chrome-debugger-bridge#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dvcol/chrome-debugger-bridge.git",
+    "directory": "packages/devframe"
+  },
+  "bugs": {
+    "url": "https://github.com/dvcol/chrome-debugger-bridge/issues"
+  },
+  "keywords": [
+    "chrome",
+    "chrome-debugger",
+    "cdp",
+    "browser-automation",
+    "mcp",
+    "agent"
+  ],
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./client": {
+      "types": "./dist/client.d.mts",
+      "import": "./dist/client.mjs"
+    },
+    "./panel": {
+      "types": "./dist/panel.d.mts",
+      "import": "./dist/panel.mjs"
+    },
+    "./page-script": {
+      "types": "./dist/page-script.d.mts",
+      "import": "./dist/page-script.mjs"
+    }
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "tsdown && vite build",
+    "check:package": "publint",
+    "pack": "pnpm pack --out artifacts/package.tgz",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit --project tsconfig.json"
+  },
+  "dependencies": {
+    "@devframes/hub": "catalog:devtools",
+    "@devframes/json-render": "catalog:devtools",
+    "@devframes/json-render-ui": "catalog:devtools",
+    "@dvcol/cdb": "workspace:^",
+    "@dvcol/cdb-broker": "workspace:^",
+    "@dvcol/cdb-extension": "workspace:^",
+    "devframe": "catalog:devtools"
+  },
+  "devDependencies": {
+    "tsdown": "catalog:build",
+    "vite": "catalog:devtools",
+    "vitest": "catalog:testing"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

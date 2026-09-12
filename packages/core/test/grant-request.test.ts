@@ -134,6 +134,30 @@ it('reconciles an approved live scope while preserving other grants and unchange
   await coordinator.dispose();
 });
 
+it('revokes the replacement generation when renewal is already committing', async () => {
+  expect.assertions(4);
+  const { authorityStore, coordinator, targets } = setup();
+  const request = await coordinator.request({ capabilities: { level: 'interact' }, logicalSessionId: 'session', principalId: 'client' });
+  const initial = await coordinator.complete(coordinator.claim(request.id, provider), [{ targetGeneration: 1, targetId: target.id }]);
+  targets.set(target.id, { providerPrincipalId: provider.principalId, target: { ...target, generation: 2 } });
+  const acknowledgement = Promise.withResolvers<void>();
+  const update = authorityStore.update.bind(authorityStore);
+  vi.spyOn(authorityStore, 'update').mockImplementationOnce(async (...parameters) => {
+    const committed = await update(...parameters);
+    await acknowledgement.promise;
+    return committed;
+  });
+  const renewal = coordinator.reconcile(request.id, provider, [{ targetGeneration: 2, targetId: target.id }]);
+  const revocation = coordinator.revokeBindings(request.id, [initial[0]!.bindingId]);
+  acknowledgement.resolve();
+  const [renewed] = await Promise.all([renewal, revocation]);
+  expect(renewed[0]?.bindingId).not.toBe(initial[0]?.bindingId);
+  expect((await authorityStore.get('session'))?.bindings).toEqual([unrelatedBinding]);
+  expect(await coordinator.reconcile(request.id, provider, [{ targetGeneration: 2, targetId: target.id }])).toEqual([]);
+  expect(coordinator.inspect()[0]?.bindings).toEqual([]);
+  await coordinator.dispose();
+});
+
 it('revokes an authority commit cancelled while its store acknowledgement is pending', async () => {
   expect.assertions(4);
   const { authorityStore, coordinator } = setup();
@@ -378,6 +402,50 @@ it('expires a pending request when its binding deadline arrives before its appro
   const request = await coordinator.request({ bindingExpiresAt: new Date(1_000).toISOString(), capabilities: { level: 'interact' }, expiresAt: new Date(2_000).toISOString(), logicalSessionId: 'session', principalId: 'client' });
   expect(() => coordinator.claim(request.id, provider)).toThrow(expect.objectContaining({ code: 'GRANT_REQUEST_EXPIRED' }));
   await vi.advanceTimersByTimeAsync(0);
+  expect(coordinator.getRequest(request.id)).toBeUndefined();
+  await coordinator.dispose();
+});
+
+it('projects committed request metadata without claim secrets and revokes bindings while the provider is offline', async () => {
+  expect.assertions(5);
+  const { authorityStore, coordinator, providerGenerations } = setup();
+  const request = await coordinator.request({ capabilities: { level: 'interact' }, logicalSessionId: 'session', principalId: 'client', metadata: { selection: 'live-scope' } });
+  const claim = coordinator.claim(request.id, provider);
+  const bindings = await coordinator.complete(claim, [{ targetId: target.id, targetGeneration: 1, metadata: { approvedOrigin: 'https://example.test' } }]);
+  const view = coordinator.inspect();
+  expect(view[0]?.request.metadata).toEqual({ selection: 'live-scope' });
+  expect(view[0]?.bindings[0]?.metadata).toEqual({ approvedOrigin: 'https://example.test' });
+  expect(JSON.stringify(view)).not.toContain(claim.id);
+  providerGenerations.delete(provider.principalId);
+  await coordinator.revokeBindings(request.id, [bindings[0]!.bindingId, unrelatedBinding.bindingId]);
+  expect((await authorityStore.get('session'))?.bindings).toEqual([unrelatedBinding]);
+  expect(coordinator.inspect()[0]?.bindings).toEqual([]);
+  await coordinator.dispose();
+});
+
+it('publishes the first cancellation reason once and fences a racing approval', async () => {
+  expect.assertions(3);
+  const { coordinator } = setup();
+  const request = await coordinator.request({ capabilities: { level: 'interact' }, logicalSessionId: 'session', principalId: 'client' });
+  const claim = coordinator.claim(request.id, provider);
+  const changed = vi.fn();
+  coordinator.subscribe(changed);
+  await Promise.all([coordinator.cancel(request.id, 'rejected'), coordinator.cancel(request.id, 'expired')]);
+  expect(changed).toHaveBeenCalledExactlyOnceWith({ requestId: request.id, reason: 'rejected' });
+  await expect(coordinator.complete(claim, [{ targetGeneration: 1, targetId: target.id }])).rejects.toMatchObject({ code: 'GRANT_CLAIM_INVALID' });
+  expect(coordinator.getRequest(request.id)).toBeUndefined();
+  await coordinator.dispose();
+});
+
+it('publishes expiry separately from ordinary cancellation', async () => {
+  expect.assertions(2);
+  vi.useFakeTimers();
+  const { coordinator } = setup();
+  const request = await coordinator.request({ capabilities: { level: 'interact' }, expiresAt: new Date(Date.now() + 100).toISOString(), logicalSessionId: 'session', principalId: 'client' });
+  const changed = vi.fn();
+  coordinator.subscribe(changed);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(changed).toHaveBeenCalledExactlyOnceWith({ requestId: request.id, reason: 'expired' });
   expect(coordinator.getRequest(request.id)).toBeUndefined();
   await coordinator.dispose();
 });

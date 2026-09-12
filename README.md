@@ -104,6 +104,8 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the protocol and failure model. See
 | ---------------------- | ---------------------------------------------------------------------------------------- |
 | `@dvcol/cdb`           | Broker, client facade, protocol types, target authorization, leases, and command routing |
 | `@dvcol/cdb-birpc`     | RPC transport adapter                                                                    |
+| `@dvcol/cdb-broker`    | Shared pairing, grant, recovery and per-principal tool orchestration for hosts             |
+| `@dvcol/cdb-devframe`  | Devframe service, shared provider RPC transport, and mountable browser-control panel       |
 | `@dvcol/cdb-extension` | Browser-extension helpers for publication, recovery, and opt-in control presentation |
 | `@dvcol/cdb-mcp`       | Principal-scoped semantic and raw MCP tool sessions over a CDB client                    |
 | `@dvcol/cdb-automation-playwright` | Experimental Playwright semantic provider over a broker-authorized CDB executor |

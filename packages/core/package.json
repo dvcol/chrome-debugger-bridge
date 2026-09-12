@@ -76,6 +76,10 @@
     "./timing": {
       "types": "./dist/timing.d.ts",
       "import": "./dist/timing.js"
+    },
+    "./authentication": {
+      "types": "./dist/authentication.d.ts",
+      "import": "./dist/authentication.js"
     }
   },
   "files": [

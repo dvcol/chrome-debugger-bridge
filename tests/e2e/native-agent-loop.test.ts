@@ -98,6 +98,7 @@ it.each(['css', 'accessible-name'] as const)('batches native $0 fill and click w
       { action: 'click', locator: strategy === 'css' ? { css: 'button#deep-save', frameChain } : { role: 'button', name: { match: 'exact', value: 'Save deep value' } } },
     ],
     observe: true,
+    actionTimeoutMilliseconds: 10_000,
     targetRef: harness.targetRef,
   }, name: 'browser.batch' });
   expect(result.isError, toolText(result)).toBeUndefined();
@@ -117,7 +118,8 @@ it('stops an active native batch when its target is revoked', async () => {
       { action: 'click', locator: { css: 'button#toggle-overlay' } },
     ],
     targetRef: harness.targetRef,
-    timeoutMilliseconds: 5_000,
+    timeoutMilliseconds: 15_000,
+    actionTimeoutMilliseconds: 10_000,
   }, name: 'browser.batch' });
   await harness.page.getByRole('button', { name: 'Save replacement', exact: true }).waitFor({ state: 'attached' });
   await harness.revoke();
@@ -137,7 +139,8 @@ it('stops a native batch when a click replaces the root document', async () => {
       { action: 'click', locator: { css: 'button#prepare-replacement' } },
     ],
     targetRef: harness.targetRef,
-    timeoutMilliseconds: 5_000,
+    timeoutMilliseconds: 15_000,
+    actionTimeoutMilliseconds: 10_000,
   }, name: 'browser.batch' });
   await harness.page.waitForURL(url => url.searchParams.get('revision') === '1');
   const output = JSON.parse(toolText(result)) as { readonly details: { readonly completed: readonly { readonly index: number }[] } };
@@ -172,9 +175,9 @@ it.each([
   const snapshot = await harness.mcpClient.callTool({ arguments: { targetRef: harness.targetRef }, name: 'browser.snapshot' });
   const elementReference = (action === 'click' ? /button "Save deep value"[^\n]*\[ref=(e\d+)\]/u : /textbox "Deep value"[^\n]*\[ref=(e\d+)\]/u).exec(toolText(snapshot))?.[1];
   if (elementReference === undefined) throw new Error('The nested control has no snapshot reference.');
-  const cover = await harness.mcpClient.callTool({ arguments: { locator: { css: 'button#toggle-overlay' }, targetRef: harness.targetRef }, name: 'browser.click' });
+  const cover = await harness.mcpClient.callTool({ arguments: { locator: { css: 'button#toggle-overlay' }, targetRef: harness.targetRef, timeoutMilliseconds: 10_000 }, name: 'browser.click' });
   if (cover.isError) throw new Error(toolText(cover));
-  const actionResult = await harness.mcpClient.callTool({ arguments: { ref: elementReference, targetRef: harness.targetRef, timeoutMilliseconds: 300, ...(action === 'fill' ? { text: 'Must remain blocked' } : {}) }, name: `browser.${action}` });
+  const actionResult = await harness.mcpClient.callTool({ arguments: { ref: elementReference, targetRef: harness.targetRef, timeoutMilliseconds: 2_000, ...(action === 'fill' ? { text: 'Must remain blocked' } : {}) }, name: `browser.${action}` });
   expect(actionResult.isError, toolText(actionResult)).toBe(true);
   expect(toolText(actionResult)).toContain('MCP_ELEMENT_COVERED');
   expect(await harness.page.getByRole('status').textContent()).toBe('Ready');
@@ -183,7 +186,7 @@ it.each([
 it('re-resolves a locator when scrolling replaces its element before input', async () => {
   expect.assertions(2);
   harness = await createNativeMcpHarness();
-  const prepare = await harness.mcpClient.callTool({ arguments: { locator: { css: 'button#prepare-replacement' }, targetRef: harness.targetRef }, name: 'browser.click' });
+  const prepare = await harness.mcpClient.callTool({ arguments: { locator: { css: 'button#prepare-replacement' }, targetRef: harness.targetRef, timeoutMilliseconds: 10_000 }, name: 'browser.click' });
   if (prepare.isError) throw new Error(toolText(prepare));
   const click = await harness.mcpClient.callTool({ arguments: {
     locator: { name: { match: 'exact', value: 'Save replacement' }, role: 'button' },

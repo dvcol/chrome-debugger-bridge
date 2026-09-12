@@ -8,6 +8,8 @@
         "@dvcol/cdb",
         "@dvcol/cdb-automation-playwright",
         "@dvcol/cdb-birpc",
+        "@dvcol/cdb-broker",
+        "@dvcol/cdb-devframe",
         "@dvcol/cdb-extension",
         "@dvcol/cdb-mcp",
         "@dvcol/cdb-websocket"
@@ -23,7 +25,7 @@
       "project": ["src/**/*.ts", "test/**/*.ts", "*.config.ts"]
     },
     "examples/*": {
-      "entry": ["*.ts"],
+      "entry": ["*.ts", "extension/*.ts"],
       "project": ["**/*.ts"]
     },
     "tests/fixtures/*": {

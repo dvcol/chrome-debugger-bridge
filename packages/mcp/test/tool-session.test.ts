@@ -178,6 +178,7 @@ it('finds by semantic locator and clicks through a fresh ref without exposing au
       commands.push(command);
       if (command.method === 'Bridge.listChildSessions')
         return { operationId: command.operationId, value: { sessions: [] } };
+      if (command.method === 'Accessibility.getRootAXNode') return { value: { node: { backendDOMNodeId: 1 } } };
       if (command.method === 'DOM.getDocument') {
         return { operationId: command.operationId, value: { root: { backendNodeId: 1 } } };
       }
