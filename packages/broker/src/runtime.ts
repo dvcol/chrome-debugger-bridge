@@ -431,6 +431,7 @@ export async function createBroker(configuration: BrokerDefinition = {}): Promis
 
   const requestTool: BrokerTool = {
     name: 'browser.request_access',
+    safety: 'action',
     description: 'Request user-approved browser control. Reuse a current approved target or request another tab. No browser authority exists until approval completes.',
     inputSchema: {
       type: 'object',
@@ -514,7 +515,7 @@ export async function createBroker(configuration: BrokerDefinition = {}): Promis
     toolProvider: { name: '@dvcol/cdb', version: packageManifest.version },
     connectSession,
     snapshot,
-    tools: [requestTool, ...descriptors.definitions.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }))],
+    tools: [requestTool, ...descriptors.definitions.map(({ name, description, inputSchema, safety }) => ({ name, description, inputSchema, ...(safety === undefined ? {} : { safety }) }))],
     subscribe(listener: (state: BrokerState) => void) {
       ensureActive();
       listeners.add(listener);

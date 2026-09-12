@@ -7,6 +7,7 @@ import { Buffer } from 'node:buffer';
 
 import { agentToBrokerMessageSchema } from '@dvcol/cdb';
 import { BrokerError, createBroker } from '@dvcol/cdb-broker';
+import { normalizeBrowserControlError } from '@dvcol/cdb-broker/contract';
 
 import packageManifest from '../package.json' with { type: 'json' };
 import { cdbServiceScope } from './wire.js';
@@ -103,8 +104,7 @@ function installBroker(context: DevframeScopedNodeContext, broker: BrokerRuntime
         try {
           return { ok: true, value: await handler(authorized(session, name), session, ...arguments_) };
         } catch (error) {
-          const failure = error instanceof Error ? error as Partial<BrokerError> : {};
-          return { ok: false, error: { code: failure.code ?? 'CDB_OPERATION_FAILED', message: error instanceof Error ? error.message : String(error), retryable: failure.retryable ?? false, ...(failure.details === undefined ? {} : { details: failure.details }), ...(failure.retryAfterMilliseconds === undefined ? {} : { retryAfterMilliseconds: failure.retryAfterMilliseconds }) } };
+          return { ok: false, error: normalizeBrowserControlError(error) };
         }
       },
     });

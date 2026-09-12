@@ -73,3 +73,32 @@ it('preserves focused notification controls across equivalent broker publication
   renderer.dispose();
   controller.dispose();
 });
+
+it('changes theme and color mode without replacing focused controls or pending actions', async () => {
+  expect.assertions(9);
+  const pending = Promise.withResolvers<void>();
+  const controller = createBrowserControlNotificationController({ onReview: async () => pending.promise, onRevoke: async () => {} });
+  controller.update({ requests: [{ ...request, expiresAt: null }], grants: [] });
+  const renderer = renderBrowserControlNotifications({ controller, container: document.body, theme: { light: { primary: 'green' } }, branding: { accent: 'purple' }, css: ':host { --cdb-primary: orange; }' });
+  const host = document.querySelector('section')!;
+  const root = host.shadowRoot!;
+  const review = root.querySelectorAll('button')[1]!;
+  review.focus();
+  expect(host.dataset.colorMode).toBe('system');
+  expect(root.querySelector('style')!.textContent).toContain('prefers-color-scheme:dark');
+  renderer.setColorMode('dark');
+  renderer.setTheme({ spacing: '20px', dark: { text: 'yellow' } });
+  expect(host.dataset.colorMode).toBe('dark');
+  expect(root.activeElement).toBe(review);
+  expect(root.querySelector('style')!.textContent).toContain('--cdb-spacing:20px');
+  expect(root.querySelector('style')!.textContent).toContain('--cdb-primary:purple');
+  expect(root.querySelector('style')!.textContent.trim().endsWith(':host { --cdb-primary: orange; }')).toBe(true);
+  review.click();
+  renderer.setColorMode('light');
+  expect(root.querySelectorAll('button')[1]).toBe(review);
+  pending.resolve();
+  await vi.waitUntil(() => !review.disabled);
+  expect(host.dataset.colorMode).toBe('light');
+  renderer.dispose();
+  controller.dispose();
+});

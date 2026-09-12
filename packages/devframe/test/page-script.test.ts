@@ -167,3 +167,44 @@ it('continues message updates after a rejected update and still removes the mess
     report.mockRestore();
   }
 });
+
+it('installs host approval bindings only while available and removes notifications on disable', async () => {
+  expect.assertions(8);
+  const state: BrokerState = { revision: 1, providers: [], principals: [], targets: [], grants: [], scopes: [], leases: [], requests: [{ id: 'request', principalId: 'principal', principalLabel: 'Agent', level: 'interact', navigation: 'same-origin', state: 'pending', createdAt: 0, expiresAt: null }] };
+  let publish: (state: BrokerState, available?: boolean) => void = () => {};
+  const mock = vi.spyOn(panel, 'createBrowserControlPanelClient').mockReturnValue({
+    snapshot: () => state,
+    watch(listener) {
+      publish = listener;
+      listener(state, false);
+      return () => {};
+    },
+    revokeScope: async () => {},
+    revokeGrant: async () => true,
+    disconnectProvider: async () => true,
+  });
+  const removeBindings = vi.fn();
+  const onAvailable = vi.fn(() => removeBindings);
+  const dismiss = vi.fn(async () => {});
+  const info = vi.fn(async () => ({ dismiss, update: vi.fn(async () => {}) }));
+  const dispose = await setupBrowserControlAcceptPage({ rpc: {} as BrowserControlPageContext['rpc'], current: { domElements: {} }, commands: { register: () => () => {} }, messages: { info } }, { onAvailable });
+  try {
+    expect(onAvailable).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
+    publish(state, true);
+    publish(state, true);
+    expect(onAvailable).toHaveBeenCalledOnce();
+    await vi.waitUntil(() => info.mock.calls.length === 1);
+    publish(state, false);
+    expect(removeBindings).toHaveBeenCalledOnce();
+    expect(document.documentElement.hasAttribute('data-cdb-notifications-ready')).toBe(false);
+    await vi.waitUntil(() => dismiss.mock.calls.length === 1);
+    expect(dismiss).toHaveBeenCalledOnce();
+    publish(state, true);
+    expect(onAvailable).toHaveBeenCalledTimes(2);
+  } finally {
+    dispose();
+    mock.mockRestore();
+  }
+  expect(removeBindings).toHaveBeenCalledTimes(2);
+});

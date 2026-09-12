@@ -57,3 +57,5 @@ export {
 } from './tab-scope-lifecycle.js';
 export { createTabScopeManager, type TabScopeManager, type TabScopeManagerOptions } from './tab-scope-manager.js';
 export { matchesTabScope, parseTabScopeSelector, type TabScopeSelector } from './tab-scope.js';
+
+export { createPageRequestBridge, type PageRequestBridge, type PageRequestBridgeOptions, type PageRequestOptions } from './page-request.js';

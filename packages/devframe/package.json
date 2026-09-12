@@ -32,6 +32,10 @@
       "types": "./dist/client.d.mts",
       "import": "./dist/client.mjs"
     },
+    "./connection": {
+      "types": "./dist/connection.d.mts",
+      "import": "./dist/connection.mjs"
+    },
     "./panel": {
       "types": "./dist/panel.d.mts",
       "import": "./dist/panel.mjs"

@@ -1,5 +1,12 @@
 import type { BrokerGrant, BrokerRequest, BrokerState } from '@dvcol/cdb-broker/contract';
 
+import type { BrowserControlNotificationColorMode, BrowserControlNotificationThemeOverrides } from './notification-theme.js';
+
+import { browserControlNotificationStyles, notificationThemeStyles } from './notification-theme.js';
+
+export { defaultBrowserControlNotificationTheme } from './notification-theme.js';
+export type { BrowserControlNotificationColorMode, BrowserControlNotificationPalette, BrowserControlNotificationTheme, BrowserControlNotificationThemeOverrides } from './notification-theme.js';
+
 export interface BrowserControlNotification {
   readonly grants: readonly BrokerGrant[];
   readonly requests: readonly BrokerRequest[];
@@ -86,6 +93,8 @@ export interface BrowserControlNotificationRendererOptions {
   readonly controller: BrowserControlNotificationController;
   readonly container: HTMLElement;
   readonly branding?: { readonly title?: string; readonly accent?: string };
+  readonly theme?: BrowserControlNotificationThemeOverrides;
+  readonly colorMode?: BrowserControlNotificationColorMode;
   /** Describe the host's action, including direct approval when the host provides that policy. */
   readonly reviewLabel?: (request: BrokerRequest) => string;
   readonly clientLabel?: (request: BrokerRequest) => string;
@@ -95,27 +104,23 @@ export interface BrowserControlNotificationRendererOptions {
   readonly css?: string;
 }
 
-/** Optional neutral presentation. Review buttons delegate to the host's trusted final approval UI. */
-export function renderBrowserControlNotifications(options: BrowserControlNotificationRendererOptions): { dispose: () => void } {
+/** Optional themed presentation. Review buttons delegate to the host's trusted final approval UI. */
+export function renderBrowserControlNotifications(options: BrowserControlNotificationRendererOptions): { dispose: () => void; setTheme: (theme: BrowserControlNotificationThemeOverrides) => void; setColorMode: (mode: BrowserControlNotificationColorMode) => void } {
   const document = options.container.ownerDocument;
   const host = document.createElement('section');
   host.dataset.cdbNotifications = '';
   const root = host.attachShadow({ mode: 'open' });
   const style = document.createElement('style');
-  style.textContent = `
-    :host { display: block; font: 14px/1.5 system-ui, sans-serif; color: #172033; color-scheme: light dark; }
-    article { background: Canvas; color: CanvasText; padding: 12px 16px; margin: 8px 0; border: 1px solid color-mix(in srgb, CanvasText 20%, transparent); border-radius: 8px; }
-    h2, p { margin: 0 0 8px; } h2 { font-size: 15px; } p { overflow-wrap: anywhere; }
-    button { padding: 6px 10px; margin: 4px 6px 0 0; cursor: pointer; border-radius: 4px; border: 1px solid currentColor; background: transparent; color: var(--cdb-accent, #7356c8); font: inherit; }
-    article { position: relative; } h2 { padding-right: 28px; }
-    .dismiss { position: absolute; top: 5px; right: 6px; margin: 0; border: 0; }
-    dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; text-align: left; }
-    dt { font-size: 12px; opacity: .75; } dd { margin: 4px 0 0; overflow-wrap: anywhere; }
-    code { font: 12px/1.5 ui-monospace, monospace; }
-    button:disabled { opacity: .6; cursor: wait; } [role=alert] { color: #b42318; }
-    ${options.css ?? ''}
-  `;
-  if (options.branding?.accent !== undefined) host.style.setProperty('--cdb-accent', options.branding.accent);
+  function setTheme(theme: BrowserControlNotificationThemeOverrides): void {
+    style.textContent = `${notificationThemeStyles(theme, options.branding?.accent)}
+${browserControlNotificationStyles}
+${options.css ?? ''}`;
+  }
+  function setColorMode(mode: BrowserControlNotificationColorMode): void {
+    host.dataset.colorMode = mode;
+  }
+  setTheme(options.theme ?? {});
+  setColorMode(options.colorMode ?? 'system');
   const content = document.createElement('div');
   root.append(style, content);
   options.container.append(host);
@@ -197,7 +202,7 @@ export function renderBrowserControlNotifications(options: BrowserControlNotific
   }
   const unsubscribe = options.controller.subscribe(render);
   render(options.controller.snapshot());
-  return { dispose() {
+  return { setTheme, setColorMode, dispose() {
     disposed = true;
     unsubscribe();
     host.remove();

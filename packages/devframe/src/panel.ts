@@ -8,7 +8,7 @@ import { createBrowserControlNotificationController, renderBrowserControlNotific
 /** A panel consumes a broker connection; it does not own its runtime or transport. */
 export interface BrowserControlPanelClient {
   snapshot: () => BrokerState | Promise<BrokerState>;
-  watch: (listener: (state: BrokerState) => void) => (() => void) | Promise<() => void>;
+  watch: (listener: (state: BrokerState, available?: boolean) => void) => (() => void) | Promise<() => void>;
   revokeScope: (requestId: string) => Promise<void>;
   revokeGrant: (grantId: string) => Promise<boolean>;
   disconnectProvider: (providerId: string, forgetPairing?: boolean) => Promise<boolean>;
@@ -123,10 +123,10 @@ export function createBrowserControlPanelClient(client: CdbDevframeClient): Brow
   return {
     snapshot: async () => rpc.call('state') as Promise<BrokerState>,
     async watch(listener) {
-      const state = await rpc.sharedState<{ broker: BrokerState }>('state');
+      const state = await rpc.sharedState<{ broker: BrokerState; available?: boolean }>('state');
       const update = (value: ReturnType<typeof state.value> | undefined): void => {
         /** Devframe initializes shared state after the connection becomes trusted. */
-        if (value !== undefined) listener(structuredClone(value.broker) as BrokerState);
+        if (value !== undefined) listener(structuredClone(value.broker) as BrokerState, value.available ?? true);
       };
       const unsubscribe = state.on('updated', update);
       update(state.value());

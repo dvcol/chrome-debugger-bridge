@@ -236,14 +236,13 @@ export function createCdbClient(client: CdbDevframeClient): CdbClient {
     async dispose() {
       if (disposed) return;
       provider?.close(1000, 'CDB client disposed');
-      try {
-        if (watching !== undefined) await call('unwatch');
-      } finally {
-        disposed = true;
-        stateListeners.clear();
-        watching = undefined;
-        state = undefined;
-      }
+      disposed = true;
+      clients.delete(client);
+      const subscribed = watching !== undefined;
+      stateListeners.clear();
+      watching = undefined;
+      state = undefined;
+      if (subscribed) await rpc.call('unwatch');
     },
   };
   clients.set(client, handle);

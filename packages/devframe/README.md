@@ -56,3 +56,21 @@ See the [runnable example](../../examples/devframe/README.md).
 Notification descriptions and approved-tab counts update through the existing Devframe message handle. Changed content retains its message ID and follows the host's normal notification behavior, including resurfacing a dismissed toast. Unchanged broker publications do not update the message. Request completion, expiry and disposal remove its message and command.
 
 The public validation workspace backports Devframe's toast-removal fix to hub-ui 0.9.10 using [a temporary pnpm patch](https://github.com/dvcol/chrome-debugger-bridge/blob/main/patches/README.md). This workspace patch is not inherited by consumers of the published CDB package; embedding applications using that hub-ui version must apply the patch themselves until adopting an upstream version containing the fix.
+
+### Connection-bound clients
+
+Use `createCdbConnection` from `@dvcol/cdb-devframe/connection` when the embedding
+host replaces Devframe peers during reconnect. Call `attach(peer)` from the host's
+connection callback, `disconnected()` on transport loss, and `dispose()` at
+shutdown. Attaching is synchronous; browser subscriptions and optional logical
+session readiness are lazy and do not delay ordinary host traffic.
+
+The handle supplies the panel's `watch`, `snapshot` and management operations,
+plus browser invocation and operation-scoped cancellation. It owns initial state,
+subscription deduplication, stale-callback fencing and cleanup. It never closes
+the shared host transport or replays a dispatched operation.
+
+For agent callers, supply `session` with a credential store/key and principal
+metadata. Use a distinct authenticated peer and handle for each principal; do not
+share one logical session between MCP callers. Reconnecting that principal
+resumes its own credential. Management and provider connections omit `session`.

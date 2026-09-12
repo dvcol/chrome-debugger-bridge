@@ -1338,6 +1338,8 @@ export interface CdbToolInvocationContext {
 }
 
 export interface CdbToolDefinition {
+  /** Conservative effect classification supplied by CDB, independent of tool naming. */
+  readonly safety?: 'read' | 'action' | 'destructive';
   readonly description: string;
   readonly inputSchema: Record<string, unknown>;
   readonly mcpInputSchema: z.ZodObject;
@@ -3105,7 +3107,7 @@ function createCdbToolDefinitionsForSession(
   const timing = resolveMcpTimingPolicy(options.timing);
   const register = <InputSchema extends z.ZodObject>(
     name: string,
-    config: { readonly description: string; readonly inputSchema: InputSchema },
+    config: { readonly description: string; readonly inputSchema: InputSchema; readonly safety: NonNullable<CdbToolDefinition['safety']> },
     handler: (
       input: z.output<InputSchema>,
       context: { readonly mcpReq: { readonly signal: AbortSignal } },
@@ -3116,6 +3118,7 @@ function createCdbToolDefinitionsForSession(
     Object.defineProperty(config.inputSchema, '~standard', { value: { ...config.inputSchema['~standard'], jsonSchema: { input: () => inputSchema, output: () => inputSchema } } });
     definitions.push({
       description: config.description,
+      safety: config.safety,
       inputSchema,
       async invoke(input, context = { signal: new AbortController().signal }) {
         if (sessionState.disposed)
@@ -3319,6 +3322,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.list_targets',
     {
+      safety: 'read',
       description:
         'List currently granted browser targets using stable session-local references. Target references survive navigation and authority renewal.',
       inputSchema: z.object({}),
@@ -3339,6 +3343,7 @@ function createCdbToolDefinitionsForSession(
     register(
       'browser.list_target_authorities',
       {
+        safety: 'read',
         description: 'List trusted diagnostic target IDs, generations, and scopes for raw CDB operations.',
         inputSchema: z.object({}),
       },
@@ -3353,6 +3358,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.find',
     {
+      safety: 'read',
       description: 'Find fresh element refs using a strict semantic locator. Refs are disposable and must be refreshed after page changes.',
       inputSchema: z.object({
         locator: locatorSchema,
@@ -3410,6 +3416,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.acquire',
     {
+      safety: 'action',
       description:
         'Acquire an explicit target lease for exact Chrome DevTools Protocol command or event names (for example, "Runtime.evaluate"). Semantic browser tool names such as "evaluate" are not valid requested methods. Do not request or call domain enable/disable methods: CDB owns domain lifecycle and activates a leased domain before its first command or subscription.',
       inputSchema: z.object({
@@ -3442,6 +3449,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.renew',
     {
+      safety: 'action',
       description: 'Renew an explicit target lease.',
       inputSchema: z.object({ ...leaseInput, leaseId: z.string().uuid() }),
     },
@@ -3456,6 +3464,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.release',
     {
+      safety: 'action',
       description: 'Release an explicit target lease.',
       inputSchema: z.object({
         targetGeneration: z.number().int().nonnegative(),
@@ -3475,6 +3484,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.release_artifact',
     {
+      safety: 'action',
       description: 'Release an authorized artifact through its owning lease.',
       inputSchema: z.object({
         artifactId: z.string().uuid(),
@@ -3495,6 +3505,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.read_artifact',
     {
+      safety: 'read',
       description: 'Read one bounded, authorized artifact range as base64.',
       inputSchema: z.object({
         artifactId: z.string().uuid(),
@@ -3540,6 +3551,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.inspect',
     {
+      safety: 'read',
       description:
         'Read structured page or element attributes, accessibility state, and geometry without executing JavaScript.',
       inputSchema: z.object({
@@ -3646,6 +3658,7 @@ function createCdbToolDefinitionsForSession(
     register(
       'browser.raw_cdp',
       {
+        safety: 'destructive',
         description:
           'Execute any catalogued Chrome DevTools Protocol command allowed by the grant through an explicit lease. Domain enable/disable methods are broker-owned and must be omitted; CDB activates the domain before the first leased command.',
         inputSchema: z.object({
@@ -3693,6 +3706,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.snapshot',
     {
+      safety: 'read',
       description:
         'Capture a fresh accessibility snapshot with disposable element refs. Interactive mode is compact and actionable; accessibility is complete and bounded; DOM is diagnostic.',
       inputSchema: z.object({
@@ -3857,6 +3871,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.screenshot',
     {
+      safety: 'read',
       description:
         'Capture a screenshot as image content. Debug sessions preserve the inline-or-artifact protocol result.',
       inputSchema: z.object({
@@ -3883,6 +3898,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.network_body',
     {
+      safety: 'read',
       description:
         'Read a network response body, returning the bridge inline-or-artifact result without base64 expansion.',
       inputSchema: z.object({
@@ -3910,6 +3926,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.evaluate',
     {
+      safety: 'destructive',
       description:
         'Debug escape hatch: evaluate page JavaScript. This bypasses locator guarantees and visible pointer presentation.',
       inputSchema: z.object({
@@ -3938,6 +3955,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.navigate',
     {
+      safety: 'action',
       description:
         'Navigate a target and retain its stable target reference across the new document.',
       inputSchema: z.object({ ...lifecycleInput, url: z.url() }),
@@ -3967,6 +3985,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.back',
     {
+      safety: 'action',
       description: 'Navigate one entry back while retaining the stable target reference.',
       inputSchema: z.object(lifecycleInput),
     },
@@ -3988,6 +4007,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.forward',
     {
+      safety: 'action',
       description: 'Navigate one entry forward while retaining the stable target reference.',
       inputSchema: z.object(lifecycleInput),
     },
@@ -4009,6 +4029,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.reload',
     {
+      safety: 'action',
       description: 'Reload a target while retaining the stable target reference.',
       inputSchema: z.object(lifecycleInput),
     },
@@ -4036,6 +4057,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.click',
     {
+      safety: 'action',
       description: 'Click one element by a fresh ref or a strict locator after bounded actionability checks.',
       inputSchema: z.object({
         button: pointerButtonSchema,
@@ -4088,6 +4110,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.click_at',
     {
+      safety: 'action',
       description:
         'Click explicit viewport coordinates. Prefer browser.click with a ref or locator.',
       inputSchema: z.object({
@@ -4167,6 +4190,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.move_at',
     {
+      safety: 'action',
       description:
         'Move or hover the pointer at explicit viewport coordinates. Prefer browser.hover when a snapshot reference or locator is available.',
       inputSchema: z.object({
@@ -4216,6 +4240,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.scroll_at',
     {
+      safety: 'action',
       description: 'Dispatch a bounded mouse-wheel scroll at explicit viewport coordinates.',
       inputSchema: z.object({
         ...inputActionTiming,
@@ -4274,6 +4299,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.drag_at',
     {
+      safety: 'action',
       description: 'Drag the pointer along a bounded viewport path.',
       inputSchema: z.object({
         button: pointerButtonSchema,
@@ -4368,6 +4394,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.drag',
     {
+      safety: 'action',
       description: 'Drag from one element to another using fresh refs or strict locators.',
       inputSchema: z.object({
         button: pointerButtonSchema,
@@ -4520,6 +4547,7 @@ function createCdbToolDefinitionsForSession(
     register(
       name,
       {
+        safety: 'action',
         description,
         inputSchema: z.object({
           ...elementTargetShape,
@@ -4617,6 +4645,7 @@ function createCdbToolDefinitionsForSession(
     register(
       name,
       {
+        safety: 'action',
         description: `${desiredState ? 'Check' : 'Uncheck'} a checkbox or switch selected by ref or locator.`,
         inputSchema: z.object({
           ...elementTargetShape,
@@ -4683,6 +4712,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.batch',
     {
+      safety: 'action',
       description: 'Run up to 20 ordered element actions on one target under one lease. Stops on failure, cancellation, authority or document replacement. Never rolls back or replays input.',
       inputSchema: z.object({
         targetRef: z.string().regex(targetReferencePattern),
@@ -4791,6 +4821,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.select_option',
     {
+      safety: 'action',
       description: 'Focus a select element and choose an option by its visible label.',
       inputSchema: z.object({
         ...elementTargetShape,
@@ -4874,6 +4905,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.wait_for_navigation',
     {
+      safety: 'read',
       description: 'Wait for a bounded root or child-session navigation milestone and fail promptly on JavaScript dialogs.',
       inputSchema: z.object(lifecycleInput),
     },
@@ -4908,6 +4940,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.wait_for_dialog',
     {
+      safety: 'read',
       description: 'Wait for one JavaScript dialog in a root or opaque child session.',
       inputSchema: z.object(eventWaitInput),
     },
@@ -4931,6 +4964,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.handle_dialog',
     {
+      safety: 'action',
       description: 'Accept or dismiss the current JavaScript dialog through an exclusive lease.',
       inputSchema: z.object({
         targetRef: z.string().regex(targetReferencePattern),
@@ -4965,6 +4999,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.console',
     {
+      safety: 'read',
       description:
         'Wait for one console event through a bounded subscription. An explicit lease keeps its event domain active until that lease is released.',
       inputSchema: z.object(eventWaitInput),
@@ -4995,6 +5030,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.network',
     {
+      safety: 'read',
       description:
         'Wait for one network event through a bounded subscription. An explicit lease keeps its event domain active until that lease is released.',
       inputSchema: z.object(eventWaitInput),
@@ -5025,6 +5061,7 @@ function createCdbToolDefinitionsForSession(
   register(
     'browser.wait_for',
     {
+      safety: 'read',
       description:
         'Wait for an explicitly named CDP event through a bounded subscription. An explicit lease keeps its event domain active until that lease is released.',
       inputSchema: z.object({

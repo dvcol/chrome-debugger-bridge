@@ -146,3 +146,5 @@ export interface BrokerPeer {
 export type BrokerTool = Omit<CdbToolDefinition, 'invoke' | 'mcpInputSchema'>;
 
 export type { AgentAuthenticationTranscript, AuthorityBinding, GrantRequestClaim, LogicalSessionCredential };
+
+export { type BrowserControlError, browserControlToolError, normalizeBrowserControlError } from './error.js';
