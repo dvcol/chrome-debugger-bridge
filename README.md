@@ -7,6 +7,12 @@ and event subscriptions independent from Chrome extension APIs.
 An embedding host composes CDB as a library. CDB does not discover browser tabs, start application
 servers, or own an application's MCP lifecycle.
 
+The optional broker, Devframe and Chrome adapters compose reusable orchestration around that
+protocol. Embed them in an existing host or run the [standalone example](examples/devframe/README.md).
+For an existing Devframe connection, use the [connection-bound handle](packages/devframe/README.md#connection-bound-clients)
+to keep subscriptions, principal readiness and cancellation out of application connection code.
+Host-wide enablement, configuration persistence and tool catalogue ownership remain host decisions.
+
 ## Place in a browser-control stack
 
 ```text
