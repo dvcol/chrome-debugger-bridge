@@ -33,12 +33,15 @@ Preserve these invariants:
 - Allow multiple grants, but reject conflicting exclusive leases without queuing or preemption.
 - Treat provider recovery as bounded and recoverable; treat broker death as revocation of all live
   authority.
-- Keep Chrome APIs and tab-selection policy out of CDB.
-- Keep URL and navigation-grant policy out of CDB. The embedding broker may scope different
-  principals differently while they share one target.
+- Keep Chrome APIs in the optional extension Chrome adapter and tab-selection policy in the host.
+- Keep navigation presets in the optional broker package, outside the protocol kernel. Hosts may
+  impose additional restrictions on principals sharing one target.
 - Keep MCP definitions transport-neutral. The embedding host owns the MCP server and passes its
   authenticated session through as principal identity.
 - Return structured errors with retry hints where retry can succeed.
+- Reuse the connection-bound Devframe handle for peer replacement, subscriptions and cancellation.
+  Preserve per-principal sessions and the host's ownership of the shared transport.
+- Keep notification state headless; theme and DOM behavior belong to the optional renderer.
 
 The user-visible access levels are `observe`, `inspect`, `interact`, `debug`, and `unsafe`. Do not
 silently downgrade a requested level.

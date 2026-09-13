@@ -73,6 +73,43 @@ on startup failure and shutdown. The optional panel consumes an existing managem
 instantiates a broker. Registry aggregation, tool ownership/routing, MCP lifecycle and WebMCP
 publication remain with the embedding application.
 
+The connection-bound `createCdbConnection` handle attaches to an existing peer. It owns lazy
+browser subscriptions, logical-session readiness, reconnect fencing and operation cancellation.
+Hosts keep one handle per principal and forward connection replacement and loss. Ordinary host
+traffic need not await browser readiness. Disposing this handle releases CDB resources without
+closing the shared transport.
+
+```mermaid
+flowchart LR
+  Host[Host configuration and process lifecycle] --> Peer[Existing authenticated RPC peer]
+  Peer --> Connection[CDB connection-bound handle]
+  Connection --> Service[CDB Devframe service]
+  Service --> Broker[CDB broker and authority stores]
+  Provider[Extension provider] --> Peer
+  Broker --> Tools[Per-principal semantic tool sessions]
+  Host --> Catalogue[Host catalogue and routing]
+  Catalogue --> Service
+  UI[Host renderer and approval policy] --> Panel[Public CDB panel]
+  Panel --> Connection
+```
+
+```mermaid
+sequenceDiagram
+  participant Host
+  participant Handle as CDB connection handle
+  participant Peer as Authenticated peer
+  Host->>Handle: attach(peer)
+  Note over Host,Peer: Ordinary host traffic remains available
+  Host->>Handle: watch or browser operation
+  Handle->>Peer: Subscribe / establish principal readiness
+  Host->>Handle: disconnected()
+  Note over Handle: Fence callbacks and cancel affected operations
+  Host->>Handle: attach(replacementPeer)
+  Handle->>Peer: Resume the same principal when needed
+  Host->>Handle: dispose()
+  Note over Host,Peer: Host retains ownership of transport shutdown
+```
+
 ### Grant request coordinator
 
 `createGrantRequestCoordinator` stores the authenticated logical session, principal, requested
@@ -96,6 +133,11 @@ permissions, installation, tab-selection policy and final approval trust. The se
 successful CDP pointer commands into sanitized visual events and renders an isolated pointer plus a
 temporary favicon. The host owns installation, messaging, current grant state, and navigation
 reinjection.
+
+The notification controller is headless. The optional Shadow DOM renderer supplies the default
+light/dark theme, typed CSS-variable customization and runtime theme updates without rebuilding
+controls. Hosts choose branding, placement and approval callbacks. A host using Devframe
+notifications uses its message API instead of injecting the default renderer.
 
 ### Automation providers
 
