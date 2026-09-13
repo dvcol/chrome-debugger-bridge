@@ -1,7 +1,7 @@
 {
   "name": "@dvcol/cdb-devframe",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "CDB services, provider transport, and browser-control panels for Devframe hosts.",
   "author": "dvcol",
   "license": "MIT",
