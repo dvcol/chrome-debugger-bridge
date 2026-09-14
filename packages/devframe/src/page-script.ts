@@ -1,7 +1,10 @@
 import type { DevframeRpcClient } from 'devframe/client';
 
+import type { BrowserControlMessages } from './notification-items.js';
+
 import { createBrowserControlNotificationController } from '@dvcol/cdb-extension/notifications';
 
+import { browserControlNotificationItems } from './notification-items.js';
 import { createBrowserControlPanelClient } from './panel.js';
 
 /** Page events request the host's final approval UI. They never approve browser access. */
@@ -26,9 +29,8 @@ export interface BrowserControlPageContext {
   readonly commands: {
     register: (command: { id: string; title: string; source: 'client'; action: () => Promise<void>; showInPalette: boolean }) => () => void;
   };
-  readonly messages: {
-    info: (message: string, options: { id: string; description: string; notify: boolean; autoDismiss: false; actions: { id: string; label: string; kind: 'command'; command: { id: string } }[] }) => Promise<{ dismiss: () => Promise<void>; update: (patch: { description: string }) => Promise<unknown> }>;
-  };
+  /** Retained for compatibility with existing page hosts; messages are published by the panel host. */
+  readonly messages: BrowserControlMessages;
 }
 
 /** Uses the hub's existing page connection; the embedding extension handles the review intent. */
@@ -42,46 +44,23 @@ export default async function setupBrowserControlPage(context: BrowserControlPag
     window.dispatchEvent(new CustomEvent(options.approvalAction === 'accept' ? browserControlAcceptEvent : browserControlReviewEvent, { detail: { requestId } }));
   };
   const controller = createBrowserControlNotificationController({ onReview: request => review(request.id), onRevoke: async requestId => client.revokeScope(requestId) });
-  const notifications = new Map<string, { description: string; update: (description: string) => void; remove: () => void }>();
-  const prefix = `cdb:browser-control:${crypto.randomUUID()}`;
+  const commands = new Map<string, () => void>();
   const stopNotifications = controller.subscribe((state) => {
-    const items = [
-      ...state.requests.map(request => ({ id: `request:${request.id}`, title: 'Browser control requested', description: `${request.principalLabel} requests ${request.level} access with ${request.navigation} navigation.`, label: options.approvalAction === 'accept' ? 'Accept' : 'Review request', action: async () => controller.review(request.id) })),
-      ...Array.from(Map.groupBy(state.grants, grant => grant.requestId), ([requestId, grants]) => ({ id: `grant:${requestId}`, title: 'Browser control active', description: `${grants[0]!.principalLabel}: ${grants[0]!.level} access to ${grants.length} approved ${grants.length === 1 ? 'tab' : 'tabs'}.`, label: 'Stop control', action: async () => controller.revoke(requestId) })),
-    ];
-    for (const [id, notification] of notifications) {
-      if (items.some(item => item.id === id)) continue;
-      notification.remove();
-      notifications.delete(id);
+    const items = browserControlNotificationItems(state, options.approvalAction);
+    const activeIds = new Set(items.map(item => item.id));
+    for (const [id, unregister] of commands) {
+      if (activeIds.has(id)) continue;
+      unregister();
+      commands.delete(id);
     }
     for (const item of items) {
-      const notification = notifications.get(item.id);
-      if (notification !== undefined) {
-        if (notification.description !== item.description) {
-          notification.description = item.description;
-          notification.update(item.description);
-        }
-        continue;
+      if (commands.has(item.id)) continue;
+      async function invoke(): Promise<void> {
+        if (item.kind === 'request') return controller.review(item.requestId);
+        await controller.revoke(item.requestId);
       }
-      const id = `${prefix}:${item.id}`;
-      const unregister = context.commands.register({ id, title: item.label, source: 'client', action: item.action, showInPalette: false });
-      const message = context.messages.info(item.title, { id, description: item.description, notify: true, autoDismiss: false, actions: [{ id: 'control', label: item.label, kind: 'command', command: { id } }] }).catch(error => console.error('Unable to show browser-control notification.', error));
-      let active = true;
-      let pending = Promise.resolve();
-      notifications.set(item.id, {
-        description: item.description,
-        update(description) {
-          pending = pending.then(async () => {
-            const handle = await message;
-            if (active) await handle?.update({ description });
-          }).catch(error => console.error('Unable to update browser-control notification.', error));
-        },
-        remove() {
-          active = false;
-          unregister();
-          pending = pending.then(async () => (await message)?.dismiss()).catch(error => console.error('Unable to dismiss browser-control notification.', error));
-        },
-      });
+      const unregister = context.commands.register({ id: item.id, title: item.label, source: 'client', action: invoke, showInPalette: false });
+      commands.set(item.id, unregister);
     }
   });
   const receive = (event: MessageEvent<unknown>): void => {
@@ -98,8 +77,8 @@ export default async function setupBrowserControlPage(context: BrowserControlPag
     stopWatching?.();
     document.documentElement.removeAttribute('data-cdb-notifications-ready');
     stopNotifications();
-    for (const notification of notifications.values()) notification.remove();
-    notifications.clear();
+    for (const unregister of commands.values()) unregister();
+    commands.clear();
     controller.dispose();
     window.removeEventListener('message', receive);
     window.removeEventListener('pagehide', dispose);
