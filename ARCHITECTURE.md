@@ -137,7 +137,9 @@ reinjection.
 The notification controller is headless. The optional Shadow DOM renderer supplies the default
 light/dark theme, typed CSS-variable customization and runtime theme updates without rebuilding
 controls. Hosts choose branding, placement and approval callbacks. A host using Devframe
-notifications uses its message API instead of injecting the default renderer.
+notifications uses its message API instead of injecting the default renderer. The panel host owns
+each shared Devframe notification. Viewing tabs own matching local command registrations, keeping
+approval in the clicked tab while avoiding duplicate messages across connected tabs.
 
 ### Automation providers
 

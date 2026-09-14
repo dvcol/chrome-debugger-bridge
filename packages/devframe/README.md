@@ -43,7 +43,7 @@ const panel = createCdbPanel({
 });
 ```
 
-The renderer must support Devframe's JSON view and action contracts. Component overrides apply only to that mounted renderer; the standalone SPA uses the reference catalogue. Dock ordering follows the host's categories and saved preferences. The page script remains available through `dock.clientScript` for host notifications and review intents.
+The renderer must support Devframe's JSON view and action contracts. Component overrides apply only to that mounted renderer; the standalone SPA uses the reference catalogue. Dock ordering follows the host's categories and saved preferences. The page script remains available through `dock.clientScript` for tab-local notification commands and review intents.
 
 For an existing application container, import `mountBrowserControlPanel` from `@dvcol/cdb-devframe/panel` and pass a `client`, `container`, optional branding/CSS and an `onReview` callback. Unmounting releases the panel subscription without disposing that client.
 
@@ -53,7 +53,9 @@ Hosts with a direct approval channel can set `approvalAction: 'accept'` on `crea
 
 See the [runnable example](../../examples/devframe/README.md).
 
-Notification descriptions and approved-tab counts update through the existing Devframe message handle. Changed content retains its message ID and follows the host's normal notification behavior, including resurfacing a dismissed toast. Unchanged broker publications do not update the message. Request completion, expiry and disposal remove its message and command.
+The panel host publishes one notification per request or approved scope into Devframe’s shared message feed. Each viewing tab registers the matching command locally, so approval executes in the tab where the user clicks it. Closing a tab releases its command registrations without removing the shared message.
+
+Notification descriptions and approved-tab counts update through the existing Devframe message handle. Changed content retains its message ID and follows the host's normal notification behavior, including resurfacing a dismissed toast. Unchanged broker publications do not update the message. Request completion, expiry and panel-host disposal remove the shared message. Each page removes its command when its subscription reports that the request or scope ended.
 
 The public validation workspace backports Devframe's toast-removal fix to hub-ui 0.9.10 using [a temporary pnpm patch](https://github.com/dvcol/chrome-debugger-bridge/blob/main/patches/README.md). This workspace patch is not inherited by consumers of the published CDB package; embedding applications using that hub-ui version must apply the patch themselves until adopting an upstream version containing the fix.
 

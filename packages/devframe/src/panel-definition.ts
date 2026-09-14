@@ -3,6 +3,7 @@ import type { JsonRenderView } from '@devframes/json-render';
 import type { BrokerState } from '@dvcol/cdb-broker/contract';
 import type { DevframeDefinition, DevframeNodeContext, DevframeScopedNodeRpc } from 'devframe';
 
+import type { BrowserControlMessages } from './notification-items.js';
 import type { BrowserControlPanelComponents } from './panel-view.js';
 import type { BrowserControlPanelClient } from './panel.js';
 
@@ -12,12 +13,16 @@ import { fileURLToPath } from 'node:url';
 import { jsonRenderSpaDir } from '@devframes/json-render-ui/spa';
 import { toJsonRenderDockEntry } from '@devframes/json-render/hub';
 import { createJsonRenderView } from '@devframes/json-render/node';
+import { createBrowserControlNotificationController } from '@dvcol/cdb-extension/notifications';
 
 import packageManifest from '../package.json' with { type: 'json' };
+import { publishBrowserControlNotifications } from './notification-publisher.js';
 import { buildBrowserControlPanelView } from './panel-view.js';
 
 /** Hosts may augment their RPC catalogue without exporting those declarations to CDB. */
 interface PanelContext {
+  /** Hub hosts supply their shared message feed. Plain view hosts may omit notifications. */
+  readonly messages?: BrowserControlMessages;
   rpc: { sharedState: Pick<DevframeNodeContext['rpc']['sharedState'], 'get'> };
   scope: (namespace: string) => { readonly rpc: Pick<DevframeScopedNodeRpc, 'sharedState'> & {
     register: (definition: Pick<Parameters<DevframeScopedNodeRpc['register']>[0], 'name' | 'type' | 'handler'>) => unknown;
@@ -49,6 +54,13 @@ export interface CdbPanel {
 export function createCdbPanel(options: CdbPanelOptions): CdbPanel {
   const directory = dirname(fileURLToPath(import.meta.url));
   let disposed = false;
+  let stopNotifications: (() => void) | undefined;
+  const notifications = createBrowserControlNotificationController({
+    onReview() {
+      throw new Error('Browser approval must run in the viewing tab.');
+    },
+    onRevoke: async requestId => activeClient().revokeScope(requestId),
+  });
   let unsubscribe: (() => void) | undefined;
   let view: JsonRenderView | undefined;
   let client: BrowserControlPanelClient | undefined;
@@ -81,6 +93,7 @@ export function createCdbPanel(options: CdbPanelOptions): CdbPanel {
           client = options.client();
           clientResolved = true;
         }
+        if (context.messages !== undefined) stopNotifications = publishBrowserControlNotifications(notifications, context.messages, options.approvalAction);
         const renderer = 'docks' in context ? options.renderer : undefined;
         const rpc = context.scope('cdb:panel').rpc;
         const initial = emptyState();
@@ -103,6 +116,7 @@ export function createCdbPanel(options: CdbPanelOptions): CdbPanel {
               value.available = selected !== undefined;
             });
             view?.update(buildBrowserControlPanelView(broker, renderer?.components));
+            notifications.update(broker);
           };
           publish(emptyState());
           if (selected === undefined) return;
@@ -145,6 +159,9 @@ export function createCdbPanel(options: CdbPanelOptions): CdbPanel {
     dispose() {
       disposed = true;
       generation += 1;
+      stopNotifications?.();
+      stopNotifications = undefined;
+      notifications.dispose();
       unsubscribe?.();
       unsubscribe = undefined;
       view?.dispose();
