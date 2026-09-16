@@ -75,6 +75,7 @@ async function digest(bytes: Uint8Array): Promise<string> {
 
 /** Opens a crash-safe, filesystem-backed artifact store for Node hosts. */
 export async function createFileArtifactStore(options: FileArtifactStoreOptions): Promise<FileArtifactStore> {
+  defineArtifactStore(options);
   assertLimit(options.maximumBytes, 'byte');
   assertLimit(options.maximumBytesPerOwner, 'per-owner byte');
   const now = options.now ?? Date.now;
@@ -276,4 +277,11 @@ export async function createFileArtifactStore(options: FileArtifactStoreOptions)
       }
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineArtifactStore<const Definition extends FileArtifactStoreOptions>(definition: Definition): Definition {
+  assertLimit(definition.maximumBytes, 'byte');
+  assertLimit(definition.maximumBytesPerOwner, 'per-owner byte');
+  return definition;
 }

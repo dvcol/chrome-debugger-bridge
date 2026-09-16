@@ -1,6 +1,8 @@
 import type { BrokerToAgentMessage, JsonObject, PublishedTarget } from '../../../packages/core/src/protocol.js';
 import type { BrowserAgentConnection } from '../../../packages/websocket/src/browser.js';
 
+import { WebMcpError } from '@dvcol/cdb';
+
 import { createAgentRecovery, createBirpcAgentBootstrap, createIndexedDbPairingStore, createSelectedTabLifecycle, createSelectedTabPublisher, sendAgentHeartbeat } from '../../../packages/extension/src/index.js';
 import { connectAgentWebSocket } from '../../../packages/websocket/src/browser.js';
 
@@ -422,7 +424,7 @@ bridgeTestGlobal.runPublishedTargetAgentTest = async (input) => {
       cancellations.set(command.operationId, abortController);
       void publisher.executeCommand(command, abortController.signal, lease).then(
         async value => connection.send({ kind: 'response', method: 'cdp.execute', protocolVersion: 1, requestId: executionRequest.requestId, result: { operationId: command.operationId, value } }),
-        async error => connection.send({ error: { code: 'CDP_COMMAND_FAILED', message: `${command.method}: ${error instanceof Error ? error.message : 'The debugger command failed.'}`, retryable: false }, kind: 'error', method: 'cdp.execute', protocolVersion: 1, requestId: executionRequest.requestId }),
+        async error => connection.send({ error: error instanceof WebMcpError ? { code: error.code, message: error.message, retryable: error.retryable } : { code: 'CDP_COMMAND_FAILED', message: `${command.method}: ${error instanceof Error ? error.message : 'The debugger command failed.'}`, retryable: false }, kind: 'error', method: 'cdp.execute', protocolVersion: 1, requestId: executionRequest.requestId }),
       ).finally(() => cancellations.delete(command.operationId));
     });
   };

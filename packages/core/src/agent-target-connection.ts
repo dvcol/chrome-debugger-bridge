@@ -4,6 +4,7 @@ import type { TimeoutMilliseconds } from './timing.js';
 
 import packageManifest from '../package.json' with { type: 'json' };
 import { scheduleTimeout, validateTimeoutMilliseconds } from './timing.js';
+import { WebMcpError, webMcpMethods } from './webmcp.js';
 
 export interface AgentTargetConnection {
   readonly closed?: Promise<unknown>;
@@ -25,6 +26,8 @@ export interface ConnectAgentTargetBrokerOptions {
     readonly role: 'broker';
     readonly version: string;
   };
+  /** Runs after an authenticated `targets.reconcile` message updates the target broker. */
+  readonly onTargetsReconciled?: (targets: readonly PublishedTarget[]) => void;
   /** Defaults to true. Recovery-aware hosts can retain targets and revoke them after their own deadline. */
   readonly revokeTargetsOnDisconnect?: boolean;
   readonly timing?: Partial<AgentConnectionTimingPolicy>;
@@ -57,6 +60,7 @@ export function connectAgentTargetBroker(
   broker: TargetBroker,
   options: ConnectAgentTargetBrokerOptions = {},
 ): () => void {
+  defineAgentConnection(options);
   const connectionGeneration = options.connectionGeneration ?? 1;
   const timing: AgentConnectionTimingPolicy = { ...defaultAgentConnectionTimingPolicy, ...options.timing };
   const handshakeTimeoutMilliseconds = timing.handshakeTimeoutMilliseconds;
@@ -93,7 +97,7 @@ export function connectAgentTargetBroker(
       pendingCommands.set(requestId, { reject, resolve });
     });
     const cancelCommand = (): void => {
-      pendingCommands.get(requestId)?.reject(new Error('The debugger command was cancelled.'));
+      pendingCommands.get(requestId)?.reject(command.method === webMcpMethods.invoke ? new WebMcpError('WEBMCP_OUTCOME_UNKNOWN', 'The invocation was interrupted after forwarding to the provider. Do not replay it.') : new Error('The debugger command was cancelled.'));
       pendingCommands.delete(requestId);
       observeDetachedSend(connection.send?.({ kind: 'notification', method: 'cdp.cancel', parameters: { operationId: command.operationId, targetGeneration: command.targetGeneration, targetId: command.targetId }, protocolVersion: 1 }));
     };
@@ -218,6 +222,7 @@ export function connectAgentTargetBroker(
         publishedTargets.set(target.id, target);
         registerExecutor(target);
       }
+      options.onTargetsReconciled?.(message.parameters.targets);
     } else if (message.method === 'targets.revoke') {
       broker.revokeTarget(message.parameters.targetId, message.parameters.targetGeneration, message.parameters.reason, authority);
       publishedTargets.delete(message.parameters.targetId);
@@ -248,4 +253,14 @@ export function connectAgentTargetBroker(
     for (const pendingCommand of pendingCommands.values()) pendingCommand.reject(new Error('The agent connection closed.'));
     pendingCommands.clear();
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineAgentConnection<const Definition extends ConnectAgentTargetBrokerOptions>(definition: Definition): Definition {
+  const timing = { ...defaultAgentConnectionTimingPolicy, ...definition.timing };
+  validateTimeoutMilliseconds(timing.handshakeTimeoutMilliseconds, 'handshakeTimeoutMilliseconds');
+  for (const name of ['heartbeatIntervalMilliseconds', 'heartbeatTimeoutMilliseconds'] as const) {
+    if (!Number.isSafeInteger(timing[name]) || timing[name] < 1) throw new TypeError(`${name} must be a positive safe integer.`);
+  }
+  return definition;
 }

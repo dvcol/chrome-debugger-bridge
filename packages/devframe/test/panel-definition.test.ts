@@ -10,6 +10,17 @@ vi.mock('@devframes/json-render/node', () => ({ createJsonRenderView: () => ({ u
 
 const state: BrokerState = { revision: 1, providers: [], principals: [], requests: [], targets: [], grants: [], leases: [], scopes: [] };
 
+interface FixtureDockEntry {
+  readonly id: string;
+  readonly type: string;
+  readonly visibility?: string;
+  readonly action?: {
+    readonly eager?: boolean;
+    readonly importFrom: string;
+    readonly importName?: string;
+  };
+}
+
 function fixtureClient(revision: number) {
   let publish: (state: BrokerState) => void = () => {};
   const unsubscribe = vi.fn();
@@ -26,8 +37,13 @@ function fixtureClient(revision: number) {
   return { client, unsubscribe, publish: (revision: number) => publish({ ...state, revision }) };
 }
 
-function fixtureContext() {
+function fixtureContext(options: { hub?: boolean } = {}) {
   let value = { broker: state };
+  const docks = {
+    views: new Map([['cdb-browser-control', { id: 'cdb-browser-control', title: 'Browser control', icon: 'ph:browser-duotone', type: 'iframe', url: '/' }]]),
+    register: vi.fn((_entry: FixtureDockEntry) => ({ update: vi.fn() })),
+    update: vi.fn(),
+  };
   const context = {
     rpc: { sharedState: { get: vi.fn() } },
     scope: () => ({ rpc: {
@@ -37,8 +53,9 @@ function fixtureContext() {
         return { mutate: (mutate: (current: typeof value) => void) => mutate(value) };
       }),
     } }),
+    ...(options.hub === true ? { docks } : {}),
   };
-  return { context: context as unknown as Parameters<ReturnType<typeof createCdbPanel>['definition']['setup']>[0], current: () => value.broker };
+  return { context: context as unknown as Parameters<ReturnType<typeof createCdbPanel>['definition']['setup']>[0], current: () => value.broker, docks };
 }
 
 it('rebinds mounted presentation and rejects obsolete state after replacement or disabling', async () => {
@@ -79,5 +96,27 @@ it('does not install a stale subscription when snapshot completion races with re
   expect(first.client.watch).not.toHaveBeenCalled();
   expect(second.client.watch).toHaveBeenCalledOnce();
   expect(fixture.current().revision).toBe(2);
+  panel.dispose();
+});
+
+it('registers the page integration as a hidden eager action alongside the rendered dock', async () => {
+  expect.assertions(4);
+  const fixture = fixtureContext({ hub: true });
+  const panel = createCdbPanel({ client: () => fixtureClient(1).client });
+  await panel.definition.setup(fixture.context);
+  expect(fixture.docks.register).toHaveBeenCalledOnce();
+  const entry = fixture.docks.register.mock.calls[0]?.[0];
+  expect(entry).toMatchObject({ id: 'cdb-browser-control-page-script', type: 'action', visibility: 'false', action: { eager: true } });
+  expect(entry?.action?.importFrom).toMatch(/view\/page-script\.js$/u);
+  expect(entry?.action?.importName).toBeUndefined();
+  panel.dispose();
+});
+
+it('selects the accept-page export for the hidden eager action when approvalAction is "accept"', async () => {
+  expect.assertions(1);
+  const fixture = fixtureContext({ hub: true });
+  const panel = createCdbPanel({ client: () => fixtureClient(1).client, approvalAction: 'accept' });
+  await panel.definition.setup(fixture.context);
+  expect(fixture.docks.register.mock.calls[0]?.[0]?.action?.importName).toBe('setupBrowserControlAcceptPage');
   panel.dispose();
 });

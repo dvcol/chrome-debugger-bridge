@@ -115,6 +115,7 @@ export function parseBirpcConnectionOffer(value: unknown): BirpcConnectionOffer 
 
 /** Relays one origin-bound offer from the page to extension runtime messaging, then removes its listener. */
 export function createBirpcOfferContentRelay(options: CreateBirpcOfferContentRelayOptions): BirpcOfferContentRelay {
+  defineOfferRelay(options);
   let disposed = false;
   let receive: (event: MessageEvent<unknown>) => void;
   const dispose = (): void => {
@@ -135,6 +136,7 @@ export function createBirpcOfferContentRelay(options: CreateBirpcOfferContentRel
 
 /** Validates a one-shot runtime offer before allowing the extension agent to open its own direct transport. */
 export function createBirpcAgentBootstrap<Connection>(options: CreateBirpcAgentBootstrapOptions<Connection>): BirpcAgentBootstrap<Connection> {
+  defineBootstrap<Connection>(options);
   const now = options.now ?? Date.now;
   const cancelledNonces = new Set<string>();
   const consumedNonces = new Set<string>();
@@ -196,4 +198,14 @@ export function installBirpcOfferRuntimeHandler<Connection>(
       bootstrap.dispose();
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineBootstrap<Connection, const Definition extends CreateBirpcAgentBootstrapOptions<Connection> = CreateBirpcAgentBootstrapOptions<Connection>>(definition: Definition & CreateBirpcAgentBootstrapOptions<Connection>): Definition {
+  return definition;
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineOfferRelay<const Definition extends CreateBirpcOfferContentRelayOptions>(definition: Definition): Definition {
+  return definition;
 }

@@ -69,6 +69,7 @@
     "access": "public"
   },
   "devDependencies": {
+    "@dvcol/cdb-mcp": "workspace:^",
     "tsdown": "catalog:build",
     "vitest": "catalog:testing"
   }

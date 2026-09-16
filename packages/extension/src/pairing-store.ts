@@ -77,6 +77,7 @@ function isValidPairing(value: unknown): value is StoredBrokerPairing {
 export function createIndexedDbPairingStore(
   options: CreateIndexedDbPairingStoreOptions = {},
 ): IndexedDbPairingStore {
+  definePairingStore(options);
   const databaseName = options.databaseName ?? 'chrome-debugger-bridge';
 
   return {
@@ -132,4 +133,9 @@ export function createIndexedDbPairingStore(
       }
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function definePairingStore<const Definition extends CreateIndexedDbPairingStoreOptions>(definition: Definition): Definition {
+  return definition;
 }

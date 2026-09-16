@@ -24,6 +24,7 @@ export interface BrowserControlPanelOptions {
 
 /** Mounts framework-neutral management UI into an existing application. */
 export async function mountBrowserControlPanel(options: BrowserControlPanelOptions): Promise<{ dispose: () => void }> {
+  definePanelMount(options);
   const document = options.container.ownerDocument;
   const host = document.createElement('section');
   const root = host.attachShadow({ mode: 'open' });
@@ -44,7 +45,11 @@ export async function mountBrowserControlPanel(options: BrowserControlPanelOptio
   root.append(style, heading, notifications, content);
   options.container.append(host);
   let disposed = false;
-  const controller = createBrowserControlNotificationController({ onReview: options.onReview, onRevoke: async requestId => options.client.revokeScope(requestId) });
+  const controller = createBrowserControlNotificationController({
+    onReview: options.onReview,
+    onReject: async requestId => options.client.revokeScope(requestId),
+    onRevoke: async requestId => options.client.revokeScope(requestId),
+  });
   const renderer = renderBrowserControlNotifications({ controller, container: notifications, ...(options.branding === undefined ? {} : { branding: options.branding }) });
 
   function text(parent: HTMLElement, tag: string, value: string): void {
@@ -136,4 +141,9 @@ export function createBrowserControlPanelClient(client: CdbDevframeClient): Brow
     revokeGrant: async grantId => rpc.call('revoke-grant', grantId) as Promise<boolean>,
     disconnectProvider: async (providerId, forgetPairing = false) => rpc.call('disconnect-provider', providerId, forgetPairing) as Promise<boolean>,
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function definePanelMount<const Definition extends BrowserControlPanelOptions>(definition: Definition): Definition {
+  return definition;
 }

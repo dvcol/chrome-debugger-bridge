@@ -31,6 +31,7 @@ export interface AgentRecovery<Connection extends RecoverableAgentConnection> {
 
 /** Reconnects an MV3 agent without treating connections, targets, leases, or sessions as durable state. */
 export function createAgentRecovery<Connection extends RecoverableAgentConnection>(options: CreateAgentRecoveryOptions<Connection>): AgentRecovery<Connection> {
+  defineRecovery<Connection>(options);
   const minimumBackoffMilliseconds = options.minimumBackoffMilliseconds ?? 250;
   const maximumBackoffMilliseconds = options.maximumBackoffMilliseconds ?? 30_000;
   const schedule = options.schedule ?? globalThis.setTimeout;
@@ -143,4 +144,9 @@ export function createAgentRecovery<Connection extends RecoverableAgentConnectio
       setState('stopped');
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineRecovery<Connection extends RecoverableAgentConnection, const Definition extends CreateAgentRecoveryOptions<Connection> = CreateAgentRecoveryOptions<Connection>>(definition: Definition & CreateAgentRecoveryOptions<Connection>): Definition {
+  return definition;
 }

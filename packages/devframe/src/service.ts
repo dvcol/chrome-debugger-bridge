@@ -6,7 +6,7 @@ import type { DevframeNodeRpcSession, DevframeRpcConnection, DevframeScopedNodeC
 import { Buffer } from 'node:buffer';
 
 import { agentToBrokerMessageSchema } from '@dvcol/cdb';
-import { BrokerError, createBroker } from '@dvcol/cdb-broker';
+import { BrokerError, createBroker, defineBroker } from '@dvcol/cdb-broker';
 import { normalizeBrowserControlError } from '@dvcol/cdb-broker/contract';
 
 import packageManifest from '../package.json' with { type: 'json' };
@@ -60,6 +60,7 @@ declare module 'devframe/types' {
 
 /** Install once for the Devframe context. The host forwards peer lifecycle and explicitly disposes it. */
 export function createCdbService(options: CdbServiceOptions = {}): DevframeServiceDefinition<CdbDevframeService> {
+  defineService(options);
   return {
     package: '@dvcol/cdb-devframe',
     version: packageManifest.version,
@@ -246,4 +247,10 @@ function installBroker(context: DevframeScopedNodeContext, broker: BrokerRuntime
       await broker.dispose();
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineService<const Definition extends CdbServiceOptions>(definition: Definition): Definition {
+  defineBroker(definition.broker ?? {});
+  return definition;
 }

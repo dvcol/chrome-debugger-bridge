@@ -143,6 +143,7 @@ function jsonMetadata(metadata: JsonValue | undefined): JsonValue | undefined {
 export function createLogicalSessionManager(
   options: CreateLogicalSessionManagerOptions & { readonly authorityStore: AuthorityStore },
 ): LogicalSessionManager {
+  defineLogicalSession(options);
   const authorityStore = options.authorityStore;
   const generateCredential = options.generateCredential ?? randomCredential;
   const generateId = options.generateId ?? (() => crypto.randomUUID());
@@ -268,4 +269,10 @@ export function createLogicalSessionManager(
       await authorityStore.delete(logicalSessionId);
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineLogicalSession<const Definition extends CreateLogicalSessionManagerOptions & { readonly authorityStore: AuthorityStore }>(definition: Definition): Definition {
+  validateTimeoutMilliseconds({ ...defaultLogicalSessionTimingPolicy, ...definition.timing }.resumeWindowMilliseconds, 'resumeWindowMilliseconds');
+  return definition;
 }

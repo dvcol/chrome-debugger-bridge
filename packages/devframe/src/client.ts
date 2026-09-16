@@ -52,11 +52,8 @@ export interface CdbClientSession {
 }
 
 /** Retains and rotates one principal's resume credential; hosts forward connection lifecycle events. */
-export function createCdbClientSession(options: {
-  readonly credentialKey: string;
-  readonly credentialStore?: CredentialStore;
-  readonly metadata?: JsonValue;
-}): CdbClientSession {
+export function createCdbClientSession(options: CdbClientSessionOptions): CdbClientSession {
+  defineClientSession(options);
   const store = options.credentialStore ?? createMemoryCredentialStore();
   const input = options.metadata === undefined ? {} : { metadata: options.metadata };
   let pending = Promise.resolve();
@@ -159,6 +156,7 @@ export function createCdbClient(client: CdbDevframeClient): CdbClient {
       }
     },
     async connectProvider(options: ConnectCdbProviderOptions): Promise<ProviderConnection> {
+      defineProvider(options);
       const { brokerId } = await call<{ readonly brokerId: string }>('provider-register', options.registration);
       let pairing = await options.pairingStore.load(options.pairingKey);
       pairing ??= await options.pairingStore.findByIdentity?.(brokerId, options.registration.instanceId);
@@ -254,4 +252,21 @@ export function createCdbClient(client: CdbDevframeClient): CdbClient {
   };
   clients.set(client, handle);
   return handle;
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineClientSession<const Definition extends CdbClientSessionOptions>(definition: Definition): Definition {
+  return definition;
+}
+
+/** Configuration accepted by createCdbClientSession and defineClientSession. */
+export interface CdbClientSessionOptions {
+  readonly credentialKey: string;
+  readonly credentialStore?: CredentialStore;
+  readonly metadata?: JsonValue;
+}
+
+/** Defines provider connection configuration without reading credentials or connecting. */
+export function defineProvider<const Definition extends ConnectCdbProviderOptions>(definition: Definition): Definition {
+  return definition;
 }

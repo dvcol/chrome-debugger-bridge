@@ -44,6 +44,7 @@ async function untilAborted<Result>(pending: Promise<Result>, signal: AbortSigna
 
 /** One handle per host/principal. It never opens or closes the supplied transport. */
 export function createCdbConnection(options: CdbConnectionOptions = {}): CdbConnection {
+  defineConnection(options);
   const session = options.session === undefined ? undefined : createCdbClientSession(options.session);
   const listeners = new Set<(state: BrokerState) => void>();
   const cleanups = new Set<Promise<void>>();
@@ -182,4 +183,9 @@ export function createCdbConnection(options: CdbConnectionOptions = {}): CdbConn
       await Promise.all(cleanups);
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineConnection<const Definition extends CdbConnectionOptions>(definition: Definition): Definition {
+  return definition;
 }

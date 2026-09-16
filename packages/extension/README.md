@@ -20,7 +20,7 @@ Use `provider.approve(requestId, selector, approvalContext)` from the trusted ap
 
 The host chooses installation, recovery and pairing storage keys. Preserve those keys when adopting the adapter. Chrome session storage supports publication recovery but is never itself proof of approved authority.
 
-The `@dvcol/cdb-extension/notifications` entry supplies a headless notification controller and an optional neutral shadow-root renderer. Both derive state from the broker; local dismissal never changes authority. Review actions open the host's final approval UI. Branding and CSS are optional renderer inputs.
+The `@dvcol/cdb-extension/notifications` entry supplies a headless notification controller and an optional neutral shadow-root renderer. Both derive state from the broker; local dismissal never changes authority. Clicking a pending request card or its Review action opens the host's final approval UI. Accept/Review, Reject, and Dismiss controls do not trigger the card action. Branding and CSS are optional renderer inputs.
 
 See the [Devframe example](../../examples/devframe/README.md) for a complete composition over an existing RPC peer.
 
@@ -54,3 +54,13 @@ timeout and disposal. Supply the receiving and target windows, target origin and
 application message names. Readiness probes and approval acknowledgements use
 the same request method. A correlated message is **not** proof of human approval:
 the host must validate Chrome senders and own the final approval channel.
+
+## Page WebMCP
+
+CDB exposes native main-document WebMCP through `browser.list_webmcp_tools` and
+`browser.invoke_webmcp_tools`. Discovery requires inspect access; invocation requires
+interact access and an exclusive lease. Extension hosts can configure discovery with
+`defineProvider({ webMcp: { discovery: { include, exclude, enabled } }, ... })`.
+Filters hide tools from discovery; they do not block direct invocation by name.
+See [native page WebMCP](../../docs/webmcp.md) for references, artifacts, cancellation,
+and configuration examples.

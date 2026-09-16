@@ -40,7 +40,7 @@ export interface NativeMcpHarness {
 }
 
 /** Exercises the public extension, authenticated transports, broker, and native MCP catalogue. */
-export async function createNativeMcpHarness(options: { readonly frames?: 'cross-origin' | 'same-origin'; readonly inlineResultBytes?: number; readonly mcpModule?: string; readonly profile?: DeepDomProfile; readonly shadow?: 'closed' | 'mixed' | 'open' } = {}): Promise<NativeMcpHarness> {
+export async function createNativeMcpHarness(options: { readonly browserArguments?: readonly string[]; readonly frames?: 'cross-origin' | 'same-origin'; readonly inlineResultBytes?: number; readonly mcpModule?: string; readonly profile?: DeepDomProfile; readonly shadow?: 'closed' | 'mixed' | 'open' } = {}): Promise<NativeMcpHarness> {
   const cleanups: Array<() => Promise<unknown>> = [];
   const close = async (): Promise<void> => {
     const errors: unknown[] = [];
@@ -102,7 +102,7 @@ export async function createNativeMcpHarness(options: { readonly frames?: 'cross
       version: '0.0.0',
     }));
     const context = await chromium.launchPersistentContext(profileDirectory, {
-      args: [`--disable-extensions-except=${extensionDirectory}`, `--load-extension=${extensionDirectory}`, '--site-per-process', '--host-resolver-rules=MAP *.test 127.0.0.1', '--no-proxy-server'],
+      args: [`--disable-extensions-except=${extensionDirectory}`, `--load-extension=${extensionDirectory}`, '--site-per-process', '--host-resolver-rules=MAP *.test 127.0.0.1', '--no-proxy-server', ...options.browserArguments ?? []],
       channel: 'chromium',
       headless: true,
       viewport: { height: 900, width: 1280 },

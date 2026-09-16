@@ -5,6 +5,7 @@ import type { ClientAuthority } from '@dvcol/cdb/broker';
 import type { BrokerDefinition } from './config.js';
 import type { BrokerPeer, BrokerPrincipal } from './contract.js';
 
+import { createWebMcpClient } from '@dvcol/cdb';
 import { createCdbToolSession } from '@dvcol/cdb-mcp';
 
 import { allowsNavigation } from './config.js';
@@ -94,6 +95,7 @@ export function createBrokerSession(context: SessionContext, principal: BrokerPr
   }
 
   const client: McpChromeDebuggerBridgeClient = {
+    ...createWebMcpClient({ executeCommand: async request => authorized(async authority => context.targetBroker.executeCommand(request, authority)) }),
     acquireLease: async request => authorized((authority) => {
       const lease = context.targetBroker.acquireLease(request, authority);
       context.changed();

@@ -43,19 +43,30 @@ const panel = createCdbPanel({
 });
 ```
 
-The renderer must support Devframe's JSON view and action contracts. Component overrides apply only to that mounted renderer; the standalone SPA uses the reference catalogue. Dock ordering follows the host's categories and saved preferences. The page script remains available through `dock.clientScript` for host notifications and review intents.
+The renderer must support Devframe's JSON view and action contracts. Component overrides apply only to that mounted renderer; the standalone SPA uses the reference catalogue. Dock ordering follows the host's categories and saved preferences. The page script remains available through `dock.clientScript` for tab-local notification commands and review intents.
 
 For an existing application container, import `mountBrowserControlPanel` from `@dvcol/cdb-devframe/panel` and pass a `client`, `container`, optional branding/CSS and an `onReview` callback. Unmounting releases the panel subscription without disposing that client.
 
-The page script emits `cdb:review-request` with `{ requestId }` to request the embedding application's final approval UI. This is an untrusted presentation intent. It never grants authority or proves a human decision. The extension must authenticate final approval from its trusted popup or other host-approved channel.
+The page script emits `cdb:review-request` with a `BrowserControlApprovalEventDetail`. This is an untrusted presentation intent. It never grants authority or proves a human decision. The extension must authenticate final approval from its trusted popup or another host-approved channel, then register its result synchronously:
 
-Hosts with a direct approval channel can set `approvalAction: 'accept'` on `createCdbPanel`. The page script then labels its action **Accept** and emits `cdb:accept-request`; the embedding application authenticates and handles the final approval. The default remains **Review request** and `cdb:review-request`.
+```ts
+import type { BrowserControlApprovalEventDetail } from '@dvcol/cdb-devframe/page-script';
+
+window.addEventListener('cdb:review-request', (event) => {
+  const detail = (event as CustomEvent<BrowserControlApprovalEventDetail>).detail;
+  detail.respondWith(openTrustedApproval(detail.requestId));
+});
+```
+
+`respondWith` accepts a `PromiseLike<void>`. The page command awaits it and preserves structured rejection fields: `code`, `message`, `retryable`, `retryAfterMilliseconds`, and `details`. A missing synchronous responder fails with `APPROVAL_HANDLER_UNAVAILABLE`. `CdbPanelOptions.onNotificationError` receives the same `BrowserControlErrorData` shape when shared message creation, update, or dismissal fails.
+
+Hosts with a direct approval channel can set `approvalAction: 'accept'` on `createCdbPanel`. The page script then labels its action **Accept** and emits `cdb:accept-request` with the same awaitable detail. The default remains **Review request** and `cdb:review-request`.
 
 See the [runnable example](../../examples/devframe/README.md).
 
-Notification descriptions and approved-tab counts update through the existing Devframe message handle. Changed content retains its message ID and follows the host's normal notification behavior, including resurfacing a dismissed toast. Unchanged broker publications do not update the message. Request completion, expiry and disposal remove its message and command.
+The panel host publishes one notification per request or approved scope into Devframe’s shared message feed. Each viewing tab registers the matching command locally, so approval executes in the tab where the user clicks it. Closing a tab releases its command registrations without removing the shared message.
 
-The public validation workspace backports Devframe's toast-removal fix to hub-ui 0.9.10 using [a temporary pnpm patch](https://github.com/dvcol/chrome-debugger-bridge/blob/main/patches/README.md). This workspace patch is not inherited by consumers of the published CDB package; embedding applications using that hub-ui version must apply the patch themselves until adopting an upstream version containing the fix.
+Notification descriptions and approved-tab counts update through the existing Devframe message handle. Changed content retains its message ID and follows the host's normal notification behavior, including resurfacing a dismissed toast. Unchanged broker publications do not update the message. Request completion, expiry and panel-host disposal remove the shared message. Each page removes its command when its subscription reports that the request or scope ended.
 
 ### Connection-bound clients
 

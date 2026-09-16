@@ -24,7 +24,7 @@ import type {
   BirpcSubscriptionDescriptor,
 } from './client.js';
 
-import { connectAgentTargetBroker, connectClientTargetBroker, createTargetBroker } from '@dvcol/cdb';
+import { connectAgentTargetBroker, connectClientTargetBroker, createTargetBroker, defineTargetBroker, validateTimeoutMilliseconds } from '@dvcol/cdb';
 import { mountAuthenticatedWebSocketBridge } from '@dvcol/cdb-websocket/node';
 import { createBirpc } from 'birpc';
 
@@ -88,6 +88,7 @@ export function mountBirpcChromeDebuggerBridge<
   AgentPrincipal extends AuthenticatedPrincipal,
   ClientPrincipal extends AuthenticatedPrincipal,
 >(options: MountBirpcChromeDebuggerBridgeOptions<AgentPrincipal, ClientPrincipal>): MountedBirpcChromeDebuggerBridge {
+  defineBridge<AgentPrincipal, ClientPrincipal>(options);
   const broker = options.broker ?? createTargetBroker(options);
   const ownsBroker = options.broker === undefined;
   const subscriptions = new Map<string, BirpcSubscriptionState>();
@@ -254,4 +255,15 @@ export function mountBirpcChromeDebuggerBridge<
       if (ownsBroker) broker.dispose();
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineBridge<AgentPrincipal extends AuthenticatedPrincipal, ClientPrincipal extends AuthenticatedPrincipal, const Definition extends MountBirpcChromeDebuggerBridgeOptions<AgentPrincipal, ClientPrincipal> = MountBirpcChromeDebuggerBridgeOptions<AgentPrincipal, ClientPrincipal>>(definition: Definition & MountBirpcChromeDebuggerBridgeOptions<AgentPrincipal, ClientPrincipal>): Definition {
+  if (definition.broker === undefined) defineTargetBroker(definition);
+  for (const path of [definition.agentPath, definition.clientPath]) {
+    if (!path.startsWith('/') || path.includes('?') || path.includes('#')) throw new Error('WebSocket paths must be absolute paths without query parameters or fragments');
+  }
+  if (definition.agentPath === definition.clientPath) throw new Error('Agent and client WebSocket paths must be distinct');
+  for (const [name, value] of Object.entries(definition.webSocketTiming ?? {})) validateTimeoutMilliseconds(value, name);
+  return definition;
 }

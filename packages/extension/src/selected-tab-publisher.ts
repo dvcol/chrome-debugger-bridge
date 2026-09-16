@@ -3,12 +3,15 @@ import type { CapabilityGrant, CdpCommand, JsonObject, Lease, PublishedTarget } 
 import type { PublicChildSession } from './child-session-router.js';
 import type { AgentControlPresentationEvent } from './presentation.js';
 import type { TabScopeSelector } from './tab-scope.js';
+import type { WebMcpController, WebMcpOptions } from './webmcp.js';
 
+import { WebMcpError, webMcpMethods } from '@dvcol/cdb';
 import { isCdpNameAllowed, requiredLeaseMode } from '@dvcol/cdb/cdp-catalogue';
 
 import { createChildSessionRouter } from './child-session-router.js';
 import { translateAgentControlInputCommand } from './presentation.js';
 import { matchesTabScope } from './tab-scope.js';
+import { createWebMcpController, validateWebMcpOptions } from './webmcp.js';
 
 export interface ChromeDebuggerPort {
   attach: (target: { readonly sessionId?: string; readonly tabId: number }, requiredVersion: string) => Promise<void> | void;
@@ -42,6 +45,7 @@ export interface CommandAuthorizationContext {
 export type CommandAuthorizationPolicy = (context: CommandAuthorizationContext) => boolean | Promise<boolean>;
 
 export interface SelectedTabPublisherOptions {
+  readonly webMcp?: WebMcpOptions;
   readonly capabilities: CapabilityGrant;
   readonly chromeDebugger: ChromeDebuggerPort;
   /** Can make a published target's command authorization stricter, but never relax the bridge kernel. */
@@ -107,6 +111,7 @@ function isSupportedPage(url: string | undefined): boolean {
 
 /** Keeps Chrome's tab identifier in this closure and publishes only a lifecycle-bound opaque target. */
 export function createSelectedTabPublisher(options: SelectedTabPublisherOptions): SelectedTabPublisher {
+  definePublisher(options);
   const maximumResultBytes = options.maximumResultBytes ?? 16_777_216;
   if (!Number.isSafeInteger(maximumResultBytes) || maximumResultBytes < 1) throw new TypeError('maximumResultBytes must be a positive safe integer.');
   const childSessionRouter = createChildSessionRouter();
@@ -115,8 +120,18 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
   const activeChildSubscriptionDemands = new Map<string, Set<string>>();
   let selectedTabId: number | undefined;
   let publishedTarget: PublishedTarget | undefined;
+  let webMcp: WebMcpController | undefined;
   let publicationReady = false;
   const pendingEvents: { readonly method: string; readonly parameters: JsonObject; readonly sessionId?: string }[] = [];
+
+  function webMcpController(target: PublishedTarget, tabId: number): WebMcpController {
+    return createWebMcpController({
+      target,
+      maximumResultBytes,
+      ...(options.webMcp === undefined ? {} : { policy: options.webMcp }),
+      sendCommand: async (method, parameters) => options.chromeDebugger.sendCommand({ tabId }, method, parameters),
+    });
+  }
 
   function getRedactedMetadata(tab: Omit<SelectedTab, 'tabId'>): Pick<PublishedTarget, 'title' | 'url'> {
     return options.metadataPolicy?.(tab) ?? {};
@@ -214,6 +229,9 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     }
     const targetToRevoke = publishedTarget;
     const tabIdToDetach = selectedTabId;
+    const previousWebMcp = webMcp;
+    webMcp = undefined;
+    const webMcpDisposed = previousWebMcp?.dispose();
     publishedTarget = undefined;
     selectedTabId = undefined;
     publicationReady = false;
@@ -224,6 +242,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     activeChildSubscriptionDemands.clear();
     try {
       await options.revokeTarget(targetToRevoke, reason);
+      await webMcpDisposed;
     } finally {
       try {
         await options.chromeDebugger.detach({ tabId: tabIdToDetach });
@@ -270,6 +289,15 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     if (!isBaselineCommandAuthorized(authorizationContext) || !isPolicyAuthorized) {
       throw new Error('The requested command is not permitted.');
     }
+    if (command.method === webMcpMethods.list || command.method === webMcpMethods.invoke) {
+      if (command.sessionId !== undefined || webMcp === undefined) throw new WebMcpError('FEATURE_UNSUPPORTED', 'WebMCP bridge operations target the main document only.');
+      const result = await webMcp.execute(command.method, command.parameters, abortSignal);
+      if (publishedTarget?.id !== command.targetId || publishedTarget.generation !== command.targetGeneration)
+        throw new WebMcpError(command.method === webMcpMethods.invoke ? 'WEBMCP_OUTCOME_UNKNOWN' : 'WEBMCP_TOOL_STALE', 'The target generation changed during the WebMCP operation.');
+      if (new TextEncoder().encode(JSON.stringify(result)).byteLength > maximumResultBytes)
+        throw new WebMcpError(command.method === webMcpMethods.invoke ? 'WEBMCP_OUTCOME_UNKNOWN' : 'WEBMCP_DISCOVERY_FAILED', 'The WebMCP result exceeded the configured size bound. Do not replay an invocation to recover its result.');
+      return result;
+    }
     if (command.method === 'Bridge.listChildSessions') {
       return { sessions: childSessionRouter.list().map(session => ({ ...session })) };
     }
@@ -310,6 +338,10 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
 
   async function setSubscriptionDemand(methodPrefix: string, active: boolean, sessionId?: string): Promise<void> {
     if (selectedTabId === undefined) throw new Error('The requested target is not available.');
+    if (methodPrefix === 'WebMCP.') {
+      if (sessionId !== undefined || webMcp === undefined) throw new WebMcpError('FEATURE_UNSUPPORTED', 'WebMCP bridge operations target the main document only.');
+      return webMcp.setActive(active);
+    }
     const domain = methodPrefix.split('.', 1)[0];
     if (domain === undefined || !domainNamePattern.test(domain)) throw new Error('The subscription method is invalid.');
     const chromeSessionId = sessionId === undefined ? undefined : childSessionRouter.resolve(sessionId);
@@ -360,6 +392,9 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     activeRootSubscriptionDemands.clear();
     activeChildSubscriptionDemands.clear();
     publishedTarget = renewedTarget;
+    const previousWebMcp = webMcp;
+    webMcp = webMcpController(renewedTarget, selectedTabId);
+    await previousWebMcp?.dispose();
     publicationReady = false;
     pendingEvents.length = 0;
     try {
@@ -367,6 +402,8 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
       await options.publishTarget(renewedTarget);
       finishPublication();
     } catch (error) {
+      await webMcp?.dispose();
+      webMcp = undefined;
       publishedTarget = priorTarget;
       pendingEvents.length = 0;
       throw error;
@@ -382,6 +419,7 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     },
     debuggerEvent(source, method, parameters) {
       if (source.tabId !== undefined && source.tabId !== selectedTabId) return;
+      if (source.sessionId === undefined) webMcp?.event(method, parameters);
       if (method === 'Target.attachedToTarget') {
         const childSession = handleAttachedChild(parameters, source.sessionId);
         if (childSession !== undefined && isEligibleChildAttachment(parameters)) {
@@ -437,12 +475,15 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
 
       selectedTabId = tab.tabId;
       publishedTarget = target;
+      webMcp = webMcpController(target, tab.tabId);
       try {
         await configureFlatSessions();
         await options.publishTarget(target);
         finishPublication();
       } catch (error) {
         childSessionRouter.revoke();
+        await webMcp?.dispose();
+        webMcp = undefined;
         publishedTarget = undefined;
         selectedTabId = undefined;
         publicationReady = false;
@@ -495,6 +536,9 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
         await options.revokeTarget(publishedTarget, 'explicit');
         await options.chromeDebugger.attach({ tabId }, '1.3');
         publishedTarget = renewedTarget;
+        const previousWebMcp = webMcp;
+        webMcp = webMcpController(renewedTarget, tabId);
+        await previousWebMcp?.dispose();
         await configureFlatSessions();
         await options.publishTarget(renewedTarget);
         finishPublication();
@@ -513,4 +557,12 @@ export function createSelectedTabPublisher(options: SelectedTabPublisherOptions)
     renewAuthority,
     setSubscriptionDemand,
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function definePublisher<const Definition extends SelectedTabPublisherOptions>(definition: Definition): Definition {
+  const maximumResultBytes = definition.maximumResultBytes ?? 16_777_216;
+  if (!Number.isSafeInteger(maximumResultBytes) || maximumResultBytes < 1) throw new TypeError('maximumResultBytes must be a positive safe integer.');
+  validateWebMcpOptions(definition.webMcp);
+  return definition;
 }

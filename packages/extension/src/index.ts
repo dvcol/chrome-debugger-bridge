@@ -1,5 +1,8 @@
 export { type HeartbeatAgentConnection, sendAgentHeartbeat } from './agent-heartbeat.js';
+export { defineRecovery } from './agent-recovery.js';
 export { type AgentRecovery, type AgentRecoveryState, createAgentRecovery, type CreateAgentRecoveryOptions, type RecoverableAgentConnection } from './agent-recovery.js';
+export { defineApproval } from './approval-channel.js';
+export { defineApprovalSender } from './approval-channel.js';
 export {
   type ApprovalChannel,
   type ApprovalChannelOptions,
@@ -9,6 +12,8 @@ export {
   type ExtensionApprovalSender,
   type ExtensionApprovalSenderValidatorOptions,
 } from './approval-channel.js';
+export { defineBootstrap } from './bootstrap.js';
+export { defineOfferRelay } from './bootstrap.js';
 export {
   type BirpcAgentBootstrap,
   type BirpcConnectionOffer,
@@ -27,6 +32,7 @@ export {
 } from './bootstrap.js';
 export { type BrokerTabAssignment, type BrokerTabPublisher, createBrokerTabAssignment } from './broker-tab-assignment.js';
 export { type ChildSessionRouter, createChildSessionRouter, type PublicChildSession } from './child-session-router.js';
+export { definePairingStore } from './pairing-store.js';
 export {
   createIndexedDbPairingStore,
   type CreateIndexedDbPairingStoreOptions,
@@ -34,12 +40,14 @@ export {
   type StoredBrokerPairing,
 } from './pairing-store.js';
 export type { ProviderConnection } from './provider-connection.js';
+export { defineSelectedTab } from './selected-tab-lifecycle.js';
 export {
   type ChromeSelectedTabLifecyclePort,
   createSelectedTabLifecycle,
   type SelectedTabLifecycle,
   type SelectedTabLifecycleOptions,
 } from './selected-tab-lifecycle.js';
+export { definePublisher } from './selected-tab-publisher.js';
 export {
   type ChromeDebuggerPort,
   type CommandAuthorizationContext,
@@ -49,13 +57,18 @@ export {
   type SelectedTabPublisher,
   type SelectedTabPublisherOptions,
 } from './selected-tab-publisher.js';
+export { defineTabLifecycle } from './tab-scope-lifecycle.js';
 export {
   type ChromeTabScopeLifecyclePort,
   createTabScopeLifecycle,
   type TabScopeLifecycle,
   type TabScopeLifecycleOptions,
 } from './tab-scope-lifecycle.js';
+export { defineTabScope } from './tab-scope-manager.js';
 export { createTabScopeManager, type TabScopeManager, type TabScopeManagerOptions } from './tab-scope-manager.js';
 export { matchesTabScope, parseTabScopeSelector, type TabScopeSelector } from './tab-scope.js';
 
+export { definePageRequest } from './page-request.js';
 export { createPageRequestBridge, type PageRequestBridge, type PageRequestBridgeOptions, type PageRequestOptions } from './page-request.js';
+
+export type { WebMcpDiscoveryContext, WebMcpOptions, WebMcpPageContext, WebMcpToolMatcher } from './webmcp.js';

@@ -58,3 +58,11 @@ Both transports use the same normal closed-shadow fixture with three cross-origi
 Linux CI measurements establish a separate baseline from the historical macOS reports. Compare matching browser versions, fixtures and runner environments. Browser scheduling and transport overhead remain included; model time and application loading are excluded. Failed performance gates and unexplained stalls remain follow-ups for the experimental release.
 
 For a targeted diagnostic outside CI, the shared runner accepts `CDB_WORKFLOW_BENCHMARK_SAMPLES` from 5 to 50 and `CDB_WORKFLOW_PERFORMANCE_GATE=1`. Enable either `CDB_WEBSOCKET_BENCHMARK_OUTPUT` for `native-agent-benchmark.test.ts` or `CDB_DEVFRAME_BENCHMARK_OUTPUT` for `devframe-native.test.ts`. Enable `CDB_LIFECYCLE_DIAGNOSTICS_OUTPUT` separately for the latter's lifecycle matrix. Output paths are JSON files; do not commit generated measurements.
+
+## Native WebMCP
+
+`native-webmcp.test.ts` exercises native `document.modelContext` registration through the extension
+debugger and public MCP tools. It requires a Chromium build exposing WebMCP, enables experimental
+web platform features, and uses a trustworthy loopback page. Missing native support fails explicitly.
+See [the WebMCP validation handoff](../../docs/webmcp-validation.md) before running it while another
+session owns downstream TNR.

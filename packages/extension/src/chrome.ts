@@ -7,12 +7,16 @@ import type { ProviderConnection } from './provider-connection.js';
 import type { CommandAuthorizationPolicy, SelectedTab, SelectedTabPublisher } from './selected-tab-publisher.js';
 import type { ChromeTabScopeLifecyclePort } from './tab-scope-lifecycle.js';
 import type { TabScopeSelector } from './tab-scope.js';
+import type { WebMcpOptions } from './webmcp.js';
+
+import { WebMcpError } from '@dvcol/cdb';
 
 import { sendAgentHeartbeat } from './agent-heartbeat.js';
 import { createAgentRecovery } from './agent-recovery.js';
 import { createSelectedTabPublisher } from './selected-tab-publisher.js';
 import { createTabScopeManager } from './tab-scope-manager.js';
 import { parseTabScopeSelector } from './tab-scope.js';
+import { validateWebMcpOptions } from './webmcp.js';
 
 interface ChromeEvent<Arguments extends unknown[]> {
   addListener: (listener: (...arguments_: Arguments) => void) => void;
@@ -68,6 +72,7 @@ export function createChromeTabBindings(platform: typeof chrome = chrome): Chrom
 }
 
 export interface ChromeProviderOptions<ApprovalContext> {
+  readonly webMcp?: WebMcpOptions;
   readonly chrome?: typeof chrome;
   readonly connect: () => Promise<ProviderConnection>;
   readonly maximumLevel: AccessLevel;
@@ -109,6 +114,7 @@ export interface ChromeProvider<ApprovalContext> {
 
 /** Composes shared publications, claims, navigation renewal, Chrome events and recoverable provider transport. */
 export function createChromeProvider<ApprovalContext>(options: ChromeProviderOptions<ApprovalContext>): ChromeProvider<ApprovalContext> {
+  defineProvider<ApprovalContext>(options);
   const platform = options.chrome ?? chrome;
   const tabs = new Map<number, ControlledTab>();
   const scopes = new Map<string, TabScopeSelector>();
@@ -164,6 +170,7 @@ export function createChromeProvider<ApprovalContext>(options: ChromeProviderOpt
       let controlled: ControlledTab;
       const publisher = createSelectedTabPublisher({
         capabilities: { level: options.maximumLevel },
+        ...(options.webMcp === undefined ? {} : { webMcp: options.webMcp }),
         scopeId,
         ...(restoredTarget === undefined ? {} : { targetIdentity: { id: restoredTarget.id, generation: restoredTarget.generation + 1 } }),
         ...(options.isExposureAllowed === undefined ? {} : { isExposureAllowed: options.isExposureAllowed }),
@@ -295,7 +302,7 @@ export function createChromeProvider<ApprovalContext>(options: ChromeProviderOpt
         const value = await controlled.publisher.executeCommand(command, controller.signal, lease);
         await source.send({ kind: 'response', method: 'cdp.execute', requestId: message.requestId, protocolVersion: 1, result: { operationId: command.operationId, value } });
       } catch (error) {
-        await source.send({ kind: 'error', method: 'cdp.execute', requestId: message.requestId, protocolVersion: 1, error: { code: 'CDP_COMMAND_FAILED', message: error instanceof Error ? error.message : String(error), retryable: false } });
+        await source.send({ kind: 'error', method: 'cdp.execute', requestId: message.requestId, protocolVersion: 1, error: error instanceof WebMcpError ? { code: error.code, message: error.message.slice(0, 1024), retryable: error.retryable } : { code: 'CDP_COMMAND_FAILED', message: error instanceof Error ? error.message : String(error), retryable: false } });
       } finally {
         commands.delete(command.operationId);
       }
@@ -494,3 +501,11 @@ export async function getChromeProviderIdentity(storageKey: string, platform: ty
     return identity;
   });
 }
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineProvider<ApprovalContext, const Definition extends ChromeProviderOptions<ApprovalContext> = ChromeProviderOptions<ApprovalContext>>(definition: Definition & ChromeProviderOptions<ApprovalContext>): Definition {
+  validateWebMcpOptions(definition.webMcp);
+  return definition;
+}
+
+export type { WebMcpDiscoveryContext, WebMcpOptions, WebMcpPageContext, WebMcpToolMatcher } from './webmcp.js';

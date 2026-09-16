@@ -177,6 +177,9 @@ export class TargetBrokerError extends Error {
       | 'CAPABILITY_DENIED'
       | 'CDP_COMMAND_FAILED'
       | 'FEATURE_UNSUPPORTED'
+      | 'WEBMCP_DISCOVERY_FAILED'
+      | 'WEBMCP_TOOL_STALE'
+      | 'WEBMCP_OUTCOME_UNKNOWN'
       | 'LEASE_CONFLICT'
       | 'LEASE_EXPIRED'
       | 'LEASE_REQUIRED'
@@ -221,6 +224,10 @@ function targetExecutorError(error: unknown): TargetBrokerError | undefined {
   const code = record.code;
   if (
     code !== 'CDP_COMMAND_FAILED'
+    && code !== 'FEATURE_UNSUPPORTED'
+    && code !== 'WEBMCP_DISCOVERY_FAILED'
+    && code !== 'WEBMCP_TOOL_STALE'
+    && code !== 'WEBMCP_OUTCOME_UNKNOWN'
     && code !== 'REQUEST_CANCELLED'
     && code !== 'SESSION_GENERATION_STALE'
     && code !== 'SESSION_NOT_FOUND'
@@ -355,6 +362,7 @@ export interface TargetBroker {
 export function createTargetBroker(
   options: CreateTargetBrokerOptions = {},
 ): TargetBroker {
+  defineTargetBroker(options);
   const timing: BrokerTimingPolicy = {
     ...defaultBrokerTimingPolicy,
     ...options.timing,
@@ -757,7 +765,7 @@ export function createTargetBroker(
     if (setup === undefined) return undefined;
     return setup.catch((error: unknown) => {
       domainDemandCountsByKey.delete(demandKey);
-      throw new TargetBrokerError('CDP_COMMAND_FAILED', {
+      throw targetExecutorError(error) ?? new TargetBrokerError('CDP_COMMAND_FAILED', {
         ...(error instanceof Error ? { message: error.message } : {}),
       });
     });
@@ -789,7 +797,7 @@ export function createTargetBroker(
     method: string,
     sessionId?: string,
   ): Promise<void> | undefined {
-    const domain = method.split('.', 1)[0];
+    const domain = method === 'Bridge.listWebMcpTools' || method === 'Bridge.invokeWebMcpTools' ? 'WebMCP' : method.split('.', 1)[0];
     if (domain === undefined || !lifecycleManagedDomains.has(domain))
       return undefined;
     const demand = `${domain}.`;
@@ -1229,6 +1237,7 @@ export function createTargetBroker(
         () => abortController.abort(),
         commandTimeoutMilliseconds,
       );
+      let dispatched = false;
       try {
         const domainActivation = ensureLeaseDomainDemand(
           target,
@@ -1237,14 +1246,16 @@ export function createTargetBroker(
           command.sessionId,
         );
         if (domainActivation !== undefined) await domainActivation;
+        dispatched = true;
         const value = await executor.execute(
           command,
           abortController.signal,
           lease,
         );
         if (abortController.signal.aborted) {
-          recordDiagnostic('REQUEST_CANCELLED');
-          throw new TargetBrokerError('REQUEST_CANCELLED');
+          const code = dispatched && command.method === 'Bridge.invokeWebMcpTools' ? 'WEBMCP_OUTCOME_UNKNOWN' : 'REQUEST_CANCELLED';
+          recordDiagnostic(code);
+          throw new TargetBrokerError(code);
         }
         const externalizedValue = await externalizeJsonResult(value, {
           expiresAt: artifactLifetimeMilliseconds === null
@@ -1269,8 +1280,13 @@ export function createTargetBroker(
           throw executorError;
         }
         if (abortController.signal.aborted) {
-          recordDiagnostic('REQUEST_CANCELLED');
-          throw new TargetBrokerError('REQUEST_CANCELLED');
+          const code = dispatched && command.method === 'Bridge.invokeWebMcpTools' ? 'WEBMCP_OUTCOME_UNKNOWN' : 'REQUEST_CANCELLED';
+          recordDiagnostic(code);
+          throw new TargetBrokerError(code);
+        }
+        if (dispatched && command.method === 'Bridge.invokeWebMcpTools') {
+          recordDiagnostic('WEBMCP_OUTCOME_UNKNOWN');
+          throw new TargetBrokerError('WEBMCP_OUTCOME_UNKNOWN', { message: 'The provider response was lost after invocation dispatch. Do not replay it.' });
         }
         recordDiagnostic('CDP_COMMAND_FAILED');
         throw new TargetBrokerError('CDP_COMMAND_FAILED', {
@@ -2138,4 +2154,10 @@ export function createTargetBroker(
       void Promise.resolve(provider.dispose()).catch(() => {});
     },
   });
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineTargetBroker<const Definition extends CreateTargetBrokerOptions>(definition: Definition): Definition {
+  for (const [name, value] of Object.entries({ ...defaultBrokerTimingPolicy, ...definition.timing })) validateTimeoutMilliseconds(value, name);
+  return definition;
 }

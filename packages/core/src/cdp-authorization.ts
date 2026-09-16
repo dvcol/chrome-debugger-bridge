@@ -7,6 +7,8 @@ const capabilityLevelIndex = new Map(cdpCapabilityLevels.map((level, index) => [
 const catalogue: Readonly<Record<string, CdpCatalogueEntry>> = cdpCapabilityCatalogue;
 const bridgeCatalogue: Readonly<Record<string, CdpCatalogueEntry>> = {
   'Bridge.childSessionAttached': { kind: 'event', level: 'observe' },
+  'Bridge.listWebMcpTools': { kind: 'command', level: 'inspect' },
+  'Bridge.invokeWebMcpTools': { kind: 'command', level: 'interact' },
   'Bridge.listChildSessions': { kind: 'command', level: 'inspect' },
 };
 const kernelOwnedNames = new Set<string>(cdpKernelOwnedNames);
@@ -20,7 +22,7 @@ export function isKnownCdpEventName(name: string): boolean {
 
 /** Resolves the catalogue and exact-name grant without inspecting native CDP payloads. */
 export function isCdpNameAllowed(grant: CapabilityGrant, name: string, kind: CdpNameKind): boolean {
-  if (kernelOwnedNames.has(name)) return false;
+  if (kernelOwnedNames.has(name) || name.startsWith('WebMCP.')) return false;
   const entry = catalogue[name] ?? bridgeCatalogue[name];
   if (entry !== undefined && entry.kind !== kind) return false;
   if (grant.allow?.includes(name) ?? false) return true;

@@ -111,6 +111,7 @@ interface StoredGrantRequest {
 export function createGrantRequestCoordinator(
   options: CreateGrantRequestCoordinatorOptions,
 ): GrantRequestCoordinator {
+  defineGrantRequests(options);
   const requests = new Map<string, StoredGrantRequest>();
   const listeners = new Set<(change: GrantRequestChange) => void>();
   const timing = { ...defaultGrantRequestTimingPolicy, ...options.timing };
@@ -417,4 +418,10 @@ export function createGrantRequestCoordinator(
       return () => listeners.delete(listener);
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineGrantRequests<const Definition extends CreateGrantRequestCoordinatorOptions>(definition: Definition): Definition {
+  validateTimeoutMilliseconds({ ...defaultGrantRequestTimingPolicy, ...definition.timing }.requestTimeoutMilliseconds, 'requestTimeoutMilliseconds');
+  return definition;
 }

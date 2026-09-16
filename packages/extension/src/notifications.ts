@@ -15,6 +15,7 @@ export interface BrowserControlNotification {
 export interface BrowserControlNotificationController {
   dismiss: (requestId: string) => void;
   dispose: () => void;
+  reject: (requestId: string) => Promise<void>;
   review: (requestId: string) => Promise<void>;
   revoke: (requestId: string) => Promise<void>;
   snapshot: () => BrowserControlNotification;
@@ -26,11 +27,14 @@ export interface BrowserControlNotificationOptions {
   readonly targetId?: string;
   /** Opens the embedding application's approval UI. This callback does not itself grant authority. */
   readonly onReview: (request: BrokerRequest) => void | Promise<void>;
+  /** Authoritatively denies a pending request. Distinct from `dismiss`, which never rejects. */
+  readonly onReject: (requestId: string) => Promise<void>;
   readonly onRevoke: (requestId: string) => Promise<void>;
 }
 
 /** Derives notification state from the broker. Dismissal is presentation-only and never rejects a request. */
 export function createBrowserControlNotificationController(options: BrowserControlNotificationOptions): BrowserControlNotificationController {
+  defineNotifications(options);
   const dismissed = new Set<string>();
   const listeners = new Set<(value: BrowserControlNotification) => void>();
   let state: Pick<BrokerState, 'requests' | 'grants'> | undefined;
@@ -72,6 +76,11 @@ export function createBrowserControlNotificationController(options: BrowserContr
       if (request === undefined) throw new Error('The browser access request is no longer pending.');
       await options.onReview(request);
     },
+    async reject(requestId) {
+      const request = snapshot().requests.find(candidate => candidate.id === requestId);
+      if (request === undefined) throw new Error('The browser access request is no longer pending.');
+      await options.onReject(requestId);
+    },
     async revoke(requestId) {
       if (!snapshot().grants.some(grant => grant.requestId === requestId)) throw new Error('The approved scope is no longer present.');
       await options.onRevoke(requestId);
@@ -98,7 +107,7 @@ export interface BrowserControlNotificationRendererOptions {
   /** Describe the host's action, including direct approval when the host provides that policy. */
   readonly reviewLabel?: (request: BrokerRequest) => string;
   readonly clientLabel?: (request: BrokerRequest) => string;
-  /** Rejects the pending request through the host; dismissal remains local. */
+  /** Overrides the authoritative reject action; defaults to `controller.reject`. Dismissal remains local regardless. */
   readonly onReject?: (request: BrokerRequest) => Promise<void>;
   /** Host-supplied CSS, applied inside the isolated notification root. */
   readonly css?: string;
@@ -110,8 +119,9 @@ export interface BrowserControlNotificationRenderer {
   setColorMode: (mode: BrowserControlNotificationColorMode) => void;
 }
 
-/** Optional themed presentation. Review buttons delegate to the host's trusted final approval UI. */
+/** Optional themed presentation. Pending request cards delegate to the host's trusted final approval UI. */
 export function renderBrowserControlNotifications(options: BrowserControlNotificationRendererOptions): BrowserControlNotificationRenderer {
+  defineNotificationRenderer(options);
   const document = options.container.ownerDocument;
   const host = document.createElement('section');
   host.dataset.cdbNotifications = '';
@@ -139,12 +149,10 @@ export function renderBrowserControlNotifications(options: BrowserControlNotific
   let disposed = false;
   let renderedNotification: string | undefined;
 
-  async function runAction(
-    button: HTMLButtonElement,
+  async function invokeAction(
     container: HTMLElement,
     action: () => void | Promise<void>,
   ): Promise<void> {
-    button.disabled = true;
     try {
       await action();
     } catch (error) {
@@ -153,6 +161,17 @@ export function renderBrowserControlNotifications(options: BrowserControlNotific
       message.setAttribute('role', 'alert');
       message.textContent = error instanceof Error ? error.message : 'The browser request could not be completed.';
       container.append(message);
+    }
+  }
+
+  async function runAction(
+    button: HTMLButtonElement,
+    container: HTMLElement,
+    action: () => void | Promise<void>,
+  ): Promise<void> {
+    button.disabled = true;
+    try {
+      await invokeAction(container, action);
     } finally {
       button.disabled = false;
     }
@@ -166,7 +185,8 @@ export function renderBrowserControlNotifications(options: BrowserControlNotific
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = label;
-    button.onclick = () => {
+    button.onclick = (event) => {
+      event.stopPropagation();
       void runAction(button, container, action);
     };
     container.append(button);
@@ -216,6 +236,10 @@ export function renderBrowserControlNotifications(options: BrowserControlNotific
     content.replaceChildren();
     for (const request of notification.requests) {
       const element = createCard(options.branding?.title ?? 'Browser control requested');
+      element.className = 'request';
+      element.onclick = () => {
+        void invokeAction(element, async () => options.controller.review(request.id));
+      };
       const dismiss = createActionButton(element, '×', () => options.controller.dismiss(request.id));
       dismiss.className = 'dismiss';
       dismiss.setAttribute('aria-label', 'Dismiss');
@@ -224,8 +248,7 @@ export function renderBrowserControlNotifications(options: BrowserControlNotific
       const actions = document.createElement('footer');
       element.append(actions);
       createActionButton(actions, options.reviewLabel?.(request) ?? 'Review request', async () => options.controller.review(request.id));
-      const reject = options.onReject;
-      if (reject !== undefined) createActionButton(actions, 'Reject', async () => reject(request));
+      createActionButton(actions, 'Reject', async () => (options.onReject ?? (async r => options.controller.reject(r.id)))(request));
       content.append(element);
     }
     const grouped = Map.groupBy(notification.grants, grant => grant.requestId);
@@ -249,4 +272,14 @@ export function renderBrowserControlNotifications(options: BrowserControlNotific
       host.remove();
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineNotifications<const Definition extends BrowserControlNotificationOptions>(definition: Definition): Definition {
+  return definition;
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineNotificationRenderer<const Definition extends BrowserControlNotificationRendererOptions>(definition: Definition): Definition {
+  return definition;
 }

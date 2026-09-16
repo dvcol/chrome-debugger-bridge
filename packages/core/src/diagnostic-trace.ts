@@ -9,7 +9,10 @@ export type DiagnosticCode
     | 'SESSION_NOT_FOUND'
     | 'TARGET_GENERATION_STALE'
     | 'TARGET_NOT_FOUND'
-    | 'TARGET_REVOKED';
+    | 'TARGET_REVOKED'
+    | 'WEBMCP_DISCOVERY_FAILED'
+    | 'WEBMCP_TOOL_STALE'
+    | 'WEBMCP_OUTCOME_UNKNOWN';
 
 export interface DiagnosticTraceEntry {
   readonly code: DiagnosticCode;

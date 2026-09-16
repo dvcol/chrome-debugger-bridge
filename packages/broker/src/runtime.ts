@@ -150,6 +150,18 @@ export async function createBroker(configuration: BrokerDefinition = {}): Promis
     return { principalId: provider.registration.instanceId, connectionGeneration: provider.generation };
   }
 
+  function requireAvailableProvider(): void {
+    const connected = [...providers.values()];
+    if (connected.some(provider => provider.state === 'ready')) return;
+    if (
+      connected.some(provider => provider.state === 'connecting' || provider.state === 'recovering')
+      || [...registrations.values()].some(registration => !providers.has(registration.id))
+    ) {
+      throw new BrokerError('PROVIDER_RECOVERING', 'A browser provider is connecting or recovering.', true);
+    }
+    throw new BrokerError('PROVIDER_UNAVAILABLE', 'No browser provider is available.');
+  }
+
   function assertProviderIdentity(registration: ProviderRegistration): void {
     const existing = [...providers.values()].find(provider => provider.registration.id === registration.id || provider.registration.instanceId === registration.instanceId);
     if (existing !== undefined && (existing.registration.id !== registration.id || existing.registration.instanceId !== registration.instanceId))
@@ -426,6 +438,22 @@ export async function createBroker(configuration: BrokerDefinition = {}): Promis
     }
   }
 
+  async function reconcileProviderState(provider: Provider, values: readonly ProviderTarget[]): Promise<BrokerState> {
+    if (providers.get(provider.registration.id) !== provider || (provider.state !== 'connecting' && provider.state !== 'ready'))
+      throw new BrokerError('PROVIDER_RECOVERING', 'The provider connection is unavailable.', true);
+    const checked = checkedTargets(provider, values);
+    for (const target of checked) targetMetadata.set(target.id, target);
+    provider.state = 'ready';
+    for (const session of sessions.values()) session.refreshTargets();
+    for (const state of grantCoordinator.inspect()) {
+      if (state.request.state !== 'granted' || state.provider?.principalId !== provider.registration.instanceId) continue;
+      const selected = checked.filter(target => state.bindings.some(binding => binding.targetId === target.id));
+      await reconcileScope(provider.peer, state.request.id, selected);
+    }
+    changed();
+    return snapshot();
+  }
+
   function accessResult(grant: BrokerGrant, session: BrokerSession): BrowserAccessResult {
     const published = targetBroker.listTargets(session.authority).find(target => target.id === grant.targetId);
     const targetRef = published === undefined ? undefined : session.tools.projectTarget(published)?.targetRef;
@@ -481,6 +509,7 @@ export async function createBroker(configuration: BrokerDefinition = {}): Promis
       return accessResult(candidates[0], session);
     }
     if (input.newTarget !== true && targetIds.size > 1) throw new BrokerError('TARGET_AMBIGUOUS', 'Choose a targetRef or request a new target.', true);
+    requireAvailableProvider();
     if (grantCoordinator.inspect().some(state => state.request.logicalSessionId === session.logicalSessionId && state.request.state !== 'granted'))
       throw new BrokerError('REQUEST_RATE_LIMITED', 'This browser session already has a pending request.', true);
     const previous = lastRequests.get(session.principal.id);
@@ -570,6 +599,14 @@ export async function createBroker(configuration: BrokerDefinition = {}): Promis
         disconnect: connectAgentTargetBroker(connection, targetBroker, {
           authority,
           connectionGeneration: authority.connectionGeneration,
+          onTargetsReconciled(targets) {
+            void reconcileProviderState(provider, targets).catch(() => {
+              if (providers.get(registration.id) !== provider) return;
+              provider.disconnect();
+              connection.close?.(3001, 'Provider reconciliation failed');
+              recover(provider);
+            });
+          },
           revokeTargetsOnDisconnect: false,
           connectionLimits: { maximumArtifactBytes: 16 * 1_024 * 1_024, maximumInlineResultBytes: 64 * 1_024, maximumMessageBytes: definition.maximumProviderMessageBytes ?? 64 * 1_024 * 1_024 },
         }),
@@ -599,18 +636,8 @@ export async function createBroker(configuration: BrokerDefinition = {}): Promis
     },
     async reconcileProvider(peer: BrokerPeer, values: readonly ProviderTarget[]) {
       const provider = [...providers.values()].find(candidate => candidate.peer.id === peer.id);
-      if (provider === undefined || (provider.state !== 'connecting' && provider.state !== 'ready')) throw new BrokerError('PROVIDER_RECOVERING', 'The provider connection is unavailable.', true);
-      const checked = checkedTargets(provider, values);
-      for (const target of checked) targetMetadata.set(target.id, target);
-      provider.state = 'ready';
-      for (const session of sessions.values()) session.refreshTargets();
-      for (const state of grantCoordinator.inspect()) {
-        if (state.request.state !== 'granted' || state.provider?.principalId !== provider.registration.instanceId) continue;
-        const selected = checked.filter(target => state.bindings.some(binding => binding.targetId === target.id));
-        await reconcileScope(peer, state.request.id, selected);
-      }
-      changed();
-      return snapshot();
+      if (provider === undefined) throw new BrokerError('PROVIDER_RECOVERING', 'The provider connection is unavailable.', true);
+      return reconcileProviderState(provider, values);
     },
     claimRequest(peer: BrokerPeer, requestId: string) {
       const provider = currentProvider(peer);
@@ -663,12 +690,40 @@ export async function createBroker(configuration: BrokerDefinition = {}): Promis
     },
     async disconnectProvider(providerId: string, forgetPairing = false) {
       const provider = providers.get(providerId);
-      if (provider === undefined) return false;
+      const registration = provider?.registration ?? [...registrations.values()].find(candidate => candidate.id === providerId);
+      if (registration === undefined || (provider === undefined && !forgetPairing)) return false;
+      if (provider === undefined) {
+        for (const [peerId, candidate] of registrations) {
+          if (candidate.id !== registration.id && candidate.instanceId !== registration.instanceId) continue;
+          registrations.delete(peerId);
+          authentication.forget(peerId);
+        }
+        let credential = identityStore.findByAgentId(registration.instanceId);
+        while (credential !== undefined) {
+          await identityStore.remove(credential.credentialId);
+          credential = identityStore.findByAgentId(registration.instanceId);
+        }
+        changed();
+        return true;
+      }
       provider.state = 'disconnected';
       if (provider.recoveryTimer !== undefined) clearTimeout(provider.recoveryTimer);
+      if (forgetPairing) {
+        providers.delete(providerId);
+        for (const [peerId, registration] of registrations) {
+          if (registration.id !== provider.registration.id && registration.instanceId !== provider.registration.instanceId) continue;
+          registrations.delete(peerId);
+          authentication.forget(peerId);
+        }
+      }
       provider.disconnect();
       provider.connection.close?.(4001, 'Provider disconnected');
+      const targetIds = targetBroker.listTargets()
+        .filter(target => targetBroker.getTargetAgentPrincipalId(target.id) === provider.registration.instanceId)
+        .map(target => target.id);
       targetBroker.revokeAgentTargets(providerAuthority(provider), 'explicit');
+      for (const targetId of targetIds) targetMetadata.delete(targetId);
+      changed();
       await cancelProviderRequests(provider);
       if (forgetPairing) {
         let credential = identityStore.findByAgentId(provider.registration.instanceId);
@@ -677,7 +732,6 @@ export async function createBroker(configuration: BrokerDefinition = {}): Promis
           credential = identityStore.findByAgentId(provider.registration.instanceId);
         }
       }
-      changed();
       return true;
     },
     async disconnectPeer(peerId: string) {

@@ -349,6 +349,7 @@ function resolveOrigin(explicitOrigin: string | undefined): string {
 export async function connectAgentWebSocket(
   options: ConnectAgentWebSocketOptions,
 ): Promise<BrowserAgentConnection> {
+  defineAgentWebSocket(options);
   const timeoutMilliseconds = resolveBrowserWebSocketTimingPolicy(options.timing).handshakeTimeoutMilliseconds;
   const maximumPendingMessages = options.maximumPendingAuthenticatedMessages ?? maximumPendingAuthenticatedMessages;
   if (!Number.isSafeInteger(maximumPendingMessages) || maximumPendingMessages < 1) {
@@ -652,6 +653,7 @@ function encodeAuthorizationSubprotocol(authorization: string): string {
 export async function connectBrowserClientWebSocket(
   options: ConnectBrowserClientWebSocketOptions,
 ): Promise<BrowserClientConnection> {
+  defineClientWebSocket(options);
   const timeoutMilliseconds = resolveBrowserWebSocketTimingPolicy(options.timing).handshakeTimeoutMilliseconds;
   const endpointUrl = new URL(options.endpoint);
   validateWebSocketEndpointSecurity(endpointUrl);
@@ -786,6 +788,7 @@ interface BrowserSubscriptionState {
 export async function createBrowserChromeDebuggerBridgeClient(
   options: CreateBrowserChromeDebuggerBridgeClientOptions,
 ): Promise<BrowserChromeDebuggerBridgeClient> {
+  defineBrowserClient(options);
   let connection = await connectBrowserClientWebSocket(options);
   const pendingRequests = new Map<string, PendingRequest>();
   const targetChanges = createAsyncQueue<TargetChange>(maximumPendingAuthenticatedMessages);
@@ -1023,4 +1026,31 @@ export async function createBrowserChromeDebuggerBridgeClient(
     },
     closed,
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineAgentWebSocket<const Definition extends ConnectAgentWebSocketOptions>(definition: Definition): Definition {
+  resolveBrowserWebSocketTimingPolicy(definition.timing);
+  const maximumPendingMessages = definition.maximumPendingAuthenticatedMessages ?? maximumPendingAuthenticatedMessages;
+  if (!Number.isSafeInteger(maximumPendingMessages) || maximumPendingMessages < 1) throw new Error('The maximum pending authenticated messages must be a positive integer');
+  const endpoint = new URL(definition.endpoint);
+  validateWebSocketEndpointSecurity(endpoint);
+  if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('The agent WebSocket endpoint must not contain credentials, query parameters, or fragments');
+  return definition;
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineClientWebSocket<const Definition extends ConnectBrowserClientWebSocketOptions>(definition: Definition): Definition {
+  resolveBrowserWebSocketTimingPolicy(definition.timing);
+  const endpoint = new URL(definition.endpoint);
+  validateWebSocketEndpointSecurity(endpoint);
+  if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('The client WebSocket endpoint must not contain credentials, query parameters, or fragments');
+  if (definition.authorization.length === 0) throw new Error('Client authorization is required');
+  return definition;
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineBrowserClient<const Definition extends CreateBrowserChromeDebuggerBridgeClientOptions>(definition: Definition): Definition {
+  defineClientWebSocket(definition);
+  return definition;
 }

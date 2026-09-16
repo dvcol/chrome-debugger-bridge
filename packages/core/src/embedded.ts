@@ -3,7 +3,7 @@ import type { AcquireLeaseRequest, ArtifactAccessRequest, CdpSubscription, Creat
 import type { ChromeDebuggerBridgeClient, TargetDirectory } from './client.js';
 import type { CdpCommand, CdpSubscriptionRequest, JsonObject, Lease, PublishedTarget } from './protocol.js';
 
-import { createTargetBroker, TargetBrokerError } from './broker.js';
+import { createTargetBroker, defineTargetBroker, TargetBrokerError } from './broker.js';
 import { createChromeDebuggerBridgeClient, createClientFacadeAdapter } from './client.js';
 
 /** Applies host-specific authorization in addition to the broker's mandatory capability checks. */
@@ -45,6 +45,7 @@ function copy<Value>(value: Value): Value {
  * boundary so host adapters cannot share mutable protocol values with broker state.
  */
 export function createEmbeddedChromeDebuggerBridge(options: CreateEmbeddedChromeDebuggerBridgeOptions = {}): EmbeddedChromeDebuggerBridge {
+  defineEmbeddedBridge(options);
   const broker = createTargetBroker(options);
   const pendingOperationRejectors = new Set<(error: Error) => void>();
   const closeClientResources = new Set<() => void>();
@@ -185,4 +186,10 @@ export function createEmbeddedChromeDebuggerBridge(options: CreateEmbeddedChrome
       });
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineEmbeddedBridge<const Definition extends CreateEmbeddedChromeDebuggerBridgeOptions>(definition: Definition): Definition {
+  defineTargetBroker(definition);
+  return definition;
 }

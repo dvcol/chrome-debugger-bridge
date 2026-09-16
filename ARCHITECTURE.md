@@ -137,7 +137,9 @@ reinjection.
 The notification controller is headless. The optional Shadow DOM renderer supplies the default
 light/dark theme, typed CSS-variable customization and runtime theme updates without rebuilding
 controls. Hosts choose branding, placement and approval callbacks. A host using Devframe
-notifications uses its message API instead of injecting the default renderer.
+notifications uses its message API instead of injecting the default renderer. The panel host owns
+each shared Devframe notification. Viewing tabs own matching local command registrations, keeping
+approval in the clicked tab while avoiding duplicate messages across connected tabs.
 
 ### Automation providers
 
@@ -377,3 +379,18 @@ not parse the message.
 Unit tests cover protocol behavior. Repository integration tests cover authenticated transports,
 browser clients, extension helpers, package consumers, and example compositions. Embedding hosts
 remain responsible for end-to-end validation of their approval policy and platform adapter.
+
+## Native page WebMCP
+
+The optional Chrome adapter owns native WebMCP discovery, document-bound references and invocation
+completion. The kernel authorizes the transport-neutral `Bridge.listWebMcpTools` and
+`Bridge.invokeWebMcpTools` operations, reserving native `WebMCP.*` commands and events. Broker lease
+demand owns domain activation; the extension serializes activation and catalogue refresh against
+the current main document. There is no injected JavaScript fallback or iframe aggregation.
+
+MCP exposes two stable tools with principal-owned target references. Page registrations remain
+result data. Listing requires inspect access; invocation requires an exclusive interact lease even
+when the page advertises a read-only annotation. Installation discovery policy never grants or
+revokes invocation authority. Cancellation and lost results after dispatch report unknown outcomes
+without replay. Large results retain the existing lease-owned artifact mechanism; semantic artifact
+reads stay bound to the tool session. See [WebMCP](docs/webmcp.md).

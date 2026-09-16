@@ -41,6 +41,7 @@ interface ManagedTab {
 
 /** Shares physical debugger attachments while keeping independently approved scope membership separate. */
 export function createTabScopeManager(options: TabScopeManagerOptions): TabScopeManager {
+  defineTabScope(options);
   const scopes = new Map<string, ManagedScope>();
   const tabs = new Map<number, ManagedTab>();
   const operations = new Map<number, Promise<void>>();
@@ -260,4 +261,9 @@ export function createTabScopeManager(options: TabScopeManagerOptions): TabScope
       }
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineTabScope<const Definition extends TabScopeManagerOptions>(definition: Definition): Definition {
+  return definition;
 }

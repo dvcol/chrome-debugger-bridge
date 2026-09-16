@@ -85,7 +85,7 @@ it('returns screenshot image content and releases its artifact without exposing 
   expect(result.content).toEqual([{ type: 'image', data: imageData, mimeType: 'image/png' }]);
   expect(released).toContain('screenshot-artifact');
   expect(released).toContain('60013aa6-2e2d-4fa1-9e10-8de7c0e811e3');
-  expect(harness.session.definitions.some(definition => definition.name === 'browser.read_artifact')).toBe(false);
+  expect(harness.session.definitions.some(definition => definition.name === 'browser.raw_cdp')).toBe(false);
 });
 
 it('finds a control below 200 structural ancestors without spending its output budget on indentation', async () => {
@@ -371,7 +371,7 @@ it('keeps raw authority and debug execution out of the default compact catalogue
   const session = createCdbToolSession({ client: {} as McpChromeDebuggerBridgeClient });
   const catalogue = session.definitions.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
 
-  expect(catalogue.some(tool => ['browser.acquire', 'browser.raw_cdp', 'browser.evaluate', 'browser.read_artifact'].includes(tool.name))).toBe(false);
+  expect(catalogue.some(tool => ['browser.acquire', 'browser.raw_cdp', 'browser.evaluate'].includes(tool.name))).toBe(false);
   expect(JSON.stringify(catalogue).length).toBeLessThan(70_000);
   expect(catalogue.find(tool => tool.name === 'browser.batch')).toBeDefined();
 });
