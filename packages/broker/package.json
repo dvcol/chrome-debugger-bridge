@@ -1,7 +1,7 @@
 {
   "name": "@dvcol/cdb-broker",
   "type": "module",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Composed CDB broker, authenticated provider lifecycle, and agent tool sessions.",
   "author": "dvcol",
   "license": "MIT",
