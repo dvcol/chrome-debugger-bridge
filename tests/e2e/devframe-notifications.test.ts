@@ -1,3 +1,5 @@
+import type { DevframeClientContext } from '@devframes/hub/client';
+
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -8,8 +10,8 @@ import { initHub } from '@devframes/hub/initiate';
 import { chromium } from 'playwright';
 import { expect, it } from 'vitest';
 
-it.each(['embedded', 'standalone'] as const)('updates and removes notifications in the patched %s browser assets', async (mode) => {
-  expect.assertions(15);
+it.each(['embedded', 'standalone'] as const)('updates and removes notifications in the %s browser assets', async (mode) => {
+  expect.assertions(mode === 'embedded' ? 16 : 15);
   const directory = await mkdtemp(join(tmpdir(), 'cdb-hub-notifications-'));
   const server = createServer();
   let origin = '';
@@ -35,9 +37,24 @@ it.each(['embedded', 'standalone'] as const)('updates and removes notifications 
     origin = `http://127.0.0.1:${address.port}`;
     await hub.ready;
     const context = await hub.context;
+    context.docks.register({
+      id: 'vite',
+      type: 'iframe',
+      title: 'Vite',
+      icon: 'logos:vitejs',
+      url: '/fixture',
+    });
     const page = await browser.newPage();
     await page.goto(`${origin}${mode === 'embedded' ? '/app' : '/hub/'}`);
     await expect.poll(() => reads).toBeGreaterThan(0);
+    if (mode === 'embedded') {
+      await expect(page.evaluate(async () => {
+        const context = (globalThis as typeof globalThis & { __DEVFRAME_HUB_CLIENT_CONTEXT__: DevframeClientContext })
+          .__DEVFRAME_HUB_CLIENT_CONTEXT__;
+        const switched = await context.docks.switchEntry('vite');
+        return switched;
+      })).resolves.toBe(true);
+    }
     for (const reconcileFull of [false, true]) {
       full = reconcileFull;
       const message = await context.messages.info('CDB approval fixture', { notify: true, autoDismiss: false, description: 'One approved tab' });

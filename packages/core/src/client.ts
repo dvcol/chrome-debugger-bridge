@@ -1,5 +1,8 @@
 import type { AcquireLeaseRequest, ArtifactAccessRequest, CdpSubscription, ReleaseLeaseRequest, RenewLeaseRequest } from './broker.js';
 import type { CdpCommand, CdpCommandResult, CdpSubscriptionRequest, Lease, PublishedTarget, TargetRevocationReason } from './protocol.js';
+import type { WebMcpClient } from './webmcp.js';
+
+import { createWebMcpClient } from './webmcp.js';
 
 export type TargetChange
   = | { readonly kind: 'published'; readonly sequence: number; readonly target: PublishedTarget }
@@ -33,7 +36,7 @@ export interface ClientFacadeAdapter {
   readonly directory: TargetDirectory;
 }
 
-export interface ChromeDebuggerBridgeClient {
+export interface ChromeDebuggerBridgeClient extends WebMcpClient {
   acquireLease: (request: AcquireLeaseRequest) => Promise<Lease>;
   executeCommand: (command: CdpCommand) => Promise<CdpCommandResult>;
   listTargets: () => Promise<readonly PublishedTarget[]>;
@@ -54,6 +57,12 @@ export function createClientFacadeAdapter(directory: TargetDirectory): ClientFac
 export function createChromeDebuggerBridgeClient(adapter: ClientFacadeAdapter): ChromeDebuggerBridgeClient {
   const { directory } = adapter;
   return {
+    ...createWebMcpClient({
+      async executeCommand(command) {
+        if (directory.executeCommand === undefined) throw new Error('The target directory does not support CDP commands.');
+        return directory.executeCommand(command);
+      },
+    }),
     async acquireLease(request) {
       if (directory.acquireLease === undefined) {
         throw new Error('The target directory does not support leases.');

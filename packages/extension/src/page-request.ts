@@ -19,6 +19,7 @@ export interface PageRequestBridge {
 
 /** Correlation and acknowledgement are transport mechanics, never proof of trusted human approval. */
 export function createPageRequestBridge(options: PageRequestBridgeOptions): PageRequestBridge {
+  definePageRequest(options);
   const correlationKey = options.correlationKey ?? 'requestId';
   const lifetime = new AbortController();
   return {
@@ -55,4 +56,9 @@ export function createPageRequestBridge(options: PageRequestBridgeOptions): Page
 
 function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function definePageRequest<const Definition extends PageRequestBridgeOptions>(definition: Definition): Definition {
+  return definition;
 }

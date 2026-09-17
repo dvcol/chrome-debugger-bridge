@@ -47,6 +47,7 @@ export async function connectStoreBackedClientTargetBroker(
   broker: TargetBroker,
   options: StoreBackedClientTargetConnectionOptions,
 ): Promise<() => void> {
+  defineClientConnection(connection);
   let available = true;
   let record: AuthorityRecord;
   try {
@@ -235,4 +236,9 @@ export function connectClientTargetBroker(connection: ClientTargetConnection, br
     broker.disconnectClient(authority);
     void iterator.return?.();
   }
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineClientConnection<const Definition extends ClientTargetConnection>(definition: Definition): Definition {
+  return definition;
 }

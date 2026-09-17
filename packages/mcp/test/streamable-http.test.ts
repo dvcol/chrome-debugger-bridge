@@ -590,6 +590,8 @@ it('serves target discovery through the official SDK Streamable HTTP client', as
       'browser.snapshot',
       'browser.screenshot',
       'browser.network_body',
+      'browser.list_webmcp_tools',
+      'browser.invoke_webmcp_tools',
       'browser.evaluate',
       'browser.navigate',
       'browser.back',

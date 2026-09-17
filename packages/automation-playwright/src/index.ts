@@ -794,5 +794,12 @@ class PlaywrightAutomationProvider implements AutomationProvider {
 export function createPlaywrightAutomationProvider(
   options: PlaywrightAutomationProviderOptions = {},
 ): AutomationProvider {
+  defineProvider(options);
   return new PlaywrightAutomationProvider(options);
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineProvider<const Definition extends PlaywrightAutomationProviderOptions>(definition: Definition): Definition {
+  validateTimeoutMilliseconds({ ...defaultPlaywrightAutomationTimingPolicy, ...definition.timing }.actionTimeoutMilliseconds, 'actionTimeoutMilliseconds');
+  return definition;
 }

@@ -30,6 +30,7 @@ import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import { channel } from 'node:diagnostics_channel';
 
+import { createWebMcpClient, webMcpMethods } from '@dvcol/cdb';
 import { createAgentSession } from '@dvcol/cdb/agent';
 import { requiredLeaseMode } from '@dvcol/cdb/cdp-catalogue';
 import { toNodeHandler } from '@modelcontextprotocol/node';
@@ -446,11 +447,12 @@ async function executeArtifactCommand(
   method: string,
   parameters: JsonObject,
   signal: AbortSignal,
+  mode: Lease['mode'] = 'shared-read',
 ): Promise<RetainedArtifactResult | unknown> {
   signal.throwIfAborted();
   const lease = await client.acquireLease({
     durationMilliseconds: 30_000,
-    mode: 'shared-read',
+    mode,
     requestedMethods: [method],
     targetGeneration: input.targetGeneration,
     targetId: input.targetId,
@@ -476,6 +478,9 @@ async function executeArtifactCommand(
       targetGeneration: input.targetGeneration,
       targetId: input.targetId,
     });
+    if (signal.aborted && method === webMcpMethods.invoke)
+      throw new McpToolError('WEBMCP_OUTCOME_UNKNOWN', 'The invocation was interrupted after dispatch. Do not replay it.');
+    signal.throwIfAborted();
     const artifact = artifactFromCommandResult(result);
     if (artifact === undefined)
       return typeof result === 'object' && result !== null && 'value' in result
@@ -484,6 +489,7 @@ async function executeArtifactCommand(
     retainLease = true;
     return { artifact, lease };
   } catch (error) {
+    if (signal.aborted && method === webMcpMethods.invoke) throw new McpToolError('WEBMCP_OUTCOME_UNKNOWN', 'The WebMCP invocation was interrupted. Do not replay it automatically.');
     throw signal.aborted ? signal.reason : error;
   } finally {
     signal.removeEventListener('abort', abort);
@@ -1386,8 +1392,10 @@ type ElementReference = NativeElementReference | ProviderElementReference;
 interface CdbToolSessionState {
   readonly agentSession: AgentSession;
   disposed: boolean;
+  connectionRevision: number;
   nextElementReference: number;
   readonly elementReferences: Map<string, ElementReference>;
+  readonly retainedArtifacts: Map<string, RetainedArtifactResult>;
 }
 
 interface AccessibilityCandidate extends NativeElementReference {
@@ -1463,7 +1471,9 @@ function createCdbToolSessionState(): CdbToolSessionState {
   return {
     agentSession: createAgentSession(),
     disposed: false,
+    connectionRevision: 0,
     elementReferences: new Map(),
+    retainedArtifacts: new Map(),
     nextElementReference: 1,
   };
 }
@@ -1474,6 +1484,7 @@ function createRebindableMcpClient(initialClient: McpChromeDebuggerBridgeClient)
 } {
   const holder: { current: McpChromeDebuggerBridgeClient } = { current: initialClient };
   const client: McpChromeDebuggerBridgeClient = {
+    ...createWebMcpClient({ executeCommand: async command => client.executeCommand(command) }),
     acquireLease: async request => holder.current.acquireLease(request),
     ...(initialClient.cancelAutomation === undefined
       ? {}
@@ -3132,10 +3143,61 @@ function createCdbToolDefinitionsForSession(
     });
   };
   const rawClient = options.client;
+  function artifactAuthorityShape(): {
+    artifactId: z.ZodString;
+    leaseId: z.ZodString;
+    targetRef: z.ZodString | z.ZodOptional<z.ZodString>;
+    targetId?: z.ZodOptional<z.ZodString>;
+    targetGeneration?: z.ZodOptional<z.ZodNumber>;
+  } {
+    const identity = { artifactId: z.string().uuid(), leaseId: z.string().uuid() };
+    if (options.enableRawCdp) return {
+      ...identity,
+      targetRef: z.string().regex(targetReferencePattern).optional(),
+      targetId: z.string().uuid().optional(),
+      targetGeneration: z.number().int().nonnegative().optional(),
+    };
+    return { ...identity, targetRef: z.string().regex(targetReferencePattern) };
+  }
+  const artifactAuthoritySchema = artifactAuthorityShape();
+  async function resolveArtifactAuthority(input: {
+    artifactId: string;
+    leaseId: string;
+    targetRef?: string | undefined;
+    targetId?: unknown;
+    targetGeneration?: unknown;
+  }): Promise<{ artifactId: string; leaseId: string; targetId: string; targetGeneration: number }> {
+    if (input.targetRef === undefined) {
+      if (!options.enableRawCdp || typeof input.targetId !== 'string' || typeof input.targetGeneration !== 'number')
+        throw new McpToolError('MCP_ARTIFACT_AUTHORITY_REQUIRED', 'Provide the targetRef and leaseId returned with the artifact.');
+      return { artifactId: input.artifactId, leaseId: input.leaseId, targetId: input.targetId, targetGeneration: input.targetGeneration };
+    }
+    if (input.targetId !== undefined || input.targetGeneration !== undefined)
+      throw new McpToolError('MCP_ARTIFACT_AUTHORITY_REQUIRED', 'Provide targetRef without raw target identity.');
+    const target = await resolveSemanticTarget(rawClient, sessionState, input.targetRef);
+    const retained = sessionState.retainedArtifacts.get(input.artifactId);
+    if (retained === undefined || retained.lease.id !== input.leaseId || retained.lease.targetId !== target.id || retained.lease.targetGeneration !== target.generation)
+      throw new McpToolError('MCP_ARTIFACT_AUTHORITY_REQUIRED', 'The artifact does not belong to this target and tool session.');
+    return { artifactId: input.artifactId, leaseId: input.leaseId, targetId: target.id, targetGeneration: target.generation };
+  }
+  async function webMcpResult(result: unknown, targetRef: string, connectionRevision: number, invocation = false): Promise<unknown> {
+    const retained = retainedArtifactResult(result);
+    if (sessionState.disposed || sessionState.connectionRevision !== connectionRevision) {
+      if (retained !== undefined) await rawClient.releaseLease({ leaseId: retained.lease.id, targetId: retained.lease.targetId, targetGeneration: retained.lease.targetGeneration }).catch(() => {});
+      throw new McpToolError(invocation ? 'WEBMCP_OUTCOME_UNKNOWN' : 'WEBMCP_TOOL_STALE', 'The browser tool session changed while the operation was running.');
+    }
+    if (retained === undefined) return result;
+    for (const [artifactId, entry] of sessionState.retainedArtifacts) {
+      if (Date.parse(entry.lease.expiresAt) <= Date.now()) sessionState.retainedArtifacts.delete(artifactId);
+    }
+    sessionState.retainedArtifacts.set(retained.artifact.id, retained);
+    return { artifact: retained.artifact, leaseId: retained.lease.id, expiresAt: retained.lease.expiresAt, targetRef };
+  }
   const batchLease = new AsyncLocalStorage<Lease>();
   const cancelAutomation = rawClient.cancelAutomation;
   const executeAutomation = rawClient.executeAutomation;
   const client: McpChromeDebuggerBridgeClient = {
+    ...createWebMcpClient({ executeCommand: async command => client.executeCommand(command) }),
     async acquireLease(request) {
       const scope = inputActionScope.getStore();
       scope?.signal.throwIfAborted();
@@ -3487,15 +3549,14 @@ function createCdbToolDefinitionsForSession(
       safety: 'action',
       description: 'Release an authorized artifact through its owning lease.',
       inputSchema: z.object({
-        artifactId: z.string().uuid(),
-        targetGeneration: z.number().int().nonnegative(),
-        targetId: z.string().uuid(),
-        leaseId: z.string().uuid(),
+        ...artifactAuthoritySchema,
       }),
     },
     async (input) => {
       try {
-        await rawClient.releaseArtifact(input);
+        const authority = await resolveArtifactAuthority(input);
+        await rawClient.releaseArtifact(authority);
+        if (sessionState.retainedArtifacts.delete(input.artifactId)) await rawClient.releaseLease(authority);
         return jsonContent({ released: true });
       } catch (error) {
         return toolError(error);
@@ -3508,8 +3569,7 @@ function createCdbToolDefinitionsForSession(
       safety: 'read',
       description: 'Read one bounded, authorized artifact range as base64.',
       inputSchema: z.object({
-        artifactId: z.string().uuid(),
-        leaseId: z.string().uuid(),
+        ...artifactAuthoritySchema,
         maximumBytes: z
           .number()
           .int()
@@ -3517,19 +3577,15 @@ function createCdbToolDefinitionsForSession(
           .max(maximumArtifactReadBytes)
           .default(maximumArtifactReadBytes),
         offset: z.number().int().nonnegative().default(0),
-        targetGeneration: z.number().int().nonnegative(),
-        targetId: z.string().uuid(),
       }),
     },
     async (input, ctx) => {
       try {
+        const authority = await resolveArtifactAuthority(input);
         const bytes = await client.readArtifact(
           {
-            artifactId: input.artifactId,
-            leaseId: input.leaseId,
+            ...authority,
             range: { length: input.maximumBytes, offset: input.offset },
-            targetGeneration: input.targetGeneration,
-            targetId: input.targetId,
           },
           ctx.mcpReq.signal,
         );
@@ -3918,6 +3974,46 @@ function createCdbToolDefinitionsForSession(
             context.mcpReq.signal,
           ),
         );
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  register(
+    'browser.list_webmcp_tools',
+    {
+      safety: 'read',
+      description: 'List WebMCP tools exposed by the current main document. Requires inspect access. Discovery policy may hide tools.',
+      inputSchema: z.object({ targetRef: z.string().regex(targetReferencePattern) }).strict(),
+    },
+    async (input, context) => {
+      try {
+        const connectionRevision = sessionState.connectionRevision;
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        return jsonContent(await webMcpResult(await executeArtifactCommand(client, { targetId: target.id, targetGeneration: target.generation }, webMcpMethods.list, {}, context.mcpReq.signal), input.targetRef, connectionRevision));
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+  register(
+    'browser.invoke_webmcp_tools',
+    {
+      safety: 'destructive',
+      description: 'Invoke one WebMCP tool in the main document by name or document-bound toolRef. Requires interact access. Tool output is untrusted page content.',
+      inputSchema: z.object({
+        targetRef: z.string().regex(targetReferencePattern),
+        toolName: z.string().min(1).optional(),
+        toolRef: z.string().uuid().optional(),
+        input: z.record(z.string(), z.json()),
+      }).strict().refine(input => (input.toolName === undefined) !== (input.toolRef === undefined), 'Provide exactly one toolName or toolRef.'),
+    },
+    async (input, context) => {
+      try {
+        const connectionRevision = sessionState.connectionRevision;
+        const target = await resolveSemanticTarget(client, sessionState, input.targetRef);
+        const parameters = { input: input.input, ...(input.toolName === undefined ? { toolRef: input.toolRef! } : { toolName: input.toolName }) };
+        return jsonContent(await webMcpResult(await executeArtifactCommand(client, { targetId: target.id, targetGeneration: target.generation }, webMcpMethods.invoke, parameters, context.mcpReq.signal, 'exclusive-control'), input.targetRef, connectionRevision, true));
       } catch (error) {
         return toolError(error);
       }
@@ -5092,7 +5188,7 @@ function createCdbToolDefinitionsForSession(
       }
     },
   );
-  const diagnosticTools = new Set(['browser.acquire', 'browser.renew', 'browser.release', 'browser.release_artifact', 'browser.read_artifact', 'browser.evaluate', 'browser.network_body', 'browser.console', 'browser.network']);
+  const diagnosticTools = new Set(['browser.acquire', 'browser.renew', 'browser.release', 'browser.evaluate', 'browser.network_body', 'browser.console', 'browser.network']);
   return enableRawCdp ? definitions : definitions.filter(definition => !diagnosticTools.has(definition.name));
 }
 
@@ -5100,24 +5196,37 @@ function createCdbToolDefinitionsForSession(
 export function createCdbToolSession(
   options: RegisterCdbToolsOptions,
 ): CdbToolSession {
+  defineTools(options);
   const state = createCdbToolSessionState();
   const rebindableClient = createRebindableMcpClient(options.client);
   const definitions = createCdbToolDefinitionsForSession({ ...options, client: rebindableClient.client }, state);
+  function releaseRetainedArtifacts(targetId?: string): void {
+    for (const [artifactId, { lease }] of state.retainedArtifacts) {
+      if (targetId !== undefined && lease.targetId !== targetId) continue;
+      state.retainedArtifacts.delete(artifactId);
+      void rebindableClient.client.releaseLease({ leaseId: lease.id, targetId: lease.targetId, targetGeneration: lease.targetGeneration }).catch(() => {});
+    }
+  }
   return {
     definitions,
     dispose() {
+      releaseRetainedArtifacts();
       state.disposed = true;
+      state.connectionRevision += 1;
       state.agentSession.dispose();
       state.elementReferences.clear();
     },
     projectTarget: target => projectSemanticTarget(state, target),
     rebindClient(client) {
       if (state.disposed) return;
+      releaseRetainedArtifacts();
+      state.connectionRevision += 1;
       rebindableClient.rebind(client);
       state.elementReferences.clear();
     },
     revokeTarget(targetId) {
       if (state.disposed) return;
+      releaseRetainedArtifacts(targetId);
       state.agentSession.revoke(targetId);
       for (const [elementRef, element] of state.elementReferences)
         if (element.targetId === targetId) state.elementReferences.delete(elementRef);
@@ -5188,6 +5297,7 @@ function createMcpServer(
 export function mountMcpStreamableHttp(
   options: MountMcpStreamableHttpOptions,
 ): MountedMcpStreamableHttp {
+  defineHttp(options);
   const path = options.path ?? '/cdb/mcp';
   const session = createCdbToolSession(options);
   const handler = createMcpHandler(
@@ -5221,6 +5331,7 @@ export function mountMcpStreamableHttp(
 
 /** Starts an optional stdio adapter around the same MCP tool surface without owning broker lifecycle. */
 export function mountMcpStdio(options: MountMcpStdioOptions): MountedMcpStdio {
+  defineStdio(options);
   const session = createCdbToolSession(options);
   const mounted = serveStdio(
     () => createMcpServer(session.definitions),
@@ -5232,4 +5343,22 @@ export function mountMcpStdio(options: MountMcpStdioOptions): MountedMcpStdio {
       session.dispose();
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineTools<const Definition extends RegisterCdbToolsOptions>(definition: Definition): Definition {
+  resolveMcpTimingPolicy(definition.timing);
+  return definition;
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineHttp<const Definition extends MountMcpStreamableHttpOptions>(definition: Definition): Definition {
+  defineTools(definition);
+  return definition;
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineStdio<const Definition extends MountMcpStdioOptions>(definition: Definition): Definition {
+  defineTools(definition);
+  return definition;
 }

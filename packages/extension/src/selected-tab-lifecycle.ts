@@ -31,6 +31,7 @@ export interface SelectedTabLifecycleOptions {
 
 /** Binds Chrome lifecycle events to the selected target without exposing tab identifiers to broker code. */
 export function createSelectedTabLifecycle(options: SelectedTabLifecycleOptions): SelectedTabLifecycle {
+  defineSelectedTab(options);
   let started = false;
 
   function reportFailure(task: Promise<void>): void {
@@ -71,4 +72,9 @@ export function createSelectedTabLifecycle(options: SelectedTabLifecycleOptions)
       options.chrome.debugger.onEvent.removeListener(onEvent);
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineSelectedTab<const Definition extends SelectedTabLifecycleOptions>(definition: Definition): Definition {
+  return definition;
 }

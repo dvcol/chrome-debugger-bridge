@@ -38,6 +38,7 @@ export interface TabScopeLifecycleOptions {
 
 /** Publishes one selector through the same race-safe lifecycle used by shared scope managers. */
 export function createTabScopeLifecycle(options: TabScopeLifecycleOptions): TabScopeLifecycle {
+  defineTabLifecycle(options);
   let manager: TabScopeManager | undefined;
   let cleanup = Promise.resolve();
   let started = false;
@@ -70,4 +71,9 @@ export function createTabScopeLifecycle(options: TabScopeLifecycleOptions): TabS
       }
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineTabLifecycle<const Definition extends TabScopeLifecycleOptions>(definition: Definition): Definition {
+  return definition;
 }

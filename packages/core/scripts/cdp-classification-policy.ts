@@ -30,11 +30,12 @@ export const supportedChromeDebuggerDomains = [
   'Tracing',
   'WebAudio',
   'WebAuthn',
+  'WebMCP',
 ] as const;
 
 export type SupportedChromeDebuggerDomain = typeof supportedChromeDebuggerDomains[number];
 
-export const kernelOwnedDomains = ['Target'] as const satisfies readonly SupportedChromeDebuggerDomain[];
+export const kernelOwnedDomains = ['Target', 'WebMCP'] as const satisfies readonly SupportedChromeDebuggerDomain[];
 
 type ClientFacingChromeDebuggerDomain = Exclude<SupportedChromeDebuggerDomain, typeof kernelOwnedDomains[number]>;
 
@@ -158,7 +159,6 @@ export const commandLevelOverrides = {
   'Log.clear': 'interact',
   'Log.startViolationsReport': 'debug',
   'Log.stopViolationsReport': 'debug',
-  'Network.clearAcceptedEncodingsOverride': 'interact',
   'Network.clearBrowserCache': 'interact',
   'Network.clearBrowserCookies': 'interact',
   'Network.configureDurableMessages': 'debug',
@@ -172,7 +172,6 @@ export const commandLevelOverrides = {
   'Network.loadNetworkResource': 'interact',
   'Network.overrideNetworkState': 'interact',
   'Network.replayXHR': 'interact',
-  'Network.setAcceptedEncodings': 'interact',
   'Network.setAttachDebugStack': 'debug',
   'Network.setBlockedURLs': 'interact',
   'Network.setBypassServiceWorker': 'interact',
@@ -239,16 +238,11 @@ export const commandLevelOverrides = {
   'Storage.clearCookies': 'interact',
   'Storage.clearDataForOrigin': 'interact',
   'Storage.clearDataForStorageKey': 'interact',
-  'Storage.clearSharedStorageEntries': 'interact',
   'Storage.clearTrustTokens': 'interact',
-  'Storage.deleteSharedStorageEntry': 'interact',
   'Storage.deleteStorageBucket': 'interact',
   'Storage.overrideQuotaForOrigin': 'interact',
-  'Storage.resetSharedStorageBudget': 'interact',
   'Storage.runBounceTrackingMitigations': 'interact',
   'Storage.setCookies': 'interact',
-  'Storage.setSharedStorageEntry': 'interact',
-  'Storage.setSharedStorageTracking': 'debug',
   'Storage.setStorageBucketTracking': 'debug',
   'Storage.trackCacheStorageForOrigin': 'debug',
   'Storage.trackCacheStorageForStorageKey': 'debug',

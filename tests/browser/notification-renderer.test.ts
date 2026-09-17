@@ -12,10 +12,84 @@ afterEach(() => {
 const request: BrokerRequest = { id: 'request', principalId: 'principal', principalLabel: '<script>agent</script>', level: 'interact', navigation: 'same-origin', state: 'pending', createdAt: 0, expiresAt: 2_000 };
 const state: BrokerState = { revision: 1, providers: [], principals: [], requests: [request], grants: [], scopes: [], targets: [], leases: [] };
 
+it.each([
+  ['card body', 'article'],
+  ['heading', 'h2'],
+  ['details', 'dl'],
+])('invokes review once when clicking the pending request %s', async (_name, selector) => {
+  expect.assertions(2);
+  const review = vi.fn();
+  const controller = createBrowserControlNotificationController({ onReview: review, onReject: async () => {}, onRevoke: async () => {} });
+  controller.update({ ...state, requests: [{ ...request, expiresAt: null }] });
+  const renderer = renderBrowserControlNotifications({ controller, container: document.body });
+  const root = document.querySelector('section')!.shadowRoot!;
+
+  root.querySelector<HTMLElement>(selector)!.click();
+
+  await vi.waitUntil(() => review.mock.calls.length === 1);
+  expect(review).toHaveBeenCalledOnce();
+  expect(review).toHaveBeenCalledWith(expect.objectContaining({ id: request.id }));
+  renderer.dispose();
+  controller.dispose();
+});
+
+it('does not invoke review twice when clicking Accept', async () => {
+  expect.assertions(1);
+  const review = vi.fn();
+  const controller = createBrowserControlNotificationController({ onReview: review, onReject: async () => {}, onRevoke: async () => {} });
+  controller.update({ ...state, requests: [{ ...request, expiresAt: null }] });
+  const renderer = renderBrowserControlNotifications({ controller, container: document.body, reviewLabel: () => 'Accept' });
+  const root = document.querySelector('section')!.shadowRoot!;
+
+  [...root.querySelectorAll('button')].find(button => button.textContent === 'Accept')!.click();
+
+  await vi.waitUntil(() => review.mock.calls.length === 1);
+  expect(review).toHaveBeenCalledOnce();
+  renderer.dispose();
+  controller.dispose();
+});
+
+it('keeps Reject reject-only', async () => {
+  expect.assertions(3);
+  const review = vi.fn();
+  const reject = vi.fn();
+  const controller = createBrowserControlNotificationController({ onReview: review, onReject: reject, onRevoke: async () => {} });
+  controller.update({ ...state, requests: [{ ...request, expiresAt: null }] });
+  const renderer = renderBrowserControlNotifications({ controller, container: document.body });
+  const root = document.querySelector('section')!.shadowRoot!;
+
+  [...root.querySelectorAll('button')].find(button => button.textContent === 'Reject')!.click();
+
+  await vi.waitUntil(() => reject.mock.calls.length === 1);
+  expect(reject).toHaveBeenCalledOnce();
+  expect(reject).toHaveBeenCalledWith(request.id);
+  expect(review).not.toHaveBeenCalled();
+  renderer.dispose();
+  controller.dispose();
+});
+
+it('keeps Dismiss local-only', () => {
+  expect.assertions(3);
+  const review = vi.fn();
+  const reject = vi.fn();
+  const controller = createBrowserControlNotificationController({ onReview: review, onReject: reject, onRevoke: async () => {} });
+  controller.update({ ...state, requests: [{ ...request, expiresAt: null }] });
+  const renderer = renderBrowserControlNotifications({ controller, container: document.body });
+  const root = document.querySelector('section')!.shadowRoot!;
+
+  root.querySelector<HTMLButtonElement>('.dismiss')!.click();
+
+  expect(root.querySelector('article')).toBeNull();
+  expect(review).not.toHaveBeenCalled();
+  expect(reject).not.toHaveBeenCalled();
+  renderer.dispose();
+  controller.dispose();
+});
+
 it.each(['Review request', 'Accept INTERACT'])('renders untrusted labels as text and delegates "%s" to the embedding application', async (label) => {
   expect.assertions(4);
   const review = vi.fn();
-  const controller = createBrowserControlNotificationController({ onReview: review, onRevoke: async () => {} });
+  const controller = createBrowserControlNotificationController({ onReview: review, onReject: async () => {}, onRevoke: async () => {} });
   controller.update({ ...state, requests: [{ ...request, expiresAt: null }] });
   const renderer = renderBrowserControlNotifications({ controller, container: document.body, branding: { title: 'Browser access' }, ...(label === 'Review request' ? {} : { reviewLabel: (request: BrokerRequest) => `Accept ${request.level.toUpperCase()}` }) });
   const root = document.querySelector('section')!.shadowRoot!;
@@ -31,7 +105,7 @@ it.each(['Review request', 'Accept INTERACT'])('renders untrusted labels as text
 
 it('preserves focused notification controls across equivalent broker publications', () => {
   expect.assertions(4);
-  const controller = createBrowserControlNotificationController({ onReview: async () => {}, onRevoke: async () => {} });
+  const controller = createBrowserControlNotificationController({ onReview: async () => {}, onReject: async () => {}, onRevoke: async () => {} });
   const pendingRequest = { ...request, expiresAt: null };
   controller.update({ requests: [pendingRequest], grants: [] });
   const renderer = renderBrowserControlNotifications({ controller, container: document.body });
@@ -55,7 +129,7 @@ it('preserves focused notification controls across equivalent broker publication
 it('changes theme and color mode without replacing focused controls or pending actions', async () => {
   expect.assertions(10);
   const pending = Promise.withResolvers<void>();
-  const controller = createBrowserControlNotificationController({ onReview: async () => pending.promise, onRevoke: async () => {} });
+  const controller = createBrowserControlNotificationController({ onReview: async () => pending.promise, onReject: async () => {}, onRevoke: async () => {} });
   controller.update({ requests: [{ ...request, expiresAt: null }], grants: [] });
   const renderer = renderBrowserControlNotifications({ controller, container: document.body, theme: { light: { primary: 'green' } }, branding: { accent: 'purple' }, css: ':host { --cdb-primary: orange; }' });
   const host = document.querySelector('section')!;

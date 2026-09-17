@@ -1,8 +1,9 @@
 import type { DevframeHubContext } from '@devframes/hub';
 import type { JsonRenderView } from '@devframes/json-render';
-import type { BrokerState } from '@dvcol/cdb-broker/contract';
+import type { BrokerState, BrowserControlErrorData } from '@dvcol/cdb-broker/contract';
 import type { DevframeDefinition, DevframeNodeContext, DevframeScopedNodeRpc } from 'devframe';
 
+import type { BrowserControlMessages } from './notification-items.js';
 import type { BrowserControlPanelComponents } from './panel-view.js';
 import type { BrowserControlPanelClient } from './panel.js';
 
@@ -12,12 +13,16 @@ import { fileURLToPath } from 'node:url';
 import { jsonRenderSpaDir } from '@devframes/json-render-ui/spa';
 import { toJsonRenderDockEntry } from '@devframes/json-render/hub';
 import { createJsonRenderView } from '@devframes/json-render/node';
+import { createBrowserControlNotificationController } from '@dvcol/cdb-extension/notifications';
 
 import packageManifest from '../package.json' with { type: 'json' };
+import { publishBrowserControlNotifications } from './notification-publisher.js';
 import { buildBrowserControlPanelView } from './panel-view.js';
 
 /** Hosts may augment their RPC catalogue without exporting those declarations to CDB. */
 interface PanelContext {
+  /** Hub hosts supply their shared message feed. Plain view hosts may omit notifications. */
+  readonly messages?: BrowserControlMessages;
   rpc: { sharedState: Pick<DevframeNodeContext['rpc']['sharedState'], 'get'> };
   scope: (namespace: string) => { readonly rpc: Pick<DevframeScopedNodeRpc, 'sharedState'> & {
     register: (definition: Pick<Parameters<DevframeScopedNodeRpc['register']>[0], 'name' | 'type' | 'handler'>) => unknown;
@@ -33,6 +38,8 @@ export interface CdbPanelOptions {
   readonly name?: string;
   /** Match the notification action to the embedding application's approval channel. */
   readonly approvalAction?: 'review' | 'accept';
+  /** Receives structured host message creation, update, and dismissal failures. */
+  readonly onNotificationError?: (error: BrowserControlErrorData) => void;
   /** A mounted host may use its own JSON renderer and component properties. */
   readonly renderer?: { readonly type: string; readonly components?: BrowserControlPanelComponents };
   readonly dock?: { readonly category?: string; readonly defaultOrder?: number };
@@ -47,8 +54,22 @@ export interface CdbPanel {
 
 /** Serves Devframe's reference SPA; mounted hosts can select their own renderer. */
 export function createCdbPanel(options: CdbPanelOptions): CdbPanel {
+  definePanel(options);
   const directory = dirname(fileURLToPath(import.meta.url));
+  const clientScript = {
+    eager: true,
+    importFrom: join(directory, 'view/page-script.js'),
+    ...(options.approvalAction === 'accept' ? { importName: 'setupBrowserControlAcceptPage' } : {}),
+  };
   let disposed = false;
+  let stopNotifications: (() => void) | undefined;
+  const notifications = createBrowserControlNotificationController({
+    onReview() {
+      throw new Error('Browser approval must run in the viewing tab.');
+    },
+    onReject: async requestId => activeClient().revokeScope(requestId),
+    onRevoke: async requestId => activeClient().revokeScope(requestId),
+  });
   let unsubscribe: (() => void) | undefined;
   let view: JsonRenderView | undefined;
   let client: BrowserControlPanelClient | undefined;
@@ -74,13 +95,18 @@ export function createCdbPanel(options: CdbPanelOptions): CdbPanel {
       icon: 'ph:browser-duotone',
       capabilities: { build: false },
       clientAssets: jsonRenderSpaDir,
-      dock: { defaultOrder: 1_000, ...options.dock, clientScript: { importFrom: join(directory, 'view/page-script.js'), ...(options.approvalAction === 'accept' ? { importName: 'setupBrowserControlAcceptPage' } : {}) } },
+      dock: {
+        defaultOrder: 1_000,
+        ...options.dock,
+        clientScript,
+      },
       async setup(context) {
         if (disposed) throw new Error('The CDB panel was disposed.');
         if (!clientResolved) {
           client = options.client();
           clientResolved = true;
         }
+        if (context.messages !== undefined) stopNotifications = publishBrowserControlNotifications(notifications, context.messages, options.approvalAction, options.onNotificationError);
         const renderer = 'docks' in context ? options.renderer : undefined;
         const rpc = context.scope('cdb:panel').rpc;
         const initial = emptyState();
@@ -103,6 +129,7 @@ export function createCdbPanel(options: CdbPanelOptions): CdbPanel {
               value.available = selected !== undefined;
             });
             view?.update(buildBrowserControlPanelView(broker, renderer?.components));
+            notifications.update(broker);
           };
           publish(emptyState());
           if (selected === undefined) return;
@@ -129,6 +156,15 @@ export function createCdbPanel(options: CdbPanelOptions): CdbPanel {
           const hub = context as unknown as DevframeHubContext;
           const entry = hub.docks.views.get('cdb-browser-control');
           if (entry === undefined) throw new Error('Install the CDB panel before selecting its renderer.');
+          const resolvedClientScript = 'clientScript' in entry ? entry.clientScript ?? clientScript : clientScript;
+          hub.docks.register({
+            id: 'cdb-browser-control-page-script',
+            title: 'Browser control page integration',
+            icon: 'ph:browser-duotone',
+            type: 'action',
+            visibility: 'false',
+            action: resolvedClientScript,
+          });
           const dock = toJsonRenderDockEntry(view, entry);
           /** Host renderer names use the same JSON view contract as the reference renderer. */
           hub.docks.update({ ...dock, type: (options.renderer?.type ?? 'json-render') as typeof dock.type });
@@ -145,10 +181,18 @@ export function createCdbPanel(options: CdbPanelOptions): CdbPanel {
     dispose() {
       disposed = true;
       generation += 1;
+      stopNotifications?.();
+      stopNotifications = undefined;
+      notifications.dispose();
       unsubscribe?.();
       unsubscribe = undefined;
       view?.dispose();
       view = undefined;
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function definePanel<const Definition extends CdbPanelOptions>(definition: Definition): Definition {
+  return definition;
 }

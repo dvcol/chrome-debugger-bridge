@@ -1,3 +1,4 @@
+export { defineAgentConnection } from './agent-target-connection.js';
 export {
   type AgentConnectionTimingPolicy,
   type AgentTargetConnection,
@@ -48,6 +49,7 @@ export {
   type AutomationTextMatcher,
   requiredAutomationLevel,
 } from './automation.js';
+export { defineTargetBroker } from './broker.js';
 export {
   type AcquireLeaseRequest,
   type ArtifactAccessRequest,
@@ -61,6 +63,7 @@ export {
   type RenewLeaseRequest,
   type TargetBroker,
 } from './broker.js';
+export { defineClientConnection } from './client-target-connection.js';
 export {
   type ClientTargetConnection,
   connectClientTargetBroker,
@@ -81,6 +84,7 @@ export {
   type DiagnosticTraceEntry,
   type DiagnosticTraceStore,
 } from './diagnostic-trace.js';
+export { defineEmbeddedBridge } from './embedded.js';
 export {
   createEmbeddedChromeDebuggerBridge,
   type CreateEmbeddedChromeDebuggerBridgeOptions,
@@ -88,6 +92,7 @@ export {
   type EmbeddedChromeDebuggerBridge,
   type EmbeddedChromeDebuggerBridgeClient,
 } from './embedded.js';
+export { defineGrantRequests } from './grant-request.js';
 export {
   createGrantRequestCoordinator,
   type CreateGrantRequestCoordinatorOptions,
@@ -105,6 +110,7 @@ export {
   type GrantRequestTimingPolicy,
 } from './grant-request.js';
 export * from './protocol.js';
+export { defineLogicalSession } from './session.js';
 export {
   createLogicalSessionManager,
   type CreateLogicalSessionManagerOptions,
@@ -119,3 +125,5 @@ export {
   type StoredCredential,
 } from './session.js';
 export { scheduleTimeout, type TimeoutMilliseconds, validateTimeoutMilliseconds } from './timing.js';
+
+export { createWebMcpClient, type WebMcpClient, WebMcpError, type WebMcpInvocation, webMcpMethods, type WebMcpRequest, type WebMcpResult, type WebMcpTool, type WebMcpToolList, type WebMcpToolResult } from './webmcp.js';

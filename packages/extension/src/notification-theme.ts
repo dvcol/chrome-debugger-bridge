@@ -98,6 +98,9 @@ export const browserControlNotificationStyles = `
     box-shadow: var(--cdb-shadow);
     text-align: right;
   }
+  .request {
+    cursor: pointer;
+  }
   h2 {
     margin: 0 calc(-1 * var(--cdb-spacing)) 10px;
     padding: 10px 42px 10px var(--cdb-spacing);

@@ -49,15 +49,8 @@ function parseRange(value: string | undefined, length: number): { readonly end: 
 }
 
 /** Mounts authenticated, range-capable artifact reads. Authorization stays in headers, never in artifact URLs. */
-export function mountAuthenticatedArtifactHttpEndpoint<Principal extends AuthenticatedPrincipal>(input: {
-  readonly authenticate: ClientAuthenticationAdapter<Principal>;
-  readonly originPolicy: (claims: TransportClaims, signal: AbortSignal) => boolean | Promise<boolean>;
-  readonly path?: string;
-  readonly readArtifact: (artifactId: string, principal: Principal, signal: AbortSignal) => Promise<{ readonly bytes: Uint8Array; readonly descriptor: ArtifactDescriptor } | undefined>;
-  /** Releases only artifacts owned by the authenticated principal. Omit for a read-only endpoint. */
-  readonly releaseArtifact?: (artifactId: string, principal: Principal, signal: AbortSignal) => Promise<boolean>;
-  readonly server: import('node:http').Server;
-}): MountedAuthenticatedArtifactHttpEndpoint {
+export function mountAuthenticatedArtifactHttpEndpoint<Principal extends AuthenticatedPrincipal>(input: ArtifactEndpointOptions<Principal>): MountedAuthenticatedArtifactHttpEndpoint {
+  defineArtifactEndpoint<Principal>(input);
   const path = input.path ?? defaultArtifactHttpPath;
   if (!path.startsWith('/') || !path.endsWith('/')) throw new Error('The artifact HTTP path must start and end with a slash.');
   const listener = (request: IncomingMessage, response: ServerResponse): void => {
@@ -118,4 +111,22 @@ export function mountAuthenticatedArtifactHttpEndpoint<Principal extends Authent
   };
   input.server.on('request', listener);
   return { close: () => input.server.off('request', listener) };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineArtifactEndpoint<Principal extends AuthenticatedPrincipal, const Definition extends ArtifactEndpointOptions<Principal> = ArtifactEndpointOptions<Principal>>(definition: Definition & ArtifactEndpointOptions<Principal>): Definition {
+  const path = definition.path ?? defaultArtifactHttpPath;
+  if (!path.startsWith('/') || !path.endsWith('/')) throw new Error('The artifact HTTP path must start and end with a slash.');
+  return definition;
+}
+
+/** Configuration accepted by mountAuthenticatedArtifactHttpEndpoint and defineArtifactEndpoint. */
+export interface ArtifactEndpointOptions<Principal extends AuthenticatedPrincipal> {
+  readonly authenticate: ClientAuthenticationAdapter<Principal>;
+  readonly originPolicy: (claims: TransportClaims, signal: AbortSignal) => boolean | Promise<boolean>;
+  readonly path?: string;
+  readonly readArtifact: (artifactId: string, principal: Principal, signal: AbortSignal) => Promise<{ readonly bytes: Uint8Array; readonly descriptor: ArtifactDescriptor } | undefined>;
+  /** Releases only artifacts owned by the authenticated principal. Omit for a read-only endpoint. */
+  readonly releaseArtifact?: (artifactId: string, principal: Principal, signal: AbortSignal) => Promise<boolean>;
+  readonly server: import('node:http').Server;
 }

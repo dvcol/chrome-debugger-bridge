@@ -179,6 +179,9 @@ export const bridgeErrorCodeSchemaDefinition = z.enum([
   'TARGET_NOT_FOUND',
   'TARGET_REVOKED',
   'TRANSPORT_CLOSED',
+  'WEBMCP_DISCOVERY_FAILED',
+  'WEBMCP_TOOL_STALE',
+  'WEBMCP_OUTCOME_UNKNOWN',
 ]);
 
 export const bridgeErrorSchemaDefinition = z.strictObject({

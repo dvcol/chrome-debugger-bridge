@@ -37,7 +37,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { styleText } from 'node:util';
 
-import { connectAgentTargetBroker, connectClientTargetBroker, createChromeDebuggerBridgeClient, createClientFacadeAdapter, createTargetBroker } from '@dvcol/cdb';
+import { connectAgentTargetBroker, connectClientTargetBroker, createChromeDebuggerBridgeClient, createClientFacadeAdapter, createTargetBroker, defineTargetBroker } from '@dvcol/cdb';
 import {
   agentAuthenticationMessageSchema,
   agentToBrokerMessageSchema,
@@ -65,7 +65,9 @@ import {
   validateWebSocketEndpointSecurity,
 } from './protocols.js';
 
+export { defineArtifactEndpoint } from './artifact-http.js';
 export { defaultArtifactHttpPath, mountAuthenticatedArtifactHttpEndpoint, type MountedAuthenticatedArtifactHttpEndpoint } from './artifact-http.js';
+export { defineArtifactReader } from './artifact-reader.js';
 export { createHttpArtifactReader } from './artifact-reader.js';
 export {
   type ArtifactTransferControl,
@@ -75,6 +77,7 @@ export {
   encodeArtifactChunk,
   streamArtifact,
 } from './artifacts.js';
+export { defineArtifactStore } from './file-artifact-store.js';
 export { createFileArtifactStore, type FileArtifactStore, type FileArtifactStoreOptions } from './file-artifact-store.js';
 
 export const defaultAgentWebSocketPath = '/cdb/agent';
@@ -1025,6 +1028,7 @@ export function mountAuthenticatedWebSocketBridge<
 >(
   options: MountAuthenticatedWebSocketBridgeOptions<AgentPrincipal, ClientPrincipal>,
 ): MountedAuthenticatedWebSocketBridge {
+  defineWebSocketBridge<AgentPrincipal, ClientPrincipal>(options);
   const agentPath = options.agentPath ?? defaultAgentWebSocketPath;
   const clientPath = options.clientPath ?? defaultClientWebSocketPath;
   validatePath(agentPath);
@@ -1217,11 +1221,9 @@ export async function createStandaloneAuthenticatedWebSocketBridge<
   AgentPrincipal extends AuthenticatedPrincipal,
   ClientPrincipal extends AuthenticatedPrincipal,
 >(
-  options: Omit<MountAuthenticatedWebSocketBridgeOptions<AgentPrincipal, ClientPrincipal>, 'server'> & {
-    readonly host?: string;
-    readonly port?: number;
-  },
+  options: StandaloneWebSocketOptions<AgentPrincipal, ClientPrincipal>,
 ): Promise<StandaloneAuthenticatedWebSocketBridge> {
+  defineStandaloneWebSocket<AgentPrincipal, ClientPrincipal>(options);
   const host = options.host ?? '127.0.0.1';
   if (!isLoopbackHostname(host === '::1' ? '[::1]' : host)) {
     throw new Error('The standalone WebSocket broker must bind to a loopback host');
@@ -1282,6 +1284,7 @@ export interface ConnectNodeClientWebSocketOptions {
 }
 
 export async function connectNodeClientWebSocket(options: ConnectNodeClientWebSocketOptions): Promise<NodeClientConnection> {
+  defineClientWebSocket(options);
   const endpointUrl = new URL(options.endpoint);
   validateWebSocketEndpointSecurity(endpointUrl);
   if (endpointUrl.username || endpointUrl.password || endpointUrl.search || endpointUrl.hash) {
@@ -1412,6 +1415,7 @@ function validateArtifactEndpoint(endpoint: string): URL {
 
 /** Creates the complete reconnecting public CDB client facade for a header-authenticated Node endpoint. */
 export async function createNodeChromeDebuggerBridgeClient(options: CreateNodeChromeDebuggerBridgeClientOptions): Promise<NodeChromeDebuggerBridgeClient> {
+  defineNodeClient(options);
   const artifactEndpoint = validateArtifactEndpoint(options.artifactEndpoint);
   let connection = await connectNodeClientWebSocket(options);
   const pendingRequests = new Map<string, NodePendingRequest>();
@@ -1715,6 +1719,7 @@ function getArtifactDescriptor(message: BrokerToClientMessage): ArtifactDescript
 export async function createStandaloneChromeDebuggerBridgeHost(
   options: CreateStandaloneChromeDebuggerBridgeHostOptions,
 ): Promise<StandaloneChromeDebuggerBridgeHost> {
+  defineStandaloneHost(options);
   const host = options.host ?? '127.0.0.1';
   const brokerId = randomUUID();
   const pairingLifetimeMilliseconds = options.pairingLifetimeMilliseconds === undefined
@@ -1904,3 +1909,70 @@ export async function createStandaloneChromeDebuggerBridgeHost(
     },
   };
 }
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineWebSocketBridge<AgentPrincipal extends AuthenticatedPrincipal, ClientPrincipal extends AuthenticatedPrincipal, const Definition extends MountAuthenticatedWebSocketBridgeOptions<AgentPrincipal, ClientPrincipal> = MountAuthenticatedWebSocketBridgeOptions<AgentPrincipal, ClientPrincipal>>(definition: Definition & MountAuthenticatedWebSocketBridgeOptions<AgentPrincipal, ClientPrincipal>): Definition {
+  validateBridgeConfiguration(definition);
+  return definition;
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineStandaloneWebSocket<AgentPrincipal extends AuthenticatedPrincipal, ClientPrincipal extends AuthenticatedPrincipal, const Definition extends Omit<MountAuthenticatedWebSocketBridgeOptions<AgentPrincipal, ClientPrincipal>, 'server'> & {
+  readonly host?: string;
+  readonly port?: number;
+} = Omit<MountAuthenticatedWebSocketBridgeOptions<AgentPrincipal, ClientPrincipal>, 'server'> & {
+  readonly host?: string;
+  readonly port?: number;
+}>(definition: Definition & Omit<MountAuthenticatedWebSocketBridgeOptions<AgentPrincipal, ClientPrincipal>, 'server'> & {
+  readonly host?: string;
+  readonly port?: number;
+}): Definition {
+  const host = definition.host ?? '127.0.0.1';
+  if (!isLoopbackHostname(host === '::1' ? '[::1]' : host)) throw new Error('The standalone WebSocket broker must bind to a loopback host');
+  validateBridgeConfiguration(definition);
+  return definition;
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineClientWebSocket<const Definition extends ConnectNodeClientWebSocketOptions>(definition: Definition): Definition {
+  resolveNodeWebSocketTimingPolicy(definition.timing);
+  const endpoint = new URL(definition.endpoint);
+  validateWebSocketEndpointSecurity(endpoint);
+  if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('The client WebSocket endpoint must not contain credentials, query parameters, or fragments');
+  return definition;
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineNodeClient<const Definition extends CreateNodeChromeDebuggerBridgeClientOptions>(definition: Definition): Definition {
+  defineClientWebSocket(definition);
+  validateArtifactEndpoint(definition.artifactEndpoint);
+  return definition;
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineStandaloneHost<const Definition extends CreateStandaloneChromeDebuggerBridgeHostOptions>(definition: Definition): Definition {
+  defineTargetBroker(definition);
+  validateBridgeConfiguration({ timing: definition.webSocketTiming ?? {} });
+  const pairingLifetimeMilliseconds = definition.pairingLifetimeMilliseconds === undefined ? 5 * 60_000 : definition.pairingLifetimeMilliseconds;
+  validateTimeoutMilliseconds(pairingLifetimeMilliseconds, 'pairingLifetimeMilliseconds');
+  const host = definition.host ?? '127.0.0.1';
+  if (!isLoopbackHostname(host === '::1' ? '[::1]' : host)) throw new Error('The standalone WebSocket broker must bind to a loopback host');
+  return definition;
+}
+
+function validateBridgeConfiguration(definition: Pick<MountAuthenticatedWebSocketBridgeOptions<AuthenticatedPrincipal, AuthenticatedPrincipal>, 'agentPath' | 'clientPath' | 'timing'>): void {
+  const agentPath = definition.agentPath ?? defaultAgentWebSocketPath;
+  const clientPath = definition.clientPath ?? defaultClientWebSocketPath;
+  validatePath(agentPath);
+  validatePath(clientPath);
+  if (agentPath === clientPath) throw new Error('Agent and client WebSocket paths must be distinct');
+  const timing = { ...defaultWebSocketBridgeTimingPolicy, ...definition.timing };
+  validateTimeoutMilliseconds(timing.handshakeTimeoutMilliseconds, 'handshakeTimeoutMilliseconds');
+  validateTimeoutMilliseconds(timing.pairingTimeoutMilliseconds, 'pairingTimeoutMilliseconds');
+}
+
+/** Configuration accepted by createStandaloneAuthenticatedWebSocketBridge and defineStandaloneWebSocket. */
+export type StandaloneWebSocketOptions<AgentPrincipal extends AuthenticatedPrincipal, ClientPrincipal extends AuthenticatedPrincipal> = Omit<MountAuthenticatedWebSocketBridgeOptions<AgentPrincipal, ClientPrincipal>, 'server'> & {
+  readonly host?: string;
+  readonly port?: number;
+};

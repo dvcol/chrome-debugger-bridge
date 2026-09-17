@@ -7,7 +7,7 @@ it('runs without a document, window or theme listeners', () => {
   vi.stubGlobal('window', undefined);
   vi.stubGlobal('document', undefined);
   const subscribe = vi.fn();
-  const controller = createBrowserControlNotificationController({ onReview: async () => {}, onRevoke: async () => {} });
+  const controller = createBrowserControlNotificationController({ onReview: async () => {}, onReject: async () => {}, onRevoke: async () => {} });
   const unsubscribe = controller.subscribe(subscribe);
   controller.update({ requests: [], grants: [] });
   expect(controller.snapshot()).toEqual({ requests: [], grants: [] });

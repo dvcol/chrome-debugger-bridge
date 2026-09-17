@@ -37,7 +37,7 @@ describe('generated CDP capability catalogue', () => {
   it('records the pinned source and Chrome debugger domain scope', () => {
     expect.assertions(4);
 
-    expect(cdpCatalogueMetadata.devtoolsProtocolVersion).toBe('0.0.1672245');
+    expect(cdpCatalogueMetadata.devtoolsProtocolVersion).toBe('0.0.1698617');
     expect(cdpCatalogueMetadata.protocolVersion).toBe('1.3');
     expect(cdpCatalogueMetadata.supportedDomains).toContain('Target');
     expect(cdpCatalogueMetadata.absentSupportedDomains).toEqual(['Database']);

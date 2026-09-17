@@ -3,7 +3,7 @@ import type { AgentToBrokerMessage, BrokerToAgentMessage, PublishedTarget } from
 import type { BrokerRuntime } from '../src/runtime.js';
 
 import { createAgentAuthenticationProof, decodeBase64UrlBytes, generateRandomBase64Url, importAgentCredential } from '@dvcol/cdb/authentication';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMemoryBrokerIdentityStore } from '../src/identity-store.js';
 import { createBroker } from '../src/runtime.js';
@@ -53,7 +53,7 @@ async function fixture(accessRequestTimeoutMilliseconds = 60_000) {
   const target: PublishedTarget = { id: crypto.randomUUID(), generation: 1, scopeId: crypto.randomUUID(), availability: 'available', capabilities: { level: 'debug' }, type: 'page', url: 'https://example.test/start', title: 'Public fixture' };
   send({ kind: 'notification', method: 'targets.publish', protocolVersion: 1, parameters: { target } });
   await broker.reconcileProvider(peer, [target]);
-  return { broker, identityStore, peer, received, registration, send, target };
+  return { broker, closeProvider: closed.resolve, credential, identityStore, key, peer, received, registration, send, target };
 }
 
 async function approve(setup: Awaited<ReturnType<typeof fixture>>, principalId: string, navigation: 'same-origin' | 'follow-tab' = 'same-origin') {
@@ -91,14 +91,182 @@ describe('composed browser broker', () => {
   });
 
   it('forgets every retained credential for a provider installation', async () => {
-    expect.assertions(4);
+    expect.assertions(11);
     const setup = await fixture();
     const credential = setup.identityStore.load('credential')!;
     await setup.identityStore.activate({ ...credential, credentialId: 'another-existing-credential' });
+    await approve(setup, 'approved-agent');
     expect(await setup.broker.disconnectProvider(setup.registration.id, true)).toBe(true);
     expect(setup.identityStore.load('credential')).toBeUndefined();
     expect(setup.identityStore.load('another-existing-credential')).toBeUndefined();
-    expect(setup.broker.createPairingOffer(setup.peer).brokerId).toBe(setup.broker.brokerId);
+    expect(setup.broker.snapshot().providers).toEqual([]);
+    expect(setup.broker.snapshot().targets).toEqual([]);
+    expect(setup.broker.snapshot().requests).toEqual([]);
+    expect(setup.broker.snapshot().grants).toEqual([]);
+    setup.closeProvider();
+    await setup.broker.disconnectPeer(setup.peer.id);
+    await Promise.resolve();
+    expect(setup.broker.snapshot().providers).toEqual([]);
+    expect(() => setup.broker.beginProviderAuthentication(setup.peer, {
+      credentialId: 'credential',
+      clientNonce: generateRandomBase64Url(32),
+    })).toThrow('Register the provider before authenticating');
+    setup.broker.registerProvider(setup.peer, setup.registration);
+    expect(() => setup.broker.beginProviderAuthentication(setup.peer, {
+      credentialId: 'credential',
+      clientNonce: generateRandomBase64Url(32),
+    })).toThrow();
+  });
+
+  it('keeps a normal disconnect visible and paired for explicit reconnection', async () => {
+    expect.assertions(4);
+    const setup = await fixture();
+    expect(await setup.broker.disconnectProvider(setup.registration.id)).toBe(true);
+    expect(setup.broker.snapshot().providers).toMatchObject([{ id: setup.registration.id, paired: true, state: 'disconnected' }]);
+    expect(setup.identityStore.load('credential')).toBeDefined();
+    expect(setup.broker.beginProviderAuthentication(setup.peer, {
+      credentialId: 'credential',
+      clientNonce: generateRandomBase64Url(32),
+    }).agentId).toBe(setup.registration.instanceId);
+  });
+
+  it.each([
+    ['without a registered provider', 'unavailable'],
+    ['with a disconnected provider', 'disconnected'],
+    ['with an offline provider', 'offline'],
+    ['while a provider is connecting', 'connecting'],
+  ] as const)('rejects access %s without creating or rate-limiting a request', async (_label, providerState) => {
+    expect.assertions(4);
+    const identityStore = createMemoryBrokerIdentityStore();
+    const broker = await createBroker({ identityStore, timing: { requestRateLimitMilliseconds: 60_000, ...(providerState === 'offline' ? { providerRecoveryMilliseconds: 0 } : {}) } });
+    brokers.push(broker);
+    const peer = { id: 'preflight-provider' };
+    const registration = { id: 'preflight-provider', instanceId: crypto.randomUUID(), name: 'Preflight provider', version: '1.0.0', maximumLevel: 'debug' as const };
+    if (providerState !== 'unavailable') {
+      broker.registerProvider(peer, registration);
+      if (providerState === 'disconnected' || providerState === 'offline') {
+        const invitation = broker.createPairingOffer(peer);
+        const credential = generateRandomBase64Url(32);
+        const transcript = broker.beginProviderAuthentication(peer, { credentialId: 'preflight-credential', clientNonce: generateRandomBase64Url(32), pairing: { code: invitation.code, credential } });
+        const key = await importAgentCredential(decodeBase64UrlBytes(credential));
+        const closed = Promise.withResolvers<void>();
+        await broker.authenticateProvider(peer, await createAgentAuthenticationProof(key, transcript), {
+          closed: closed.promise,
+          close: () => closed.resolve(),
+          onMessage: () => () => {},
+          send: async () => {},
+        });
+        if (providerState === 'disconnected') await broker.disconnectProvider(registration.id);
+        else {
+          await broker.disconnectPeer(peer.id);
+          await vi.waitUntil(() => broker.snapshot().providers[0]?.state === 'offline');
+        }
+      }
+    }
+    const expected = providerState === 'connecting'
+      ? { code: 'PROVIDER_RECOVERING', retryable: true }
+      : { code: 'PROVIDER_UNAVAILABLE', retryable: false };
+    await expect(broker.invoke({ id: 'preflight-agent' }, 'browser.request_access', { level: 'interact' })).rejects.toMatchObject(expected);
+    expect(broker.snapshot().requests).toEqual([]);
+    expect(broker.snapshot().leases).toEqual([]);
+    expect(broker.snapshot().providers.map(provider => provider.state)).toEqual(providerState === 'unavailable' ? [] : [providerState]);
+  });
+
+  it('does not consume the request rate limit when provider preflight fails', async () => {
+    expect.assertions(2);
+    const identityStore = createMemoryBrokerIdentityStore();
+    const broker = await createBroker({ identityStore, timing: { requestRateLimitMilliseconds: 60_000 } });
+    brokers.push(broker);
+    const agent = { id: 'rate-limit-agent' };
+    await expect(broker.invoke(agent, 'browser.request_access', { level: 'interact' })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+
+    const peer = { id: 'rate-limit-provider-peer' };
+    const registration = { id: 'rate-limit-provider', instanceId: crypto.randomUUID(), name: 'Rate limit provider', version: '1.0.0', maximumLevel: 'debug' as const };
+    broker.registerProvider(peer, registration);
+    const invitation = broker.createPairingOffer(peer);
+    const credential = generateRandomBase64Url(32);
+    const transcript = broker.beginProviderAuthentication(peer, { credentialId: 'rate-limit-credential', clientNonce: generateRandomBase64Url(32), pairing: { code: invitation.code, credential } });
+    const key = await importAgentCredential(decodeBase64UrlBytes(credential));
+    const listeners = new Set<(message: AgentToBrokerMessage) => void>();
+    const closed = Promise.withResolvers<void>();
+    const authenticated = await broker.authenticateProvider(peer, await createAgentAuthenticationProof(key, transcript), {
+      closed: closed.promise,
+      close: () => closed.resolve(),
+      onMessage(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      send: async () => {},
+    });
+    const send = (message: AgentToBrokerMessage): void => {
+      for (const listener of listeners) listener(message);
+    };
+    send({ kind: 'request', method: 'agent.hello', protocolVersion: 1, requestId: crypto.randomUUID(), parameters: {
+      connectionGeneration: authenticated.claims.connectionGeneration,
+      implementation: { instanceId: registration.instanceId, name: registration.name, role: 'agent', version: registration.version },
+      protocolVersions: { minimum: 1, maximum: 1 },
+      features: [],
+      heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 },
+      limits: { maximumArtifactBytes: 16_777_216, maximumInlineResultBytes: 65_536, maximumMessageBytes: 67_108_864 },
+    } });
+    const target: PublishedTarget = { id: crypto.randomUUID(), generation: 1, scopeId: crypto.randomUUID(), availability: 'available', capabilities: { level: 'debug' }, type: 'page', url: 'https://example.test/rate-limit' };
+    send({ kind: 'notification', method: 'targets.reconcile', protocolVersion: 1, parameters: { targets: [target] } });
+    const pending = broker.invoke(agent, 'browser.request_access', { level: 'interact' });
+    void pending.catch(() => {});
+    await expect.poll(() => broker.snapshot().requests).toHaveLength(1);
+  });
+
+  it('lets one stable replacement provider reach ready after stale peer callbacks', async () => {
+    expect.assertions(6);
+    const setup = await fixture();
+    const replacementPeer = { id: 'replacement-provider-peer' };
+    setup.broker.registerProvider(replacementPeer, setup.registration);
+    const transcript = setup.broker.beginProviderAuthentication(replacementPeer, {
+      credentialId: 'credential',
+      clientNonce: generateRandomBase64Url(32),
+    });
+    const listeners = new Set<(message: AgentToBrokerMessage) => void>();
+    const received: BrokerToAgentMessage[] = [];
+    const closed = Promise.withResolvers<void>();
+    const authenticated = await setup.broker.authenticateProvider(
+      replacementPeer,
+      await createAgentAuthenticationProof(setup.key, transcript),
+      {
+        closed: closed.promise,
+        close: () => closed.resolve(),
+        onMessage(listener) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        async send(message) {
+          received.push(message);
+        },
+      },
+    );
+    setup.closeProvider();
+    await setup.broker.disconnectPeer(setup.peer.id);
+    const send = (message: AgentToBrokerMessage): void => {
+      for (const listener of listeners) listener(message);
+    };
+    const helloRequestId = crypto.randomUUID();
+    send({ kind: 'request', method: 'agent.hello', protocolVersion: 1, requestId: helloRequestId, parameters: {
+      connectionGeneration: authenticated.claims.connectionGeneration,
+      implementation: { instanceId: setup.registration.instanceId, name: setup.registration.name, role: 'agent', version: setup.registration.version },
+      protocolVersions: { minimum: 1, maximum: 1 },
+      features: [],
+      heartbeat: { intervalMilliseconds: 15_000, timeoutMilliseconds: 45_000 },
+      limits: { maximumArtifactBytes: 16_777_216, maximumInlineResultBytes: 65_536, maximumMessageBytes: 67_108_864 },
+    } });
+    const target = { ...setup.target, generation: 2 };
+    send({ kind: 'notification', method: 'targets.reconcile', protocolVersion: 1, parameters: { targets: [target] } });
+    await Promise.resolve();
+
+    expect(received).toContainEqual(expect.objectContaining({ kind: 'response', method: 'agent.hello', requestId: helloRequestId }));
+    expect(setup.broker.snapshot().providers).toMatchObject([{ id: setup.registration.id, state: 'ready', targetCount: 1 }]);
+    expect(setup.broker.snapshot().targets).toMatchObject([{ id: target.id, generation: 2, state: 'available' }]);
+    expect(setup.broker.snapshot().providers).toHaveLength(1);
+    expect(setup.broker.snapshot().providers[0]!.instanceId).toBe(setup.registration.instanceId);
+    expect(setup.broker.snapshot().providers[0]!.paired).toBe(true);
   });
 
   it('serializes concurrent membership publications for one approved scope', async () => {

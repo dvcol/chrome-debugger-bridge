@@ -34,6 +34,7 @@ export interface ExtensionApprovalSenderValidatorOptions {
 
 /** Trusts explicitly listed extension-owned views outside tabs, using runtime MessageSender metadata supplied by the host. */
 export function createExtensionApprovalSenderValidator(options: ExtensionApprovalSenderValidatorOptions): (sender: ExtensionApprovalSender) => boolean {
+  defineApprovalSender(options);
   const documents = new Map(options.allowedDocumentUrls.map((value) => {
     const url = new URL(value);
     if (!['chrome-extension:', 'moz-extension:'].includes(url.protocol) || url.username || url.password)
@@ -50,6 +51,7 @@ export function createExtensionApprovalSenderValidator(options: ExtensionApprova
 
 /** Validates request-only page intents and separately authenticates authority-bearing host UI decisions. */
 export function createApprovalChannel<Sender>(options: ApprovalChannelOptions<Sender>): ApprovalChannel<Sender> {
+  defineApproval<Sender>(options);
   return {
     async receive(message, sender) {
       if (message === null || typeof message !== 'object' || Array.isArray(message)) return { code: 'APPROVAL_MESSAGE_INVALID', ok: false };
@@ -74,4 +76,20 @@ export function createApprovalChannel<Sender>(options: ApprovalChannelOptions<Se
       return { ok: true };
     },
   };
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineApproval<Sender, const Definition extends ApprovalChannelOptions<Sender> = ApprovalChannelOptions<Sender>>(definition: Definition & ApprovalChannelOptions<Sender>): Definition {
+  return definition;
+}
+
+/** Defines configuration without starting the adapter or calling runtime dependencies. */
+export function defineApprovalSender<const Definition extends ExtensionApprovalSenderValidatorOptions>(definition: Definition): Definition {
+  const documents = definition.allowedDocumentUrls.map((value) => {
+    const url = new URL(value);
+    if (!['chrome-extension:', 'moz-extension:'].includes(url.protocol) || url.username || url.password) throw new TypeError('Approval documents must be extension URLs.');
+    return url.href;
+  });
+  if (definition.extensionId.length === 0 || documents.length === 0) throw new TypeError('Approval requires an extension identity and at least one document URL.');
+  return definition;
 }
